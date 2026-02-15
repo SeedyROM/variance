@@ -8,6 +8,7 @@
 //! - Username registration and discovery
 
 pub mod cache;
+pub mod config;
 pub mod did;
 pub mod error;
 pub mod protocol;

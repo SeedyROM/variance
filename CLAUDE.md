@@ -45,6 +45,19 @@ Variance is a P2P Discord alternative in Rust, correcting architectural flaws fr
 - Focus comments on "why" not "what"
 - Architecture decisions belong in docs, not code comments
 
+### Default Values
+
+- **Inline constant defaults** directly in `Default` trait implementations
+- **Only use helper functions** when defaults require logic, computation, or take arguments
+- Constants belong inline; logic belongs in functions
+- Examples:
+  - ✅ Good: `port: 8080` (constant, inline it)
+  - ❌ Bad: `port: default_port()` where `fn default_port() -> u16 { 8080 }` (no logic, inline it)
+  - ✅ Good: `id: Uuid::new_v4()` (requires computation, inline it)
+  - ✅ Good: `timestamp: SystemTime::now()` (requires syscall, inline it)
+  - ✅ Good: `config: load_from_env()` where logic is complex (logic, use function)
+  - ❌ Bad: `addrs: default_addrs()` where `fn default_addrs() -> Vec<String> { vec![...] }` (constant list, inline it)
+
 ### Testing Requirements
 
 - **All features require tests** - unit tests and/or integration tests
