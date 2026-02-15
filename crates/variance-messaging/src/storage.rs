@@ -2,7 +2,7 @@ use crate::error::*;
 use async_trait::async_trait;
 use prost::Message;
 use std::path::Path;
-use variance_proto::messaging_proto::{DirectMessage, GroupMessage, OfflineMessageEnvelope};
+use variance_proto::messaging_proto::{DirectMessage, GroupMessage, OfflineMessageEnvelope, ReadReceipt};
 
 /// Message storage backend abstraction
 ///
@@ -52,6 +52,19 @@ pub trait MessageStorage: Send + Sync {
 
     /// Clean up expired offline messages (TTL enforcement)
     async fn cleanup_expired(&self) -> Result<usize>;
+
+    /// Store a read receipt
+    async fn store_receipt(&self, receipt: &ReadReceipt) -> Result<()>;
+
+    /// Fetch receipts for a specific message
+    async fn fetch_receipts(&self, message_id: &str) -> Result<Vec<ReadReceipt>>;
+
+    /// Fetch latest receipt status for a message from a specific reader
+    async fn fetch_receipt_status(
+        &self,
+        message_id: &str,
+        reader_did: &str,
+    ) -> Result<Option<ReadReceipt>>;
 }
 
 /// Local storage implementation using sled
@@ -89,6 +102,13 @@ impl LocalMessageStorage {
     fn offline_tree(&self) -> Result<sled::Tree> {
         self.db
             .open_tree("offline_messages")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
+    /// Read receipts tree
+    fn receipts_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("read_receipts")
             .map_err(|e| Error::Storage { source: e })
     }
 
@@ -343,6 +363,72 @@ impl MessageStorage for LocalMessageStorage {
         }
 
         Ok(deleted)
+    }
+
+    async fn store_receipt(&self, receipt: &ReadReceipt) -> Result<()> {
+        let tree = self.receipts_tree()?;
+
+        // Key format: {message_id}:{reader_did}:{timestamp:020}
+        let key = format!(
+            "{}:{}:{:020}",
+            receipt.message_id, receipt.reader_did, receipt.timestamp
+        );
+
+        let value = receipt.encode_to_vec();
+        tree.insert(key.as_bytes(), value)
+            .map_err(|e| Error::Storage { source: e })?;
+
+        Ok(())
+    }
+
+    async fn fetch_receipts(&self, message_id: &str) -> Result<Vec<ReadReceipt>> {
+        let tree = self.receipts_tree()?;
+        let prefix = format!("{message_id}:");
+
+        let mut receipts = Vec::new();
+        let iter = tree.scan_prefix(prefix.as_bytes());
+
+        for entry in iter {
+            let (_key, value) = entry.map_err(|e| Error::Storage { source: e })?;
+
+            let receipt =
+                ReadReceipt::decode(value.as_ref()).map_err(|e| Error::Protocol { source: e })?;
+
+            receipts.push(receipt);
+        }
+
+        Ok(receipts)
+    }
+
+    async fn fetch_receipt_status(
+        &self,
+        message_id: &str,
+        reader_did: &str,
+    ) -> Result<Option<ReadReceipt>> {
+        let tree = self.receipts_tree()?;
+        let prefix = format!("{message_id}:{reader_did}:");
+
+        // Get the latest receipt (highest timestamp) for this message+reader
+        let mut latest: Option<ReadReceipt> = None;
+
+        let iter = tree.scan_prefix(prefix.as_bytes());
+
+        for entry in iter {
+            let (_key, value) = entry.map_err(|e| Error::Storage { source: e })?;
+
+            let receipt =
+                ReadReceipt::decode(value.as_ref()).map_err(|e| Error::Protocol { source: e })?;
+
+            if let Some(ref current) = latest {
+                if receipt.timestamp > current.timestamp {
+                    latest = Some(receipt);
+                }
+            } else {
+                latest = Some(receipt);
+            }
+        }
+
+        Ok(latest)
     }
 }
 
