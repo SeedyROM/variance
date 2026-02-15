@@ -264,8 +264,10 @@ impl MessageStorage for LocalMessageStorage {
             if let Some(since_ts) = since {
                 let key_str = String::from_utf8_lossy(&key);
                 let parts: Vec<&str> = key_str.split(':').collect();
+                // Key format: {recipient_did}:{timestamp:020}:{id}
+                // Since DID contains colons, timestamp is second-to-last part
                 if parts.len() >= 2 {
-                    if let Ok(ts) = parts[1].parse::<i64>() {
+                    if let Ok(ts) = parts[parts.len() - 2].parse::<i64>() {
                         if ts <= since_ts {
                             continue;
                         }
@@ -319,7 +321,7 @@ impl MessageStorage for LocalMessageStorage {
 
     async fn cleanup_expired(&self) -> Result<usize> {
         let tree = self.offline_tree()?;
-        let now = chrono::Utc::now().timestamp();
+        let now = chrono::Utc::now().timestamp_millis();
         let mut deleted = 0;
 
         let mut to_delete = Vec::new();
@@ -533,7 +535,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = LocalMessageStorage::new(dir.path()).unwrap();
 
-        let now = chrono::Utc::now().timestamp();
+        let now = chrono::Utc::now().timestamp_millis();
 
         // Expired message
         let expired = DirectMessage {
@@ -580,7 +582,7 @@ mod tests {
             ),
             relay_peer_id: "peer123".to_string(),
             stored_at: 2000,
-            expires_at: now + 86400, // Expires in 1 day
+            expires_at: now + (86400 * 1000), // Expires in 1 day (milliseconds)
         };
 
         storage.store_offline(&envelope1).await.unwrap();

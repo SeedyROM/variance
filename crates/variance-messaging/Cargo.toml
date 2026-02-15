@@ -16,6 +16,7 @@ libp2p = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
+dashmap = { workspace = true }
 
 # Serialization
 prost = { workspace = true }
@@ -34,6 +35,9 @@ ed25519-dalek = { workspace = true }
 x25519-dalek = { workspace = true }
 rand = { workspace = true }
 double-ratchet-2 = "0.4.0-pre.2"
+
+# Crypto (for Group messaging)
+aes-gcm = "0.10"
 
 # Storage
 sled = { workspace = true }

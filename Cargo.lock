@@ -4147,9 +4147,11 @@ dependencies = [
 name = "variance-messaging"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "async-trait",
  "bincode",
  "chrono",
+ "dashmap",
  "double-ratchet-2",
  "ed25519-dalek",
  "futures",
