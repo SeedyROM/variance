@@ -408,7 +408,7 @@ impl GroupMessageHandler {
     }
 
     /// Verify a group message signature
-    fn verify_message_with_key(
+    pub fn verify_message_with_key(
         &self,
         message: &GroupMessage,
         sender_public_key: &VerifyingKey,

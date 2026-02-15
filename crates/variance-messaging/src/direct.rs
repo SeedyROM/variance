@@ -205,7 +205,7 @@ impl DirectMessageHandler {
     /// NOTE: This requires the sender's public key which must be fetched from their
     /// DID document via the identity system. Currently verification is deferred to
     /// the caller who must provide the sender's public key.
-    fn verify_message_with_key(
+    pub fn verify_message_with_key(
         &self,
         message: &DirectMessage,
         sender_public_key: &VerifyingKey,
