@@ -1,0 +1,36 @@
+[package]
+name = "variance-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+variance-proto = { path = "../variance-proto" }
+variance-p2p = { path = "../variance-p2p" }
+variance-identity = { path = "../variance-identity" }
+variance-messaging = { path = "../variance-messaging" }
+variance-media = { path = "../variance-media" }
+
+# HTTP server
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+snafu = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Config
+toml = "0.8"

@@ -1,0 +1,178 @@
+syntax = "proto3";
+
+package variance.messaging.v1;
+
+// Direct message (1-on-1)
+message DirectMessage {
+  // ULID for chronological sorting
+  string id = 1;
+
+  // Sender/recipient DIDs
+  string sender_did = 2;
+  string recipient_did = 3;
+
+  // Encrypted content (Double Ratchet)
+  bytes ciphertext = 4;
+  bytes nonce = 5;
+
+  // Ed25519 signature of (id + sender_did + recipient_did + ciphertext + nonce + timestamp)
+  bytes signature = 6;
+
+  // Unix timestamp (milliseconds)
+  int64 timestamp = 7;
+
+  // Message type
+  MessageType type = 8;
+
+  // Optional reply reference
+  optional string reply_to = 9;
+}
+
+message GroupMessage {
+  string id = 1;
+  string sender_did = 2;
+  string group_id = 3;
+
+  // Encrypted with group key (AES-256-GCM)
+  bytes ciphertext = 4;
+  bytes nonce = 5;
+
+  // Signature
+  bytes signature = 6;
+
+  int64 timestamp = 7;
+  MessageType type = 8;
+  optional string reply_to = 9;
+}
+
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  MESSAGE_TYPE_TEXT = 1;
+  MESSAGE_TYPE_IMAGE = 2;
+  MESSAGE_TYPE_FILE = 3;
+  MESSAGE_TYPE_AUDIO = 4;
+  MESSAGE_TYPE_VIDEO = 5;
+}
+
+// Decrypted message content (after decryption)
+message MessageContent {
+  string text = 1;
+  repeated Attachment attachments = 2;
+  repeated string mentions = 3;  // DIDs mentioned
+  optional string reply_to = 4;
+  map<string, string> metadata = 5;
+}
+
+message Attachment {
+  AttachmentType type = 1;
+  string cid = 2;  // IPFS CID
+  string name = 3;
+  uint64 size = 4;
+  string mime_type = 5;
+  optional string thumbnail_cid = 6;
+}
+
+enum AttachmentType {
+  ATTACHMENT_TYPE_UNSPECIFIED = 0;
+  ATTACHMENT_TYPE_IMAGE = 1;
+  ATTACHMENT_TYPE_FILE = 2;
+  ATTACHMENT_TYPE_AUDIO = 3;
+  ATTACHMENT_TYPE_VIDEO = 4;
+}
+
+// Read receipts
+message ReadReceipt {
+  string message_id = 1;
+  string reader_did = 2;
+  ReceiptStatus status = 3;
+  int64 timestamp = 4;
+  bytes signature = 5;
+}
+
+enum ReceiptStatus {
+  RECEIPT_STATUS_UNSPECIFIED = 0;
+  RECEIPT_STATUS_DELIVERED = 1;
+  RECEIPT_STATUS_READ = 2;
+}
+
+// Typing indicators
+message TypingIndicator {
+  string sender_did = 1;
+  oneof recipient {
+    string recipient_did = 2;
+    string group_id = 3;
+  }
+  bool is_typing = 4;
+  int64 timestamp = 5;
+}
+
+// Group chat structures
+message Group {
+  string id = 1;
+  string name = 2;
+  string admin_did = 3;
+  repeated GroupMember members = 4;
+  GroupKey current_key = 5;
+  int64 created_at = 6;
+  optional string avatar_cid = 7;
+  optional string description = 8;
+}
+
+message GroupMember {
+  string did = 1;
+  GroupRole role = 2;
+  int64 joined_at = 3;
+  optional string nickname = 4;
+}
+
+enum GroupRole {
+  GROUP_ROLE_UNSPECIFIED = 0;
+  GROUP_ROLE_MEMBER = 1;
+  GROUP_ROLE_MODERATOR = 2;
+  GROUP_ROLE_ADMIN = 3;
+}
+
+message GroupKey {
+  uint32 version = 1;
+  bytes key = 2;  // AES-256 key (encrypted per-member)
+  int64 created_at = 3;
+}
+
+message GroupInvitation {
+  string group_id = 1;
+  string group_name = 2;
+  string inviter_did = 3;
+  string invitee_did = 4;
+
+  // Group key encrypted with invitee's public key
+  bytes encrypted_group_key = 5;
+
+  int64 timestamp = 6;
+  bytes signature = 7;
+}
+
+// Offline message relay
+message OfflineMessageEnvelope {
+  string recipient_did = 1;
+  oneof message {
+    DirectMessage direct = 2;
+    GroupMessage group = 3;
+  }
+
+  // Relay metadata
+  string relay_peer_id = 4;
+  int64 stored_at = 5;
+  int64 expires_at = 6;  // TTL
+}
+
+message OfflineMessageRequest {
+  string did = 1;
+  optional int64 since_timestamp = 2;  // Only messages after this
+  uint32 limit = 3;  // Max messages to fetch
+}
+
+message OfflineMessageResponse {
+  repeated OfflineMessageEnvelope messages = 1;
+  bool has_more = 2;
+  optional int64 next_cursor = 3;
+}

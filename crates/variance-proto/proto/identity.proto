@@ -1,0 +1,123 @@
+syntax = "proto3";
+
+package variance.identity.v1;
+
+// W3C DID Document representation
+message DIDDocument {
+  // DID identifier (e.g., "did:peer:...")
+  string id = 1;
+
+  // Authentication keys
+  repeated VerificationMethod authentication = 2;
+
+  // Key agreement keys (for encryption)
+  repeated VerificationMethod key_agreement = 3;
+
+  // Service endpoints
+  repeated Service service = 4;
+
+  // Timestamps
+  int64 created_at = 5;
+  int64 updated_at = 6;
+
+  // Optional metadata
+  optional string display_name = 7;
+  optional string avatar_cid = 8;
+  optional string bio = 9;
+}
+
+message VerificationMethod {
+  string id = 1;
+  string type = 2;  // "Ed25519VerificationKey2020", etc.
+  string controller = 3;
+  bytes public_key_multibase = 4;
+}
+
+message Service {
+  string id = 1;
+  string type = 2;  // "Libp2pPeer", etc.
+  string service_endpoint = 3;
+  map<string, string> metadata = 4;
+}
+
+// Identity resolution protocol messages
+message IdentityRequest {
+  oneof query {
+    UsernameQuery username = 1;
+    string did = 2;
+    string peer_id = 3;
+  }
+
+  // Requesting peer's DID (for authenticated queries)
+  optional string requester_did = 4;
+
+  // Request timestamp
+  int64 timestamp = 5;
+}
+
+message UsernameQuery {
+  string username = 1;
+  optional uint32 discriminator = 2;
+  optional string subnet_id = 3;
+}
+
+message IdentityResponse {
+  oneof result {
+    IdentityFound found = 1;
+    IdentityNotFound not_found = 2;
+    IdentityError error = 3;
+  }
+
+  int64 timestamp = 4;
+}
+
+message IdentityFound {
+  DIDDocument did_document = 1;
+  optional string ipns_key = 2;
+  repeated string multiaddrs = 3;
+  optional uint32 discriminator = 4;
+}
+
+message IdentityNotFound {
+  string query = 1;
+  string reason = 2;
+}
+
+message IdentityError {
+  string error = 1;
+  string details = 2;
+}
+
+// Gossipsub messages for identity updates
+message IdentityUpdate {
+  string did = 1;
+  optional string ipns_key = 2;
+  optional string new_ipfs_cid = 3;
+  int64 updated_at = 4;
+
+  // Ed25519 signature over (did + ipns_key + new_ipfs_cid + updated_at)
+  bytes signature = 5;
+
+  // What changed
+  repeated string changed_fields = 6;
+}
+
+// Username registration
+message UsernameRegistration {
+  string username = 1;
+  uint32 discriminator = 2;
+  string did = 3;
+  string subnet_id = 4;
+  int64 registered_at = 5;
+  bytes signature = 6;
+}
+
+// Provider record for "who has this identity?"
+message IdentityProvider {
+  string username = 1;
+  optional uint32 discriminator = 2;
+  string subnet_id = 3;
+  string peer_id = 4;  // libp2p PeerID
+  repeated string multiaddrs = 5;
+  int64 provided_at = 6;
+}

@@ -1,0 +1,26 @@
+[package]
+name = "variance-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+variance-proto = { path = "../variance-proto" }
+variance-p2p = { path = "../variance-p2p" }
+
+# libp2p
+libp2p = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+prost = { workspace = true }
+serde = { workspace = true }
+
+# Error handling
+snafu = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }

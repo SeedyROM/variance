@@ -1,0 +1,105 @@
+use libp2p::Multiaddr;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    /// Local listen addresses
+    pub listen_addresses: Vec<Multiaddr>,
+
+    /// Bootstrap peers for initial DHT connection
+    #[serde(default)]
+    pub bootstrap_peers: Vec<BootstrapPeer>,
+
+    /// Enable mDNS for local peer discovery
+    pub enable_mdns: bool,
+
+    /// Kademlia DHT configuration
+    #[serde(default)]
+    pub kad_config: KadConfig,
+
+    /// GossipSub configuration
+    #[serde(default)]
+    pub gossipsub_config: GossipsubConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            listen_addresses: vec![
+                "/ip4/0.0.0.0/tcp/0".parse().unwrap(),
+                "/ip4/0.0.0.0/udp/0/quic-v1".parse().unwrap(),
+            ],
+            bootstrap_peers: Vec::new(),
+            enable_mdns: true,
+            kad_config: KadConfig::default(),
+            gossipsub_config: GossipsubConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BootstrapPeer {
+    pub peer_id: String,
+    pub multiaddr: Multiaddr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KadConfig {
+    /// DHT replication factor
+    pub replication_factor: usize,
+
+    /// Provider record TTL in seconds
+    pub provider_record_ttl: u64,
+}
+
+impl Default for KadConfig {
+    fn default() -> Self {
+        Self {
+            replication_factor: 20,
+            provider_record_ttl: 24 * 60 * 60, // 24 hours
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GossipsubConfig {
+    /// Heartbeat interval in seconds
+    pub heartbeat_interval_secs: u64,
+
+    /// Message history length
+    pub history_length: usize,
+
+    /// History gossip length
+    pub history_gossip: usize,
+}
+
+impl Default for GossipsubConfig {
+    fn default() -> Self {
+        Self {
+            heartbeat_interval_secs: 1,
+            history_length: 5,
+            history_gossip: 3,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = Config::default();
+        assert_eq!(config.listen_addresses.len(), 2);
+        assert!(config.enable_mdns);
+        assert_eq!(config.kad_config.replication_factor, 20);
+    }
+
+    #[test]
+    fn test_serialize_deserialize() {
+        let config = Config::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(config.enable_mdns, deserialized.enable_mdns);
+    }
+}

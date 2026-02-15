@@ -1,0 +1,38 @@
+[package]
+name = "variance-messaging"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+variance-proto = { path = "../variance-proto" }
+variance-p2p = { path = "../variance-p2p" }
+variance-identity = { path = "../variance-identity" }
+
+# libp2p
+libp2p = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+prost = { workspace = true }
+serde = { workspace = true }
+
+# Error handling
+snafu = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+
+# Crypto (for Double Ratchet)
+ed25519-dalek = { workspace = true }
+x25519-dalek = { workspace = true }
+rand = { workspace = true }
+
+# Storage
+sled = { workspace = true }
+
+# ULID for message IDs
+ulid = "1.1"
