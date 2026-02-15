@@ -5,6 +5,21 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
 pub enum Error {
+    #[snafu(display("Call not found: {call_id}"))]
+    CallNotFound { call_id: String },
+
+    #[snafu(display("Invalid call state: {message}"))]
+    InvalidState { message: String },
+
+    #[snafu(display("Invalid signature for call: {call_id}"))]
+    InvalidSignature { call_id: String },
+
+    #[snafu(display("Signaling error: {message}"))]
+    Signaling { message: String },
+
+    #[snafu(display("Protocol error: {source}"))]
+    Protocol { source: prost::DecodeError },
+
     #[snafu(display("Media error: {message}"))]
     Media { message: String },
 }
@@ -14,11 +29,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_media_error() {
-        let err = Error::Media {
-            message: "test error".to_string(),
+    fn test_call_not_found_error() {
+        let err = Error::CallNotFound {
+            call_id: "call123".to_string(),
         };
-        assert_eq!(err.to_string(), "Media error: test error");
+        assert_eq!(err.to_string(), "Call not found: call123");
+    }
+
+    #[test]
+    fn test_invalid_state_error() {
+        let err = Error::InvalidState {
+            message: "cannot accept ended call".to_string(),
+        };
+        assert_eq!(err.to_string(), "Invalid call state: cannot accept ended call");
+    }
+
+    #[test]
+    fn test_invalid_signature_error() {
+        let err = Error::InvalidSignature {
+            call_id: "call123".to_string(),
+        };
+        assert_eq!(err.to_string(), "Invalid signature for call: call123");
     }
 
     #[test]

@@ -24,3 +24,18 @@ snafu = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }
+
+# Crypto (for signatures)
+ed25519-dalek = { workspace = true }
+
+# Concurrent state
+dashmap = { workspace = true }
+
+# ULID for call IDs
+ulid = "1.1"
+
+# Time
+chrono = "0.4"
+
+[dev-dependencies]
+rand = { workspace = true }

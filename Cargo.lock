@@ -4132,13 +4132,18 @@ dependencies = [
 name = "variance-media"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "dashmap",
+ "ed25519-dalek",
  "futures",
  "libp2p",
  "prost",
+ "rand 0.8.5",
  "serde",
  "snafu",
  "tokio",
  "tracing",
+ "ulid",
  "variance-p2p",
  "variance-proto",
 ]
