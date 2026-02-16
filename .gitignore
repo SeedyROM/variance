@@ -29,3 +29,6 @@ identity.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Local configs
+.variance

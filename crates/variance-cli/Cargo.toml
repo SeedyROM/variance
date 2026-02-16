@@ -15,6 +15,9 @@ variance-proto = { path = "../variance-proto" }
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }
 
+# HTTP server
+axum = { workspace = true }
+
 # Async
 tokio = { workspace = true }
 
@@ -24,3 +27,14 @@ tracing-subscriber = { workspace = true }
 
 # Error handling
 anyhow = { workspace = true }
+
+# Crypto
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+
+# Serialization
+serde_json = { workspace = true }
+hex = { workspace = true }
+
+# Time
+chrono = { workspace = true }

@@ -1,1 +1,164 @@
-// Application configuration
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// Application configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    /// HTTP server configuration
+    pub server: ServerConfig,
+
+    /// P2P networking configuration
+    pub p2p: P2PConfig,
+
+    /// Identity system configuration
+    pub identity: IdentityConfig,
+
+    /// Media configuration
+    pub media: MediaConfig,
+
+    /// Storage paths
+    pub storage: StorageConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfig {
+    /// Host to bind to
+    pub host: String,
+
+    /// Port to listen on
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct P2PConfig {
+    /// Listen addresses for libp2p
+    pub listen_addrs: Vec<String>,
+
+    /// Bootstrap peers
+    pub bootstrap_peers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdentityConfig {
+    /// IPFS API endpoint
+    pub ipfs_api: String,
+
+    /// Cache TTL in seconds
+    pub cache_ttl_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaConfig {
+    /// STUN server URLs
+    pub stun_servers: Vec<String>,
+
+    /// TURN server configuration
+    pub turn_servers: Vec<TurnServer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurnServer {
+    pub url: String,
+    pub username: String,
+    pub credential: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConfig {
+    /// Base directory for all storage
+    pub base_dir: PathBuf,
+
+    /// Identity cache directory
+    pub identity_cache_dir: PathBuf,
+
+    /// Message database path
+    pub message_db_path: PathBuf,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            server: ServerConfig {
+                host: "127.0.0.1".to_string(),
+                port: 3000,
+            },
+            p2p: P2PConfig {
+                listen_addrs: vec!["/ip4/0.0.0.0/tcp/0".to_string()],
+                bootstrap_peers: vec![],
+            },
+            identity: IdentityConfig {
+                ipfs_api: "http://127.0.0.1:5001".to_string(),
+                cache_ttl_secs: 3600,
+            },
+            media: MediaConfig {
+                stun_servers: vec![
+                    "stun:stun.l.google.com:19302".to_string(),
+                    "stun:stun1.l.google.com:19302".to_string(),
+                ],
+                turn_servers: vec![],
+            },
+            storage: StorageConfig {
+                base_dir: PathBuf::from(".variance"),
+                identity_cache_dir: PathBuf::from(".variance/identity_cache"),
+                message_db_path: PathBuf::from(".variance/messages.db"),
+            },
+        }
+    }
+}
+
+impl AppConfig {
+    /// Load configuration from TOML file
+    pub fn from_file(path: &str) -> anyhow::Result<Self> {
+        let contents = std::fs::read_to_string(path)?;
+        let config: AppConfig = toml::from_str(&contents)?;
+        Ok(config)
+    }
+
+    /// Save configuration to TOML file
+    pub fn to_file(&self, path: &str) -> anyhow::Result<()> {
+        let contents = toml::to_string_pretty(self)?;
+        std::fs::write(path, contents)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = AppConfig::default();
+
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 3000);
+        assert_eq!(config.p2p.listen_addrs.len(), 1);
+        assert_eq!(config.identity.ipfs_api, "http://127.0.0.1:5001");
+        assert_eq!(config.media.stun_servers.len(), 2);
+    }
+
+    #[test]
+    fn test_config_roundtrip() {
+        let config = AppConfig::default();
+
+        let toml_str = toml::to_string(&config).unwrap();
+        let parsed: AppConfig = toml::from_str(&toml_str).unwrap();
+
+        assert_eq!(config.server.port, parsed.server.port);
+        assert_eq!(config.identity.ipfs_api, parsed.identity.ipfs_api);
+    }
+
+    #[test]
+    fn test_custom_config() {
+        let mut config = AppConfig::default();
+        config.server.port = 8080;
+        config.media.turn_servers.push(TurnServer {
+            url: "turn:example.com:3478".to_string(),
+            username: "user".to_string(),
+            credential: "pass".to_string(),
+        });
+
+        assert_eq!(config.server.port, 8080);
+        assert_eq!(config.media.turn_servers.len(), 1);
+    }
+}

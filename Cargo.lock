@@ -4071,10 +4071,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "chrono",
+ "ed25519-dalek",
  "futures",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "snafu",
+ "tempfile",
  "tokio",
  "toml",
  "tower",
@@ -4093,7 +4097,13 @@ name = "variance-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
+ "chrono",
  "clap",
+ "ed25519-dalek",
+ "hex",
+ "rand 0.8.5",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

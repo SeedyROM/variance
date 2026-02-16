@@ -34,3 +34,13 @@ tracing-subscriber = { workspace = true }
 
 # Config
 toml = "0.8"
+
+# Crypto (for testing)
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.15"

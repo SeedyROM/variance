@@ -11,5 +11,7 @@ pub mod config;
 pub mod error;
 pub mod state;
 
+pub use api::create_router;
+pub use config::AppConfig;
 pub use error::{Error, Result};
 pub use state::AppState;
