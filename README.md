@@ -104,12 +104,40 @@ cargo build --release
 ### Run
 
 ```bash
-# Run CLI
-cargo run --bin variance -- start
+# Generate an identity first (saves to .variance/identity.json)
+cargo run --bin variance -- identity generate
 
-# Generate identity
-cargo run --bin variance -- gen-identity
+# Initialize configuration (optional)
+cargo run --bin variance -- config init
+
+# Start the node (automatically loads identity from .variance/identity.json)
+cargo run --bin variance -- start
 ```
+
+For detailed CLI usage, see [docs/CLI-USAGE.md](docs/CLI-USAGE.md).
+
+## CLI Commands
+
+The `variance` CLI provides three main command groups:
+
+### Identity Management
+```bash
+variance identity generate  # Create new DID and signing key
+variance identity show      # Display identity information
+```
+
+### Configuration Management
+```bash
+variance config init  # Create default configuration file
+variance config show  # Display current configuration
+```
+
+### Node Operations
+```bash
+variance start  # Start the node (auto-loads identity from .variance/identity.json)
+```
+
+**See [docs/CLI-USAGE.md](docs/CLI-USAGE.md) for complete command reference, options, and examples.**
 
 ## Development
 
@@ -132,14 +160,24 @@ cargo build -p variance-proto
 
 Set log level via `RUST_LOG`:
 ```bash
-RUST_LOG=debug cargo run --bin variance -- start
+# Info level (default)
+RUST_LOG=variance=info cargo run --bin variance -- start
+
+# Debug level
+RUST_LOG=variance=debug cargo run --bin variance -- start
+
+# Trace level with libp2p debug
 RUST_LOG=variance=trace,libp2p=debug cargo run --bin variance -- start
 ```
 
-## Architecture Documentation
+## Documentation
 
+### Architecture
 - [ARCHITECTURE-CORRECTIONS.md](docs/ARCHITECTURE-CORRECTIONS.md) - **Read this first!** Explains why the Go design was wrong and how we fix it
 - [Go docs](../variance-go/docs/) - Original architecture docs (for reference, contains flaws)
+
+### Usage
+- [CLI-USAGE.md](docs/CLI-USAGE.md) - Complete command-line interface reference
 
 ## Project Status
 

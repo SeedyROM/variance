@@ -29,9 +29,9 @@ enum Commands {
         #[arg(short, long)]
         listen: Option<String>,
 
-        /// Local DID (required for now)
+        /// Local DID (optional, overrides identity file)
         #[arg(short, long)]
-        did: String,
+        did: Option<String>,
     },
 
     /// Configuration management
@@ -73,7 +73,7 @@ enum IdentityAction {
     /// Generate a new identity (DID + signing key)
     Generate {
         /// Output file for identity keypair
-        #[arg(short, long, default_value = "identity.json")]
+        #[arg(short, long, default_value = ".variance/identity.json")]
         output: String,
 
         /// Overwrite existing file
@@ -84,7 +84,7 @@ enum IdentityAction {
     /// Show identity information
     Show {
         /// Path to identity file
-        #[arg(short, long, default_value = "identity.json")]
+        #[arg(short, long, default_value = ".variance/identity.json")]
         input: String,
     },
 }
@@ -124,7 +124,7 @@ async fn main() -> Result<()> {
 }
 
 /// Start the Variance node with HTTP API
-async fn start_node(config_path: String, listen_override: Option<String>, did: String) -> Result<()> {
+async fn start_node(config_path: String, listen_override: Option<String>, did_override: Option<String>) -> Result<()> {
     tracing::info!("Starting Variance node");
 
     // Load configuration
@@ -148,10 +148,32 @@ async fn start_node(config_path: String, listen_override: Option<String>, did: S
     };
 
     tracing::info!("HTTP API will listen on: {}", listen_addr);
-    tracing::info!("Local DID: {}", did);
 
-    // Create application state
-    let state = AppState::new(did.clone());
+    // Warn if DID override is provided (deprecated)
+    if did_override.is_some() {
+        tracing::warn!("--did flag is deprecated and ignored. Identity is loaded from file.");
+    }
+
+    // Load identity from file
+    let identity_path = &config.storage.identity_path;
+
+    if !identity_path.exists() {
+        anyhow::bail!(
+            "No identity file found at: {}\n\n\
+            To create an identity, run:\n  \
+            variance identity generate\n\n\
+            This will create your DID and signing keys.",
+            identity_path.display()
+        );
+    }
+
+    tracing::info!("Loading identity from: {}", identity_path.display());
+    let state = AppState::from_identity_file(
+        identity_path,
+        config.storage.message_db_path.to_str().unwrap()
+    )?;
+
+    tracing::info!("Local DID: {}", state.local_did);
 
     // Create Axum router
     let app = create_router(state);
@@ -250,12 +272,20 @@ fn show_config(config_path: String) -> Result<()> {
 fn generate_identity(output: String, force: bool) -> Result<()> {
     tracing::info!("Generating new identity");
 
+    let output_path = Path::new(&output);
+
     // Check if file exists
-    if Path::new(&output).exists() && !force {
+    if output_path.exists() && !force {
         anyhow::bail!(
             "Identity file already exists: {}. Use --force to overwrite.",
             output
         );
+    }
+
+    // Ensure parent directory exists
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)
+            .context("Failed to create directory for identity file")?;
     }
 
     // Generate new signing key
@@ -277,7 +307,7 @@ fn generate_identity(output: String, force: bool) -> Result<()> {
     });
 
     // Save to file
-    std::fs::write(&output, serde_json::to_string_pretty(&identity)?)
+    std::fs::write(output_path, serde_json::to_string_pretty(&identity)?)
         .context("Failed to write identity file")?;
 
     tracing::info!("✓ Identity generated successfully");
@@ -289,7 +319,7 @@ fn generate_identity(output: String, force: bool) -> Result<()> {
     println!("\n⚠️  IMPORTANT: Keep this file secure!");
     println!("  It contains your private signing key.");
     println!("\nTo start the node with this identity:");
-    println!("  variance start --did {}", did);
+    println!("  variance start");
     println!("\n{}", "=".repeat(60));
 
     Ok(())

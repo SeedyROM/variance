@@ -1,9 +1,20 @@
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::Arc;
 use variance_media::{CallManager, SignalingHandler};
 use variance_messaging::{
     direct::DirectMessageHandler, group::GroupMessageHandler, offline::OfflineRelayHandler,
     receipts::ReceiptHandler, storage::LocalMessageStorage, typing::TypingHandler,
 };
+
+/// Identity file format (DID + signing keys)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdentityFile {
+    pub did: String,
+    pub signing_key: String,
+    pub verifying_key: String,
+    pub created_at: String,
+}
 
 /// Application state shared across HTTP handlers
 ///
@@ -42,15 +53,71 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Create a new application state
-    ///
-    /// This is a simplified constructor for testing. In production, you would
-    /// create the handlers with proper configuration and dependencies.
+    /// Load identity from file
+    pub fn load_identity(identity_path: &Path) -> anyhow::Result<IdentityFile> {
+        let contents = std::fs::read_to_string(identity_path)
+            .map_err(|e| anyhow::anyhow!("Failed to read identity file: {}", e))?;
+
+        let identity: IdentityFile = serde_json::from_str(&contents)
+            .map_err(|e| anyhow::anyhow!("Failed to parse identity file: {}", e))?;
+
+        Ok(identity)
+    }
+
+    /// Create a new application state from identity file
+    pub fn from_identity_file(identity_path: &Path, db_path: &str) -> anyhow::Result<Self> {
+        let identity = Self::load_identity(identity_path)?;
+
+        // Parse signing key from hex
+        let signing_key_bytes = hex::decode(&identity.signing_key)
+            .map_err(|e| anyhow::anyhow!("Invalid signing key format: {}", e))?;
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(
+            &signing_key_bytes.try_into()
+                .map_err(|_| anyhow::anyhow!("Invalid signing key length"))?
+        );
+
+        // For now, generate a separate signaling key (in the future, this might also be stored)
+        let signaling_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+
+        let storage = Arc::new(LocalMessageStorage::new(db_path)?);
+
+        Ok(Self {
+            direct_messaging: Arc::new(DirectMessageHandler::new(
+                identity.did.clone(),
+                signing_key.clone(),
+                storage.clone(),
+            )),
+            group_messaging: Arc::new(GroupMessageHandler::new(
+                identity.did.clone(),
+                signing_key.clone(),
+                storage.clone(),
+            )),
+            receipts: Arc::new(ReceiptHandler::new(
+                identity.did.clone(),
+                signing_key,
+                storage.clone(),
+            )),
+            typing: Arc::new(TypingHandler::new(identity.did.clone())),
+            offline_relay: Arc::new(OfflineRelayHandler::new(
+                identity.did.clone(),
+                storage.clone(),
+            )),
+            calls: Arc::new(CallManager::new(identity.did.clone())),
+            signaling: Arc::new(SignalingHandler::new(identity.did.clone(), signaling_key)),
+            storage,
+            local_did: identity.did,
+        })
+    }
+
+    /// Create a new application state (for testing only - generates random keys)
+    #[cfg(test)]
     pub fn new(local_did: String) -> Self {
         Self::with_db_path(local_did, ".variance/messages.db")
     }
 
-    /// Create a new application state with a custom database path
+    /// Create a new application state with a custom database path (for testing only)
+    #[cfg(test)]
     pub fn with_db_path(local_did: String, db_path: &str) -> Self {
         let storage = Arc::new(LocalMessageStorage::new(db_path).unwrap());
         let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);

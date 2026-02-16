@@ -38,6 +38,7 @@ toml = "0.8"
 # Crypto (for testing)
 ed25519-dalek = { workspace = true }
 rand = { workspace = true }
+hex = { workspace = true }
 
 # Time
 chrono = { workspace = true }

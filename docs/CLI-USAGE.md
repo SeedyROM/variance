@@ -15,9 +15,9 @@ cargo build --release
    ```bash
    variance identity generate
    ```
-   This creates `identity.json` with your DID and signing keys.
+   This creates `.variance/identity.json` with your DID and signing keys.
 
-2. **Initialize configuration:**
+2. **Initialize configuration (optional):**
    ```bash
    variance config init
    ```
@@ -25,9 +25,9 @@ cargo build --release
 
 3. **Start the node:**
    ```bash
-   variance start --did did:variance:YOUR_DID
+   variance start
    ```
-   Replace `YOUR_DID` with the DID from step 1.
+   The node automatically loads your identity from `.variance/identity.json`.
 
 ## Commands
 
@@ -36,17 +36,26 @@ cargo build --release
 Start the Variance node with HTTP API:
 
 ```bash
-variance start --did <DID> [OPTIONS]
+variance start [OPTIONS]
 ```
 
 **Options:**
-- `-d, --did <DID>` - Your local DID (required)
 - `-c, --config <FILE>` - Path to config file (default: `config.toml`)
 - `-l, --listen <ADDR>` - HTTP API address (default: from config or `127.0.0.1:3000`)
+- `-d, --did <DID>` - Override DID (optional, for testing only)
 
-**Example:**
+The node automatically loads your identity from the path specified in `config.toml` (default: `.variance/identity.json`).
+
+**Examples:**
 ```bash
-variance start --did did:variance:e9a1f1dd0695e7fc --listen 127.0.0.1:8080
+# Start with default settings
+variance start
+
+# Start with custom listen address
+variance start --listen 127.0.0.1:8080
+
+# Start with custom config file
+variance start --config my-config.toml
 ```
 
 **Shutdown:**
@@ -93,11 +102,15 @@ variance identity generate [OPTIONS]
 ```
 
 **Options:**
-- `-o, --output <FILE>` - Output file (default: `identity.json`)
+- `-o, --output <FILE>` - Output file (default: `.variance/identity.json`)
 - `-f, --force` - Overwrite existing file
 
-**Example:**
+**Examples:**
 ```bash
+# Generate identity at default location (.variance/identity.json)
+variance identity generate
+
+# Generate at custom location
 variance identity generate --output alice.json
 ```
 
@@ -112,7 +125,7 @@ variance identity show [OPTIONS]
 ```
 
 **Options:**
-- `-i, --input <FILE>` - Identity file (default: `identity.json`)
+- `-i, --input <FILE>` - Identity file (default: `.variance/identity.json`)
 
 ## Configuration File
 
@@ -148,6 +161,7 @@ turn_servers = []
 
 [storage]
 base_dir = ".variance"
+identity_path = ".variance/identity.json"
 identity_cache_dir = ".variance/identity_cache"
 message_db_path = ".variance/messages.db"
 ```
@@ -190,13 +204,13 @@ Control logging with `RUST_LOG`:
 
 ```bash
 # Info level (default)
-RUST_LOG=variance=info variance start --did <DID>
+RUST_LOG=variance=info variance start
 
 # Debug level
-RUST_LOG=variance=debug variance start --did <DID>
+RUST_LOG=variance=debug variance start
 
 # Trace level
-RUST_LOG=variance=trace variance start --did <DID>
+RUST_LOG=variance=trace variance start
 ```
 
 ## Examples
@@ -204,17 +218,17 @@ RUST_LOG=variance=trace variance start --did <DID>
 ### Development Workflow
 
 ```bash
-# 1. Generate identity
+# 1. Generate identity (saves to .variance/identity.json)
 variance identity generate
 
 # 2. View identity
 variance identity show
 
-# 3. Create config
+# 3. Create config (optional)
 variance config init
 
-# 4. Start node
-variance start --did did:variance:YOUR_DID
+# 4. Start node (automatically loads identity)
+variance start
 
 # 5. Test API (in another terminal)
 curl http://localhost:3000/health
@@ -232,12 +246,12 @@ chmod 600 /etc/variance/identity.json
 # 3. Create production config
 variance config init --output /etc/variance/config.toml
 
-# 4. Edit config for production settings
+# 4. Edit config to set identity_path and production settings
 vim /etc/variance/config.toml
+# Set: storage.identity_path = "/etc/variance/identity.json"
 
 # 5. Start with production settings
 variance start \
-  --did $(cat /etc/variance/identity.json | jq -r .did) \
   --config /etc/variance/config.toml \
   --listen 0.0.0.0:3000
 ```

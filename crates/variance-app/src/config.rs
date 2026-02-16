@@ -68,6 +68,9 @@ pub struct StorageConfig {
     /// Base directory for all storage
     pub base_dir: PathBuf,
 
+    /// Local identity file (DID + signing keys)
+    pub identity_path: PathBuf,
+
     /// Identity cache directory
     pub identity_cache_dir: PathBuf,
 
@@ -99,6 +102,7 @@ impl Default for AppConfig {
             },
             storage: StorageConfig {
                 base_dir: PathBuf::from(".variance"),
+                identity_path: PathBuf::from(".variance/identity.json"),
                 identity_cache_dir: PathBuf::from(".variance/identity_cache"),
                 message_db_path: PathBuf::from(".variance/messages.db"),
             },
