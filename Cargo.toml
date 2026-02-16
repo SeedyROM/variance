@@ -64,6 +64,7 @@ x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 rand = "0.8"
 sha2 = "0.10"
 hex = "0.4"
+bip39 = "2.1"
 
 # Storage
 sled = "0.34"

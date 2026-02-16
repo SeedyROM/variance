@@ -17,6 +17,8 @@ cargo build --release
    ```
    This creates `.variance/identity.json` with your DID and signing keys.
 
+   **⚠️ IMPORTANT:** Write down the 12-word recovery phrase shown! This is the only time it will be displayed.
+
 2. **Initialize configuration (optional):**
    ```bash
    variance config init
@@ -95,7 +97,7 @@ variance config show [OPTIONS]
 
 #### Generate Identity
 
-Create a new DID and signing key:
+Create a new DID and signing key with BIP39 recovery phrase:
 
 ```bash
 variance identity generate [OPTIONS]
@@ -114,7 +116,49 @@ variance identity generate
 variance identity generate --output alice.json
 ```
 
-**⚠️ Security Note:** The generated file contains your private signing key. Keep it secure!
+**What happens:**
+1. A 12-word BIP39 recovery phrase is generated
+2. Your signing keys are derived from this phrase
+3. The recovery phrase is displayed **once** - write it down!
+4. The identity file is saved to disk
+
+**⚠️ CRITICAL Security Notes:**
+- **Write down the 12-word recovery phrase** shown during generation
+- This phrase will **NEVER be shown again**
+- Store it on paper in a safe place (NOT digitally)
+- Anyone with these 12 words can recover your identity
+- The identity file contains your private signing key - keep it secure!
+
+#### Recover Identity
+
+Recover your identity from a 12-word BIP39 recovery phrase:
+
+```bash
+variance identity recover [OPTIONS]
+```
+
+**Options:**
+- `-o, --output <FILE>` - Output file (default: `.variance/identity.json`)
+- `-f, --force` - Overwrite existing file
+
+**Example:**
+```bash
+# Recover identity to default location
+variance identity recover
+
+# You'll be prompted to enter your 12 words:
+# > witch collapse practice feed shame open despair creek road again ice least
+```
+
+**When to use:**
+- Lost your `.variance/identity.json` file
+- Setting up on a new device
+- Restoring from backup
+
+**Important:**
+- Enter your 12 words in the correct order
+- The recovered DID will match your original DID
+- The signing keys will be identical to the original
 
 #### Show Identity
 
@@ -276,3 +320,21 @@ ipfs daemon
 ```
 
 Or update `config.toml` with the correct IPFS API endpoint.
+
+### Lost Identity File
+
+If you lost your `.variance/identity.json` file but have your 12-word recovery phrase:
+
+```bash
+variance identity recover
+```
+
+Enter your 12 words when prompted. Your identity will be fully restored with the same DID.
+
+### Invalid Recovery Phrase
+
+If you get "Invalid mnemonic phrase" when recovering:
+1. Check that you have exactly 12 words
+2. Verify the words are spelled correctly
+3. Ensure they're in the correct order
+4. Make sure there are no extra spaces or punctuation

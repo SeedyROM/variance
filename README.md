@@ -105,6 +105,7 @@ cargo build --release
 
 ```bash
 # Generate an identity first (saves to .variance/identity.json)
+# ⚠️ IMPORTANT: Write down the 12-word recovery phrase shown!
 cargo run --bin variance -- identity generate
 
 # Initialize configuration (optional)
@@ -112,6 +113,11 @@ cargo run --bin variance -- config init
 
 # Start the node (automatically loads identity from .variance/identity.json)
 cargo run --bin variance -- start
+```
+
+**Recovery:** If you lose your identity file, you can recover it using:
+```bash
+cargo run --bin variance -- identity recover
 ```
 
 For detailed CLI usage, see [docs/CLI-USAGE.md](docs/CLI-USAGE.md).
@@ -122,7 +128,8 @@ The `variance` CLI provides three main command groups:
 
 ### Identity Management
 ```bash
-variance identity generate  # Create new DID and signing key
+variance identity generate  # Create new DID with 12-word recovery phrase
+variance identity recover   # Recover identity from recovery phrase
 variance identity show      # Display identity information
 ```
 
