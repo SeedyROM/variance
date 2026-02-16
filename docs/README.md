@@ -11,6 +11,14 @@ This Rust implementation corrects critical architectural flaws from the Go desig
 - ✅ Protobuf for all P2P communication
 - ✅ Multi-layer caching (80%+ hit rate target)
 
+**Recent Progress (2026-02-15):**
+- ✅ Protocol handlers implemented (identity, offline messages, signaling)
+- ✅ Event channel system for application layer
+- ✅ Integration tests (36/36 passing)
+- ✅ Fixed circular dependencies in crate graph
+- 🚧 IPFS/IPNS integration (TODO)
+- 🚧 Call manager WebRTC stack (TODO)
+
 ## Documentation Index
 
 1. **[ARCHITECTURE-CORRECTIONS.md](./ARCHITECTURE-CORRECTIONS.md)** ⭐ **Start here**
@@ -22,11 +30,17 @@ This Rust implementation corrects critical architectural flaws from the Go desig
    - Workspace structure
    - Crate responsibilities
    - Key design patterns
+   - Event channel system (NEW)
 
 3. **[PROTOCOL-GUIDE.md](./PROTOCOL-GUIDE.md)**
    - Protobuf schemas explained
    - How data flows between components
    - IPC between Tauri app and P2P backend
+
+4. **[CHANGELOG.md](./CHANGELOG.md)** 🆕
+   - Recent implementation progress
+   - Protocol handlers & event system (2026-02-15)
+   - Breaking changes and migration guides
 
 ## Original Go Docs (Reference Only)
 

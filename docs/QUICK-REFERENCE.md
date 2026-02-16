@@ -12,10 +12,18 @@ variance/
 │   │   │   └── media.proto      # WebRTC signaling
 │   │   └── build.rs             # Codegen via prost-build
 │   │
-│   ├── variance-p2p/            # libp2p core (no app logic)
+│   ├── variance-p2p/            # libp2p core + protocol handlers
 │   │   ├── behaviour.rs         # NetworkBehaviour composite
-│   │   ├── node.rs              # Swarm management
-│   │   └── protocols.rs         # Custom protocol handlers
+│   │   ├── node.rs              # Swarm management + handler integration
+│   │   ├── events.rs            # Event channel system (NEW)
+│   │   ├── protocols/           # Protocol codecs (libp2p layer)
+│   │   │   ├── identity.rs      # Identity request/response codec
+│   │   │   ├── messaging.rs     # Offline message codec
+│   │   │   └── media.rs         # Signaling codec
+│   │   └── handlers/            # Business logic handlers (NEW)
+│   │       ├── identity.rs      # DID resolution handler
+│   │       ├── offline.rs       # Offline message relay handler
+│   │       └── signaling.rs     # WebRTC signaling handler
 │   │
 │   ├── variance-identity/       # DID & identity
 │   │   ├── did.rs               # DID generation, IPNS
@@ -53,14 +61,14 @@ variance/
 ```
 variance-cli
     └── variance-app
-            ├── variance-messaging
-            │   └── variance-identity
-            │       └── variance-p2p
-            │           └── variance-proto
-            ├── variance-media
-            │   └── variance-p2p
-            └── variance-identity
+            └── variance-p2p (protocols + handlers + events)
+                    ├── variance-identity (business logic)
+                    ├── variance-messaging (business logic)
+                    ├── variance-media (business logic)
+                    └── variance-proto (schemas)
 ```
+
+**Note:** The dependency flow was recently corrected. Business logic crates (`variance-identity`, `variance-messaging`, `variance-media`) no longer depend on `variance-p2p`. Instead, `variance-p2p` depends on them to wire up protocol handlers.
 
 ## Key Design Patterns
 
@@ -138,7 +146,74 @@ l2_cache.insert(key.clone(), identity.clone());
 Ok(identity)
 ```
 
-### 4. Custom libp2p Protocol
+### 4. Event Channel System (NEW)
+
+The P2P layer emits events through broadcast channels that the application layer can subscribe to:
+
+```rust
+use variance_p2p::{Node, IdentityEvent, OfflineMessageEvent, SignalingEvent};
+
+let node = Node::new(config)?;
+
+// Subscribe to identity events
+let mut identity_rx = node.events().subscribe_identity();
+
+// Subscribe to offline message events
+let mut offline_rx = node.events().subscribe_offline_messages();
+
+// Subscribe to signaling events
+let mut signaling_rx = node.events().subscribe_signaling();
+
+// Handle events in separate tasks
+tokio::spawn(async move {
+    while let Ok(event) = identity_rx.recv().await {
+        match event {
+            IdentityEvent::DidCached { did } => {
+                println!("Cached DID: {}", did);
+            }
+            IdentityEvent::ResponseReceived { peer, response } => {
+                println!("Got identity response from {}", peer);
+            }
+            _ => {}
+        }
+    }
+});
+
+tokio::spawn(async move {
+    while let Ok(event) = offline_rx.recv().await {
+        match event {
+            OfflineMessageEvent::MessagesReceived { messages, .. } => {
+                for envelope in messages {
+                    // Deliver to user
+                }
+            }
+            _ => {}
+        }
+    }
+});
+
+tokio::spawn(async move {
+    while let Ok(event) = signaling_rx.recv().await {
+        match event {
+            SignalingEvent::OfferReceived { call_id, message, .. } => {
+                // Handle incoming call
+            }
+            SignalingEvent::CallEnded { call_id, reason } => {
+                println!("Call {} ended: {}", call_id, reason);
+            }
+            _ => {}
+        }
+    }
+});
+```
+
+**Benefits:**
+- Clean separation: P2P layer emits events, app layer reacts
+- Multiple subscribers supported (broadcast channels)
+- Type-safe events with full context
+- No polling or manual event checking
+
+### 5. Custom libp2p Protocol
 
 ```rust
 use libp2p::request_response::{self, ProtocolSupport};
