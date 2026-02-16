@@ -257,7 +257,7 @@ RUST_LOG=variance=trace,libp2p=debug cargo run --bin variance -- start
 
 ## License
 
-MIT OR Apache-2.0
+AGPL-3.0 License. See [LICENSE](LICENSE) for details.
 
 ## Contributing
 
