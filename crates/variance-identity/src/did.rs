@@ -119,6 +119,43 @@ impl Did {
         self.document.updated_at = Utc::now().timestamp();
     }
 
+    /// Extract Ed25519 verifying key from DID document's authentication method
+    pub fn get_verifying_key(&self) -> Result<ed25519_dalek::VerifyingKey> {
+        let auth_method =
+            self.document
+                .authentication
+                .first()
+                .ok_or_else(|| Error::InvalidDid {
+                    did: format!("{}: No authentication method in DID document", self.id),
+                })?;
+
+        if auth_method.key_type != "Ed25519VerificationKey2020" {
+            return Err(Error::InvalidDid {
+                did: format!(
+                    "{}: Unsupported key type: {}. Expected Ed25519VerificationKey2020",
+                    self.id, auth_method.key_type
+                ),
+            });
+        }
+
+        // Extract 32-byte public key
+        let pub_key_bytes: &[u8; 32] = auth_method
+            .public_key_multibase
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::InvalidDid {
+                did: format!(
+                    "{}: Public key must be 32 bytes, got {}",
+                    self.id,
+                    auth_method.public_key_multibase.len()
+                ),
+            })?;
+
+        ed25519_dalek::VerifyingKey::from_bytes(pub_key_bytes).map_err(|e| Error::InvalidDid {
+            did: format!("{}: Invalid Ed25519 public key: {}", self.id, e),
+        })
+    }
+
     /// Convert to protobuf DIDDocument
     pub fn to_proto(&self) -> identity_proto::DidDocument {
         identity_proto::DidDocument {
@@ -253,5 +290,22 @@ mod tests {
 
         assert_eq!(did.id, recovered.id);
         assert_eq!(did.document.id, recovered.document.id);
+    }
+
+    #[test]
+    fn test_get_verifying_key() {
+        let peer_id = PeerId::random();
+        let did = Did::new(&peer_id).unwrap();
+
+        // Should successfully extract key
+        let verifying_key = did.get_verifying_key().unwrap();
+
+        // Verify it matches the original key
+        if let Some(signing_key) = &did.signing_key {
+            assert_eq!(
+                verifying_key.as_bytes(),
+                signing_key.verifying_key().as_bytes()
+            );
+        }
     }
 }

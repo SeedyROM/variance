@@ -1,4 +1,5 @@
 use crate::error::*;
+use crate::handlers::identity::IdentityHandler;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, warn};
@@ -15,6 +16,9 @@ pub struct SignalingHandler {
 
     /// Active calls (call_id -> peer_did)
     active_calls: Arc<RwLock<std::collections::HashMap<String, String>>>,
+
+    /// Identity handler for resolving DIDs and public keys
+    identity_handler: Arc<IdentityHandler>,
 }
 
 impl SignalingHandler {
@@ -22,10 +26,11 @@ impl SignalingHandler {
     ///
     /// Note: The media handler is optional at creation and should be set
     /// when the local DID and signing key are available.
-    pub fn new() -> Self {
+    pub fn new(identity_handler: Arc<IdentityHandler>) -> Self {
         Self {
             media_handler: Arc::new(RwLock::new(None)),
             active_calls: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            identity_handler,
         }
     }
 
@@ -48,16 +53,8 @@ impl SignalingHandler {
             message.call_id, peer_did
         );
 
-        // TODO: Verify message signature
-        // 1. Extract sender_did from message
-        // 2. Query identity system for sender's DID document
-        // 3. Get verification key from DID document
-        // 4. Verify message.signature using ed25519
-        // 5. Reject message if verification fails
-        // Security risk: Currently accepting unverified messages
-        // Verify signature if we have the sender's public key
-        // TODO: Fetch sender's public key from identity system
-        // For now, skip verification
+        // Verify signature before processing
+        self.verify_signature(&message).await?;
 
         match message.message {
             Some(signaling_message::Message::Offer(_)) => {
@@ -215,16 +212,52 @@ impl SignalingHandler {
         Ok(message)
     }
 
+    /// Verify signaling message signature
+    async fn verify_signature(&self, message: &SignalingMessage) -> Result<()> {
+        // Get sender's DID from cache
+        let did = self
+            .identity_handler
+            .get_cached_did(&message.sender_did)
+            .await
+            .ok_or_else(|| Error::Protocol {
+                message: format!(
+                    "Sender DID not found in cache: {}. Cannot verify signature.",
+                    message.sender_did
+                ),
+            })?;
+
+        // Extract verifying key from DID document
+        let verifying_key = did.get_verifying_key().map_err(|e| Error::Protocol {
+            message: format!("Failed to extract public key from DID: {}", e),
+        })?;
+
+        // Get media handler to verify signature
+        let media_handler_guard = self.media_handler.read().await;
+        let media_handler = media_handler_guard
+            .as_ref()
+            .ok_or_else(|| Error::Protocol {
+                message: "Media handler not initialized".to_string(),
+            })?;
+
+        // Verify signature
+        media_handler
+            .verify_message(message, &verifying_key)
+            .map_err(|e| Error::Protocol {
+                message: format!("Signature verification failed: {}", e),
+            })?;
+
+        debug!(
+            "Successfully verified signature for call {} from {}",
+            message.call_id, message.sender_did
+        );
+
+        Ok(())
+    }
+
     /// Get active calls
     pub async fn active_calls(&self) -> Vec<(String, String)> {
         let calls = self.active_calls.read().await;
         calls.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-    }
-}
-
-impl Default for SignalingHandler {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -233,18 +266,21 @@ mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
-    use variance_proto::media_proto::{CallType, Offer};
 
     #[tokio::test]
     async fn test_create_handler() {
-        let handler = SignalingHandler::new();
+        let peer_id = libp2p::PeerId::random();
+        let identity_handler = Arc::new(IdentityHandler::new(peer_id));
+        let handler = SignalingHandler::new(identity_handler);
         let calls = handler.active_calls().await;
         assert_eq!(calls.len(), 0);
     }
 
     #[tokio::test]
     async fn test_set_media_handler() {
-        let handler = SignalingHandler::new();
+        let peer_id = libp2p::PeerId::random();
+        let identity_handler = Arc::new(IdentityHandler::new(peer_id));
+        let handler = SignalingHandler::new(identity_handler);
 
         let signing_key = SigningKey::generate(&mut OsRng);
         let media_handler =
@@ -258,26 +294,37 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_offer() {
-        let handler = SignalingHandler::new();
+        let peer_id = libp2p::PeerId::random();
+        let identity_handler = Arc::new(IdentityHandler::new(peer_id));
+        let handler = SignalingHandler::new(identity_handler.clone());
+
+        // Create sender's DID and media handler
+        let sender_peer_id = libp2p::PeerId::random();
+        let sender_did = variance_identity::did::Did::new(&sender_peer_id).unwrap();
+        let sender_signing_key = sender_did.signing_key.clone().unwrap();
+        identity_handler
+            .cache_did(sender_did.clone())
+            .await
+            .unwrap();
+
+        let sender_handler = MediaSignalingHandler::new(sender_did.id.clone(), sender_signing_key);
 
         let signing_key = SigningKey::generate(&mut OsRng);
         let media_handler = MediaSignalingHandler::new("did:variance:bob".to_string(), signing_key);
         handler.set_media_handler(media_handler).await;
 
-        let offer = SignalingMessage {
-            call_id: "call123".to_string(),
-            sender_did: "did:variance:alice".to_string(),
-            recipient_did: "did:variance:bob".to_string(),
-            message: Some(signaling_message::Message::Offer(Offer {
-                sdp: "sdp_data".to_string(),
-                call_type: CallType::Audio.into(),
-            })),
-            timestamp: 0,
-            signature: vec![],
-        };
+        // Create and sign the offer
+        let offer = sender_handler
+            .send_offer(
+                "call123".to_string(),
+                "did:variance:bob".to_string(),
+                "sdp_data".to_string(),
+                variance_proto::media_proto::CallType::Audio,
+            )
+            .unwrap();
 
         let response = handler
-            .handle_message("did:variance:alice".to_string(), offer)
+            .handle_message(sender_did.id.clone(), offer)
             .await
             .unwrap();
 
@@ -294,7 +341,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_hangup() {
-        let handler = SignalingHandler::new();
+        let peer_id = libp2p::PeerId::random();
+        let identity_handler = Arc::new(IdentityHandler::new(peer_id));
+        let handler = SignalingHandler::new(identity_handler.clone());
+
+        // Create sender's DID and media handler
+        let sender_peer_id = libp2p::PeerId::random();
+        let sender_did = variance_identity::did::Did::new(&sender_peer_id).unwrap();
+        let sender_signing_key = sender_did.signing_key.clone().unwrap();
+        identity_handler
+            .cache_did(sender_did.clone())
+            .await
+            .unwrap();
+
+        let sender_handler = MediaSignalingHandler::new(sender_did.id.clone(), sender_signing_key);
 
         let signing_key = SigningKey::generate(&mut OsRng);
         let media_handler = MediaSignalingHandler::new("did:variance:bob".to_string(), signing_key);
@@ -303,26 +363,21 @@ mod tests {
         // First, simulate an active call
         {
             let mut calls = handler.active_calls.write().await;
-            calls.insert("call123".to_string(), "did:variance:alice".to_string());
+            calls.insert("call123".to_string(), sender_did.id.clone());
         }
 
-        // Send hangup
-        let hangup = SignalingMessage {
-            call_id: "call123".to_string(),
-            sender_did: "did:variance:alice".to_string(),
-            recipient_did: "did:variance:bob".to_string(),
-            message: Some(signaling_message::Message::Control(
-                variance_proto::media_proto::CallControl {
-                    r#type: CallControlType::Hangup.into(),
-                    reason: Some("User ended call".to_string()),
-                },
-            )),
-            timestamp: 0,
-            signature: vec![],
-        };
+        // Send hangup (create and sign properly)
+        let hangup = sender_handler
+            .send_control(
+                "call123".to_string(),
+                "did:variance:bob".to_string(),
+                CallControlType::Hangup,
+                Some("User ended call".to_string()),
+            )
+            .unwrap();
 
         handler
-            .handle_message("did:variance:alice".to_string(), hangup)
+            .handle_message(sender_did.id.clone(), hangup)
             .await
             .unwrap();
 

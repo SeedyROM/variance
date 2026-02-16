@@ -189,14 +189,6 @@ async fn end_call(
 
 // ===== Signaling Handlers =====
 
-// TODO: Integrate with P2P node for actual message transmission
-// Current implementation only creates local SignalingMessage structs
-// but doesn't send them over the network. Need to:
-// 1. Accept Arc<Node> or message sender in AppState
-// 2. Call node.send_signaling_message(peer_did, message)
-// 3. Handle network errors and retries
-// 4. Add request/response tracking for acknowledgments
-
 async fn send_offer(
     State(state): State<AppState>,
     Json(req): Json<SendOfferRequest>,
@@ -212,11 +204,26 @@ async fn send_offer(
         }
     };
 
-    state
+    // Create the signaling message
+    let message = state
         .signaling
-        .send_offer(req.call_id, req.recipient_did, req.sdp, call_type)
+        .send_offer(
+            req.call_id.clone(),
+            req.recipient_did.clone(),
+            req.sdp,
+            call_type,
+        )
         .map_err(|e| Error::App {
             message: e.to_string(),
+        })?;
+
+    // Send via P2P node
+    state
+        .node_handle
+        .send_signaling_message(req.recipient_did, message)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to send signaling message: {}", e),
         })?;
 
     Ok(Json(SignalingResponse {
@@ -229,11 +236,21 @@ async fn send_answer(
     State(state): State<AppState>,
     Json(req): Json<SendAnswerRequest>,
 ) -> Result<Json<SignalingResponse>> {
-    state
+    // Create the signaling message
+    let message = state
         .signaling
-        .send_answer(req.call_id, req.recipient_did, req.sdp)
+        .send_answer(req.call_id.clone(), req.recipient_did.clone(), req.sdp)
         .map_err(|e| Error::App {
             message: e.to_string(),
+        })?;
+
+    // Send via P2P node
+    state
+        .node_handle
+        .send_signaling_message(req.recipient_did, message)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to send signaling message: {}", e),
         })?;
 
     Ok(Json(SignalingResponse {
@@ -246,17 +263,27 @@ async fn send_ice_candidate(
     State(state): State<AppState>,
     Json(req): Json<SendIceCandidateRequest>,
 ) -> Result<Json<SignalingResponse>> {
-    state
+    // Create the signaling message
+    let message = state
         .signaling
         .send_ice_candidate(
-            req.call_id,
-            req.recipient_did,
+            req.call_id.clone(),
+            req.recipient_did.clone(),
             req.candidate,
             req.sdp_mid,
             req.sdp_m_line_index,
         )
         .map_err(|e| Error::App {
             message: e.to_string(),
+        })?;
+
+    // Send via P2P node
+    state
+        .node_handle
+        .send_signaling_message(req.recipient_did, message)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to send signaling message: {}", e),
         })?;
 
     Ok(Json(SignalingResponse {
@@ -281,11 +308,26 @@ async fn send_control(
         }
     };
 
-    state
+    // Create the signaling message
+    let message = state
         .signaling
-        .send_control(req.call_id, req.recipient_did, control_type, req.reason)
+        .send_control(
+            req.call_id.clone(),
+            req.recipient_did.clone(),
+            control_type,
+            req.reason,
+        )
         .map_err(|e| Error::App {
             message: e.to_string(),
+        })?;
+
+    // Send via P2P node
+    state
+        .node_handle
+        .send_signaling_message(req.recipient_did, message)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to send signaling message: {}", e),
         })?;
 
     Ok(Json(SignalingResponse {

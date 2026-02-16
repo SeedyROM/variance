@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 variance-app = { path = "../variance-app" }
+variance-p2p = { path = "../variance-p2p" }
 variance-proto = { path = "../variance-proto" }
 
 # CLI

@@ -58,18 +58,10 @@ impl OfflineMessageHandler {
             }
             Err(e) => {
                 error!("Failed to fetch offline messages: {}", e);
-                // TODO: Return proper error response instead of empty response
-                // Options:
-                // 1. Add error variant to OfflineMessageResponse protobuf
-                // 2. Use request/response error handling at protocol level
-                // 3. Define error codes in response metadata
-                // Current behavior silently returns empty, which is ambiguous
-                // (can't distinguish "no messages" from "storage error")
-                Ok(OfflineMessageResponse {
-                    messages: vec![],
-                    has_more: false,
-                    next_cursor: None,
-                })
+                Ok(variance_messaging::offline::create_error_response(
+                    "storage_error",
+                    &format!("Failed to fetch messages: {}", e),
+                ))
             }
         }
     }
@@ -112,6 +104,7 @@ mod tests {
 
         let response = handler.handle_request(request).await.unwrap();
 
+        assert!(response.error_code.is_none());
         assert_eq!(response.messages.len(), 0);
         assert!(!response.has_more);
     }
@@ -155,6 +148,7 @@ mod tests {
 
         let response = handler.handle_request(request).await.unwrap();
 
+        assert!(response.error_code.is_none());
         assert_eq!(response.messages.len(), 1);
         assert_eq!(response.messages[0].recipient_did, "did:variance:bob");
         assert!(!response.has_more);
@@ -203,6 +197,7 @@ mod tests {
 
         let response = handler.handle_request(request).await.unwrap();
 
+        assert!(response.error_code.is_none());
         assert_eq!(response.messages.len(), 2);
         assert!(response.has_more);
         assert!(response.next_cursor.is_some());

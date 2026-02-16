@@ -175,4 +175,8 @@ message OfflineMessageResponse {
   repeated OfflineMessageEnvelope messages = 1;
   bool has_more = 2;
   optional int64 next_cursor = 3;
+
+  // Error handling: if error_code is present, this is an error response
+  optional string error_code = 4;    // Error type: "storage_error", "invalid_request"
+  optional string error_message = 5; // Human-readable error details
 }

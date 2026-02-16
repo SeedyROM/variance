@@ -13,6 +13,7 @@ pub struct IdentityFile {
     pub did: String,
     pub signing_key: String,
     pub verifying_key: String,
+    pub signaling_key: String,
     pub created_at: String,
 }
 
@@ -22,14 +23,7 @@ pub struct IdentityFile {
 /// - Messaging handlers (direct, group, receipts, typing)
 /// - Media handlers (calls, signaling)
 /// - Storage
-///
-/// TODO: Integrate with P2P node for network communication
-/// Currently, AppState has all the business logic handlers but no
-/// connection to the libp2p Node for actually sending messages.
-/// Need to add:
-/// - Arc<Node> or message sender channels
-/// - Event subscription and routing to handlers
-/// - Message delivery coordination between handlers and network
+/// - P2P node handle for network communication
 #[derive(Clone)]
 pub struct AppState {
     /// Direct messaging handler
@@ -58,6 +52,9 @@ pub struct AppState {
 
     /// Local DID
     pub local_did: String,
+
+    /// P2P node handle for sending messages over the network
+    pub node_handle: variance_p2p::NodeHandle,
 }
 
 impl AppState {
@@ -73,7 +70,11 @@ impl AppState {
     }
 
     /// Create a new application state from identity file
-    pub fn from_identity_file(identity_path: &Path, db_path: &str) -> anyhow::Result<Self> {
+    pub fn from_identity_file(
+        identity_path: &Path,
+        db_path: &str,
+        node_handle: variance_p2p::NodeHandle,
+    ) -> anyhow::Result<Self> {
         let identity = Self::load_identity(identity_path)?;
 
         // Parse signing key from hex
@@ -86,8 +87,15 @@ impl AppState {
                 .map_err(|_| anyhow::anyhow!("Invalid signing key length"))?,
         );
 
-        // For now, generate a separate signaling key (in the future, this might also be stored)
-        let signaling_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+        // Parse signaling key from hex
+        let signaling_key_bytes = hex::decode(&identity.signaling_key)
+            .map_err(|e| anyhow::anyhow!("Invalid signaling key format: {}", e))?;
+
+        let signaling_key = ed25519_dalek::SigningKey::from_bytes(
+            &signaling_key_bytes
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Invalid signaling key length"))?,
+        );
 
         let storage = Arc::new(LocalMessageStorage::new(db_path)?);
 
@@ -116,6 +124,7 @@ impl AppState {
             signaling: Arc::new(SignalingHandler::new(identity.did.clone(), signaling_key)),
             storage,
             local_did: identity.did,
+            node_handle,
         })
     }
 
@@ -123,6 +132,43 @@ impl AppState {
     #[cfg(test)]
     pub fn new(local_did: String) -> Self {
         Self::with_db_path(local_did, ".variance/messages.db")
+    }
+
+    /// Create a test NodeHandle for testing
+    #[cfg(test)]
+    fn test_node_handle() -> variance_p2p::NodeHandle {
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(100);
+
+        // Spawn a background task to receive and respond to commands
+        tokio::spawn(async move {
+            while let Some(command) = command_rx.recv().await {
+                // Respond to all commands with success
+                match command {
+                    variance_p2p::NodeCommand::SendIdentityRequest { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(
+                            variance_proto::identity_proto::IdentityResponse {
+                                result: None,
+                                timestamp: 0,
+                            },
+                        ));
+                    }
+                    variance_p2p::NodeCommand::SendSignalingMessage { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    variance_p2p::NodeCommand::PublishGroupMessage { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    variance_p2p::NodeCommand::SubscribeToTopic { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    variance_p2p::NodeCommand::UnsubscribeFromTopic { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                }
+            }
+        });
+
+        variance_p2p::NodeHandle::new(command_tx)
     }
 
     /// Create a new application state with a custom database path (for testing only)
@@ -154,6 +200,7 @@ impl AppState {
             signaling: Arc::new(SignalingHandler::new(local_did.clone(), signaling_key)),
             storage,
             local_did,
+            node_handle: Self::test_node_handle(),
         }
     }
 }
@@ -163,8 +210,8 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    #[test]
-    fn test_create_state() {
+    #[tokio::test]
+    async fn test_create_state() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let state =
@@ -173,8 +220,8 @@ mod tests {
         assert_eq!(state.local_did, "did:variance:test");
     }
 
-    #[test]
-    fn test_state_clone() {
+    #[tokio::test]
+    async fn test_state_clone() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let state =
@@ -184,8 +231,8 @@ mod tests {
         assert_eq!(state.local_did, cloned.local_did);
     }
 
-    #[test]
-    fn test_state_components() {
+    #[tokio::test]
+    async fn test_state_components() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let state =

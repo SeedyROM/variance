@@ -14,7 +14,7 @@ async fn create_test_node() -> (Node, tempfile::TempDir) {
         ..Default::default()
     };
 
-    let node = Node::new(config).unwrap();
+    let (node, _handle) = Node::new(config).unwrap();
     (node, dir)
 }
 

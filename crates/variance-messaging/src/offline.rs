@@ -104,6 +104,8 @@ impl OfflineRelayHandler {
             messages: actual_messages,
             has_more,
             next_cursor,
+            error_code: None,
+            error_message: None,
         })
     }
 
@@ -144,6 +146,17 @@ impl OfflineRelayHandler {
     /// Get TTL in milliseconds
     pub fn ttl_ms(&self) -> i64 {
         self.ttl_ms
+    }
+}
+
+/// Create error response
+pub fn create_error_response(error_code: &str, error_message: &str) -> OfflineMessageResponse {
+    OfflineMessageResponse {
+        messages: vec![],
+        has_more: false,
+        next_cursor: None,
+        error_code: Some(error_code.to_string()),
+        error_message: Some(error_message.to_string()),
     }
 }
 
@@ -248,6 +261,7 @@ mod tests {
 
         let response = handler.fetch_messages(request).await.unwrap();
 
+        assert!(response.error_code.is_none());
         assert_eq!(response.messages.len(), 1);
         assert_eq!(response.messages[0].recipient_did, "did:variance:bob");
         assert!(!response.has_more);
@@ -293,6 +307,7 @@ mod tests {
 
         let response = handler.fetch_messages(request).await.unwrap();
 
+        assert!(response.error_code.is_none());
         assert_eq!(response.messages.len(), 2);
         assert!(response.has_more);
         assert!(response.next_cursor.is_some());
@@ -359,6 +374,7 @@ mod tests {
 
         let response = handler.fetch_messages(request).await.unwrap();
 
+        assert!(response.error_code.is_none());
         assert_eq!(response.messages.len(), 1);
 
         // Verify it's the later message by checking the inner message timestamp
@@ -410,6 +426,7 @@ mod tests {
         };
 
         let response = handler.fetch_messages(request.clone()).await.unwrap();
+        assert!(response.error_code.is_none());
         assert_eq!(response.messages.len(), 1);
 
         // Delete message
@@ -417,6 +434,7 @@ mod tests {
 
         // Fetch again - should be empty
         let response = handler.fetch_messages(request).await.unwrap();
+        assert!(response.error_code.is_none());
         assert_eq!(response.messages.len(), 0);
     }
 
@@ -464,6 +482,7 @@ mod tests {
         };
 
         let response = handler.fetch_messages(request).await.unwrap();
+        assert!(response.error_code.is_none());
         assert_eq!(response.messages.len(), 0);
     }
 

@@ -133,6 +133,12 @@ impl IdentityHandler {
         Ok(())
     }
 
+    /// Get a DID from cache
+    pub async fn get_cached_did(&self, did_or_username: &str) -> Option<Did> {
+        let cache = self.cache.read().await;
+        cache.get(did_or_username).cloned()
+    }
+
     /// Get the local peer ID
     pub fn peer_id(&self) -> &PeerId {
         &self.peer_id

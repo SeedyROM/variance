@@ -4202,6 +4202,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "variance-app",
+ "variance-p2p",
  "variance-proto",
 ]
 

@@ -1,14 +1,20 @@
-use crate::{behaviour::VarianceBehaviour, config::Config, error::*, events::*, handlers};
+use crate::{
+    behaviour::VarianceBehaviour, commands::*, config::Config, error::*, events::*, handlers,
+};
 use futures::StreamExt;
 use libp2p::swarm::SwarmEvent;
 use libp2p::{
     gossipsub, identify, kad, mdns, noise, ping, tcp, yamux, PeerId, Swarm, SwarmBuilder,
 };
+use prost::Message;
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
+use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
+use variance_proto::identity_proto::IdentityResponse;
 
 pub struct Node {
     swarm: Swarm<VarianceBehaviour>,
@@ -17,14 +23,26 @@ pub struct Node {
     offline_handler: Arc<handlers::offline::OfflineMessageHandler>,
     signaling_handler: Arc<handlers::signaling::SignalingHandler>,
     events: EventChannels,
+    command_rx: tokio::sync::mpsc::Receiver<NodeCommand>,
+    /// Pending identity requests awaiting responses
+    pending_identity_requests: HashMap<
+        libp2p::request_response::OutboundRequestId,
+        oneshot::Sender<Result<IdentityResponse>>,
+    >,
+    /// DID to PeerId mapping for routing signaling messages
+    did_to_peer: Arc<tokio::sync::RwLock<HashMap<String, PeerId>>>,
 }
 
 impl Node {
-    pub fn new(config: Config) -> Result<Self> {
+    /// Create a new P2P node and return both the node and a handle for sending commands
+    pub fn new(config: Config) -> Result<(Self, NodeHandle)> {
         let keypair = libp2p::identity::Keypair::generate_ed25519();
         let peer_id = keypair.public().to_peer_id();
 
         info!("Creating P2P node with peer ID: {}", peer_id);
+
+        // Create command channel for application layer to send commands to the node
+        let (command_tx, command_rx) = tokio::sync::mpsc::channel(100);
 
         // Build Kademlia DHT
         let mut kad_config = kad::Config::default();
@@ -121,18 +139,27 @@ impl Node {
             )?,
         );
 
-        let signaling_handler = Arc::new(handlers::signaling::SignalingHandler::new());
+        let signaling_handler = Arc::new(handlers::signaling::SignalingHandler::new(
+            identity_handler.clone(),
+        ));
 
         let events = EventChannels::default();
 
-        Ok(Node {
+        let node = Node {
             swarm,
             peer_id,
             identity_handler,
             offline_handler,
             signaling_handler,
             events,
-        })
+            command_rx,
+            pending_identity_requests: HashMap::new(),
+            did_to_peer: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        };
+
+        let handle = NodeHandle::new(command_tx);
+
+        Ok((node, handle))
     }
 
     pub fn peer_id(&self) -> &PeerId {
@@ -143,16 +170,6 @@ impl Node {
     pub fn events(&self) -> &EventChannels {
         &self.events
     }
-
-    // TODO: Add methods for sending messages from application layer
-    // pub async fn send_identity_request(&mut self, peer: PeerId, request: IdentityRequest) -> Result<IdentityResponse>
-    // pub async fn send_signaling_message(&mut self, peer_did: String, message: SignalingMessage) -> Result<()>
-    // pub async fn send_direct_message(&mut self, message: DirectMessage) -> Result<()>
-    // pub async fn publish_group_message(&mut self, group_id: String, message: GroupMessage) -> Result<()>
-    //
-    // These are needed to connect the HTTP API layer to the P2P network.
-    // Currently, handlers process incoming requests but there's no way
-    // for the application to initiate outbound communication.
 
     pub async fn listen(&mut self, config: &Config) -> Result<()> {
         for addr in &config.listen_addresses {
@@ -205,6 +222,9 @@ impl Node {
                 event = self.swarm.select_next_some() => {
                     self.handle_event(event).await;
                 }
+                Some(command) = self.command_rx.recv() => {
+                    self.handle_command(command).await;
+                }
                 _ = shutdown.recv() => {
                     info!("Shutdown signal received");
                     break;
@@ -213,6 +233,113 @@ impl Node {
         }
 
         Ok(())
+    }
+
+    /// Handle a command from the application layer
+    async fn handle_command(&mut self, command: NodeCommand) {
+        match command {
+            NodeCommand::SendIdentityRequest {
+                peer,
+                request,
+                response_tx,
+            } => {
+                debug!("Sending identity request to {}", peer);
+                let request_id = self
+                    .swarm
+                    .behaviour_mut()
+                    .identity
+                    .send_request(&peer, request);
+                self.pending_identity_requests
+                    .insert(request_id, response_tx);
+            }
+            NodeCommand::SendSignalingMessage {
+                peer_did,
+                message,
+                response_tx,
+            } => {
+                // Look up peer ID from DID
+                let did_to_peer = self.did_to_peer.read().await;
+                if let Some(peer) = did_to_peer.get(&peer_did) {
+                    debug!("Sending signaling message to {} ({})", peer_did, peer);
+                    self.swarm
+                        .behaviour_mut()
+                        .signaling
+                        .send_request(peer, message);
+                    let _ = response_tx.send(Ok(()));
+                } else {
+                    warn!(
+                        "Cannot send signaling message: unknown peer DID {}",
+                        peer_did
+                    );
+                    let _ = response_tx.send(Err(Error::Protocol {
+                        message: format!("Unknown peer DID: {}", peer_did),
+                    }));
+                }
+            }
+            NodeCommand::PublishGroupMessage {
+                topic,
+                message,
+                response_tx,
+            } => {
+                debug!("Publishing group message to topic {}", topic);
+
+                let topic_hash = gossipsub::IdentTopic::new(&topic);
+                let encoded = message.encode_to_vec();
+
+                match self
+                    .swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .publish(topic_hash, encoded)
+                {
+                    Ok(_) => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    Err(e) => {
+                        warn!("Failed to publish group message: {}", e);
+                        let _ = response_tx.send(Err(Error::Gossipsub {
+                            message: e.to_string(),
+                        }));
+                    }
+                }
+            }
+            NodeCommand::SubscribeToTopic { topic, response_tx } => {
+                debug!("Subscribing to topic {}", topic);
+
+                let topic_hash = gossipsub::IdentTopic::new(&topic);
+
+                match self.swarm.behaviour_mut().gossipsub.subscribe(&topic_hash) {
+                    Ok(_) => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    Err(e) => {
+                        warn!("Failed to subscribe to topic {}: {}", topic, e);
+                        let _ = response_tx.send(Err(Error::Gossipsub {
+                            message: e.to_string(),
+                        }));
+                    }
+                }
+            }
+            NodeCommand::UnsubscribeFromTopic { topic, response_tx } => {
+                debug!("Unsubscribing from topic {}", topic);
+
+                let topic_hash = gossipsub::IdentTopic::new(&topic);
+
+                if self
+                    .swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .unsubscribe(&topic_hash)
+                {
+                    let _ = response_tx.send(Ok(()));
+                } else {
+                    warn!("Failed to unsubscribe from topic {}: not subscribed", topic);
+                    let _ = response_tx.send(Err(Error::Gossipsub {
+                        message: format!("Not subscribed to topic: {}", topic),
+                    }));
+                }
+            }
+        }
     }
 
     async fn handle_event(&mut self, event: SwarmEvent<crate::behaviour::VarianceBehaviourEvent>) {
@@ -330,13 +457,19 @@ impl Node {
                                     request_id, peer, response
                                 );
 
+                                // Complete pending request if exists
+                                if let Some(tx) = self.pending_identity_requests.remove(&request_id)
+                                {
+                                    let _ = tx.send(Ok(response.clone()));
+                                }
+
                                 // Send event
                                 self.events.send_identity(IdentityEvent::ResponseReceived {
                                     peer,
                                     response: response.clone(),
                                 });
 
-                                // Process response (e.g., cache the DID)
+                                // Process response (e.g., cache the DID and update DID->PeerId mapping)
                                 if let Some(variance_proto::identity_proto::identity_response::Result::Found(
                                     found,
                                 )) = response.result
@@ -345,8 +478,13 @@ impl Node {
                                         let handler = self.identity_handler.clone();
                                         let events = self.events.clone();
                                         let did_id = did_doc.id.clone();
+                                        let did_to_peer = self.did_to_peer.clone();
+                                        let peer_id = peer;
                                         tokio::spawn(async move {
                                             if let Ok(did) = variance_identity::did::Did::from_proto(did_doc) {
+                                                // Update DID->PeerId mapping
+                                                did_to_peer.write().await.insert(did_id.clone(), peer_id);
+
                                                 if handler.cache_did(did).await.is_ok() {
                                                     events.send_identity(IdentityEvent::DidCached { did: did_id });
                                                 }
@@ -413,9 +551,14 @@ impl Node {
                                 match futures::executor::block_on(handler.handle_request(request)) {
                                     Ok(response) => {
                                         debug!(
-                                            "Sending {} offline messages in response {:?}",
+                                            "Sending {} offline messages in response {:?}{}",
                                             response.messages.len(),
-                                            request_id
+                                            request_id,
+                                            if response.error_code.is_some() {
+                                                " (error)"
+                                            } else {
+                                                ""
+                                            }
                                         );
                                         let _ = self
                                             .swarm
@@ -432,14 +575,24 @@ impl Node {
                                 request_id,
                                 response,
                             } => {
-                                debug!(
-                                    "Received {} offline messages in response {:?} from {}",
-                                    response.messages.len(),
-                                    request_id,
-                                    peer
-                                );
+                                if let Some(ref error_code) = response.error_code {
+                                    warn!(
+                                        "Received error in offline message response {:?} from {}: {} - {}",
+                                        request_id,
+                                        peer,
+                                        error_code,
+                                        response.error_message.as_deref().unwrap_or("no details")
+                                    );
+                                } else {
+                                    debug!(
+                                        "Received {} offline messages in response {:?} from {}",
+                                        response.messages.len(),
+                                        request_id,
+                                        peer
+                                    );
+                                }
 
-                                // Send event with all received messages
+                                // Send event with all received messages (empty if error)
                                 self.events.send_offline_message(
                                     OfflineMessageEvent::MessagesReceived {
                                         peer,
@@ -687,7 +840,7 @@ mod tests {
             ..Default::default()
         };
 
-        let node = Node::new(config).unwrap();
+        let (node, _handle) = Node::new(config).unwrap();
         assert!(!node.peer_id().to_string().is_empty());
     }
 
@@ -699,7 +852,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut node = Node::new(config.clone()).unwrap();
+        let (mut node, _handle) = Node::new(config.clone()).unwrap();
         node.listen(&config).await.unwrap();
     }
 }

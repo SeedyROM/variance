@@ -183,9 +183,63 @@ async fn start_node(
     }
 
     tracing::info!("Loading identity from: {}", identity_path.display());
+
+    // Create P2P node configuration
+    let mut listen_addresses = Vec::new();
+    for addr_str in &config.p2p.listen_addrs {
+        listen_addresses.push(
+            addr_str
+                .parse()
+                .with_context(|| format!("Invalid listen address: {}", addr_str))?,
+        );
+    }
+
+    let mut bootstrap_peers = Vec::new();
+    for peer_str in &config.p2p.bootstrap_peers {
+        let parts: Vec<&str> = peer_str.split('@').collect();
+        if parts.len() == 2 {
+            bootstrap_peers.push(variance_p2p::BootstrapPeer {
+                peer_id: parts[0].to_string(),
+                multiaddr: parts[1]
+                    .parse()
+                    .with_context(|| format!("Invalid bootstrap peer address: {}", parts[1]))?,
+            });
+        } else {
+            tracing::warn!("Skipping invalid bootstrap peer format: {}", peer_str);
+        }
+    }
+
+    let p2p_config = variance_p2p::Config {
+        listen_addresses,
+        bootstrap_peers,
+        enable_mdns: true,
+        storage_path: config.storage.base_dir.clone(),
+        ..Default::default()
+    };
+
+    // Create P2P node and get handle
+    tracing::info!("Initializing P2P node...");
+    let (mut node, node_handle) = variance_p2p::Node::new(p2p_config.clone())?;
+
+    // Spawn node in background task
+    let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let node_task = tokio::spawn(async move {
+        // Start listening on configured addresses
+        if let Err(e) = node.listen(&p2p_config).await {
+            tracing::error!("Failed to start listening: {}", e);
+            return Err(e);
+        }
+        // Run event loop
+        node.run(shutdown_rx).await
+    });
+
+    tracing::info!("P2P node running, creating application state...");
+
+    // Create app state with the node handle
     let state = AppState::from_identity_file(
         identity_path,
         config.storage.message_db_path.to_str().unwrap(),
+        node_handle,
     )?;
 
     tracing::info!("Local DID: {}", state.local_did);
@@ -203,10 +257,23 @@ async fn start_node(
     tracing::info!("  Press Ctrl+C to shutdown");
 
     // Start HTTP server with graceful shutdown
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("HTTP server error")?;
+    tokio::select! {
+        result = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()) => {
+            result.context("HTTP server error")?;
+        }
+    }
+
+    // Shutdown P2P node
+    tracing::info!("Shutting down P2P node...");
+    let _ = shutdown_tx.send(()).await;
+
+    // Wait for node to finish with timeout
+    match tokio::time::timeout(std::time::Duration::from_secs(5), node_task).await {
+        Ok(Ok(Ok(_))) => tracing::info!("P2P node shut down successfully"),
+        Ok(Ok(Err(e))) => tracing::error!("P2P node error during shutdown: {}", e),
+        Ok(Err(e)) => tracing::error!("P2P node task panicked: {}", e),
+        Err(_) => tracing::warn!("P2P node shutdown timed out"),
+    }
 
     tracing::info!("Variance node shut down gracefully");
 
@@ -317,6 +384,9 @@ fn generate_identity(output: String, force: bool) -> Result<()> {
     let signing_key = derive_signing_key_from_mnemonic(&mnemonic);
     let verifying_key = signing_key.verifying_key();
 
+    // Generate signaling key (separate from identity signing key)
+    let signaling_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+
     // Create DID from verifying key
     let did = create_did_from_verifying_key(&verifying_key);
 
@@ -325,6 +395,7 @@ fn generate_identity(output: String, force: bool) -> Result<()> {
         "did": did,
         "signing_key": hex::encode(signing_key.to_bytes()),
         "verifying_key": hex::encode(verifying_key.to_bytes()),
+        "signaling_key": hex::encode(signaling_key.to_bytes()),
         "created_at": chrono::Utc::now().to_rfc3339(),
     });
 
@@ -425,6 +496,9 @@ fn recover_identity(output: String, force: bool) -> Result<()> {
     let signing_key = derive_signing_key_from_mnemonic(&mnemonic);
     let verifying_key = signing_key.verifying_key();
 
+    // Generate new signaling key (not recoverable from mnemonic)
+    let signaling_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+
     // Create DID from verifying key
     let did = create_did_from_verifying_key(&verifying_key);
 
@@ -433,6 +507,7 @@ fn recover_identity(output: String, force: bool) -> Result<()> {
         "did": did,
         "signing_key": hex::encode(signing_key.to_bytes()),
         "verifying_key": hex::encode(verifying_key.to_bytes()),
+        "signaling_key": hex::encode(signaling_key.to_bytes()),
         "created_at": chrono::Utc::now().to_rfc3339(),
     });
 
