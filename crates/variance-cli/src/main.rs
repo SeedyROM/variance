@@ -574,7 +574,7 @@ mod tests {
 
         // Simulate recovery by parsing the same mnemonic
         let recovered_mnemonic =
-            Mnemonic::parse_in(Language::English, &mnemonic.to_string()).unwrap();
+            Mnemonic::parse_in(Language::English, mnemonic.to_string()).unwrap();
         let recovered_key = derive_signing_key_from_mnemonic(&recovered_mnemonic);
         let recovered_did = create_did_from_verifying_key(&recovered_key.verifying_key());
 

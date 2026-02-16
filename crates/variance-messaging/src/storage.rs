@@ -114,7 +114,7 @@ impl LocalMessageStorage {
 
     /// Generate conversation ID from two DIDs (sorted for consistency)
     fn conversation_id(did1: &str, did2: &str) -> String {
-        let mut dids = vec![did1, did2];
+        let mut dids = [did1, did2];
         dids.sort();
         format!("{}:{}", dids[0], dids[1])
     }

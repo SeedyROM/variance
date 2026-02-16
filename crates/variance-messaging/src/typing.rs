@@ -86,7 +86,7 @@ impl TypingHandler {
             // Add or update typing state
             self.typing_states
                 .entry(key.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .retain(|(did, _)| did != &indicator.sender_did);
 
             self.typing_states
