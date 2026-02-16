@@ -8,6 +8,7 @@
 pub mod call;
 pub mod config;
 pub mod error;
+pub mod protocol;
 pub mod signaling;
 
 pub use call::{Call, CallManager};

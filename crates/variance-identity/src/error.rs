@@ -41,7 +41,4 @@ pub enum Error {
 
     #[snafu(display("Crypto error: {message}"))]
     Crypto { message: String },
-
-    #[snafu(display("P2P error: {source}"))]
-    P2p { source: variance_p2p::Error },
 }

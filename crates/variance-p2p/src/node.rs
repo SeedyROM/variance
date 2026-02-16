@@ -1,10 +1,11 @@
-use crate::{behaviour::VarianceBehaviour, config::Config, error::*};
+use crate::{behaviour::VarianceBehaviour, config::Config, error::*, events::*, handlers};
 use futures::StreamExt;
 use libp2p::{
     gossipsub, identify, kad, mdns, noise, ping, tcp, yamux, PeerId, Swarm, SwarmBuilder,
 };
 use libp2p::swarm::SwarmEvent;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
 use tracing::{debug, info, warn};
@@ -12,6 +13,10 @@ use tracing::{debug, info, warn};
 pub struct Node {
     swarm: Swarm<VarianceBehaviour>,
     peer_id: PeerId,
+    identity_handler: Arc<handlers::identity::IdentityHandler>,
+    offline_handler: Arc<handlers::offline::OfflineMessageHandler>,
+    signaling_handler: Arc<handlers::signaling::SignalingHandler>,
+    events: EventChannels,
 }
 
 impl Node {
@@ -69,6 +74,11 @@ impl Node {
         // Build Ping
         let ping = ping::Behaviour::new(ping::Config::new());
 
+        // Build custom protocols
+        let identity = crate::protocols::identity::create_identity_behaviour();
+        let offline_messages = crate::protocols::messaging::create_offline_message_behaviour();
+        let signaling = crate::protocols::media::create_signaling_behaviour();
+
         // Combine into VarianceBehaviour
         let behaviour = VarianceBehaviour {
             kad,
@@ -76,6 +86,9 @@ impl Node {
             mdns,
             identify,
             ping,
+            identity,
+            offline_messages,
+            signaling,
         };
 
         // Build Swarm
@@ -97,11 +110,37 @@ impl Node {
             .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
             .build();
 
-        Ok(Node { swarm, peer_id })
+        // Initialize protocol handlers
+        let identity_handler = Arc::new(handlers::identity::IdentityHandler::new(peer_id));
+
+        let offline_handler = Arc::new(
+            handlers::offline::OfflineMessageHandler::with_local_storage(
+                peer_id.to_string(),
+                &config.storage_path.join("messages"),
+            )?,
+        );
+
+        let signaling_handler = Arc::new(handlers::signaling::SignalingHandler::new());
+
+        let events = EventChannels::default();
+
+        Ok(Node {
+            swarm,
+            peer_id,
+            identity_handler,
+            offline_handler,
+            signaling_handler,
+            events,
+        })
     }
 
     pub fn peer_id(&self) -> &PeerId {
         &self.peer_id
+    }
+
+    /// Get event channels for subscribing to protocol events
+    pub fn events(&self) -> &EventChannels {
+        &self.events
     }
 
     pub async fn listen(&mut self, config: &Config) -> Result<()> {
@@ -223,6 +262,329 @@ impl Node {
                         warn!("Ping to {} failed: {}", peer, e);
                     }
                 },
+                crate::behaviour::VarianceBehaviourEvent::Identity(identity_event) => {
+                    use libp2p::request_response::{Event, Message};
+                    match identity_event {
+                        Event::Message { peer, message, .. } => match message {
+                            Message::Request {
+                                request_id,
+                                request,
+                                channel,
+                            } => {
+                                debug!(
+                                    "Received identity request {:?} from {}: {:?}",
+                                    request_id, peer, request
+                                );
+
+                                // Send event
+                                self.events.send_identity(IdentityEvent::RequestReceived {
+                                    peer,
+                                    request: request.clone(),
+                                });
+
+                                // Handle request and send response
+                                let handler = self.identity_handler.clone();
+                                match futures::executor::block_on(handler.handle_request(request)) {
+                                    Ok(response) => {
+                                        debug!("Sending identity response for {:?}", request_id);
+                                        let _ = self
+                                            .swarm
+                                            .behaviour_mut()
+                                            .identity
+                                            .send_response(channel, response);
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to handle identity request: {}", e);
+                                    }
+                                }
+                            }
+                            Message::Response {
+                                request_id,
+                                response,
+                            } => {
+                                debug!(
+                                    "Received identity response {:?} from {}: {:?}",
+                                    request_id, peer, response
+                                );
+
+                                // Send event
+                                self.events.send_identity(IdentityEvent::ResponseReceived {
+                                    peer,
+                                    response: response.clone(),
+                                });
+
+                                // Process response (e.g., cache the DID)
+                                if let Some(variance_proto::identity_proto::identity_response::Result::Found(
+                                    found,
+                                )) = response.result
+                                {
+                                    if let Some(did_doc) = found.did_document {
+                                        let handler = self.identity_handler.clone();
+                                        let events = self.events.clone();
+                                        let did_id = did_doc.id.clone();
+                                        tokio::spawn(async move {
+                                            if let Ok(did) = variance_identity::did::Did::from_proto(did_doc) {
+                                                if handler.cache_did(did).await.is_ok() {
+                                                    events.send_identity(IdentityEvent::DidCached { did: did_id });
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+                        },
+                        Event::OutboundFailure {
+                            peer,
+                            request_id,
+                            error,
+                            ..
+                        } => {
+                            warn!(
+                                "Identity request {:?} to {} failed: {}",
+                                request_id, peer, error
+                            );
+                        }
+                        Event::InboundFailure {
+                            peer,
+                            request_id,
+                            error,
+                            ..
+                        } => {
+                            warn!(
+                                "Identity request {:?} from {} failed: {}",
+                                request_id, peer, error
+                            );
+                        }
+                        Event::ResponseSent { peer, request_id, .. } => {
+                            debug!("Identity response {:?} sent to {}", request_id, peer);
+                        }
+                    }
+                }
+                crate::behaviour::VarianceBehaviourEvent::OfflineMessages(offline_event) => {
+                    use libp2p::request_response::{Event, Message};
+                    match offline_event {
+                        Event::Message { peer, message, .. } => match message {
+                            Message::Request {
+                                request_id,
+                                request,
+                                channel,
+                            } => {
+                                debug!(
+                                    "Received offline message request {:?} from {}: {} messages since {:?}",
+                                    request_id, peer, request.limit, request.since_timestamp
+                                );
+
+                                // Send event
+                                self.events.send_offline_message(OfflineMessageEvent::FetchRequested {
+                                    peer,
+                                    did: request.did.clone(),
+                                    limit: request.limit,
+                                });
+
+                                // Handle request and send response
+                                let handler = self.offline_handler.clone();
+                                match futures::executor::block_on(handler.handle_request(request)) {
+                                    Ok(response) => {
+                                        debug!(
+                                            "Sending {} offline messages in response {:?}",
+                                            response.messages.len(),
+                                            request_id
+                                        );
+                                        let _ = self
+                                            .swarm
+                                            .behaviour_mut()
+                                            .offline_messages
+                                            .send_response(channel, response);
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to handle offline message request: {}", e);
+                                    }
+                                }
+                            }
+                            Message::Response {
+                                request_id,
+                                response,
+                            } => {
+                                debug!(
+                                    "Received {} offline messages in response {:?} from {}",
+                                    response.messages.len(),
+                                    request_id,
+                                    peer
+                                );
+
+                                // Send event with all received messages
+                                self.events.send_offline_message(OfflineMessageEvent::MessagesReceived {
+                                    peer,
+                                    messages: response.messages,
+                                    has_more: response.has_more,
+                                });
+                            }
+                        },
+                        Event::OutboundFailure {
+                            peer,
+                            request_id,
+                            error,
+                            ..
+                        } => {
+                            warn!(
+                                "Offline message request {:?} to {} failed: {}",
+                                request_id, peer, error
+                            );
+                        }
+                        Event::InboundFailure {
+                            peer,
+                            request_id,
+                            error,
+                            ..
+                        } => {
+                            warn!(
+                                "Offline message request {:?} from {} failed: {}",
+                                request_id, peer, error
+                            );
+                        }
+                        Event::ResponseSent { peer, request_id, .. } => {
+                            debug!("Offline message response {:?} sent to {}", request_id, peer);
+                        }
+                    }
+                }
+                crate::behaviour::VarianceBehaviourEvent::Signaling(signaling_event) => {
+                    use libp2p::request_response::{Event, Message};
+                    use variance_proto::media_proto::signaling_message;
+
+                    match signaling_event {
+                        Event::Message { peer, message, .. } => match message {
+                            Message::Request {
+                                request_id,
+                                request,
+                                channel,
+                            } => {
+                                debug!(
+                                    "Received WebRTC signaling request {:?} from {} for call {}",
+                                    request_id, peer, request.call_id
+                                );
+
+                                // Send appropriate event based on message type
+                                match &request.message {
+                                    Some(signaling_message::Message::Offer(_)) => {
+                                        self.events.send_signaling(SignalingEvent::OfferReceived {
+                                            peer,
+                                            call_id: request.call_id.clone(),
+                                            message: request.clone(),
+                                        });
+                                    }
+                                    Some(signaling_message::Message::Answer(_)) => {
+                                        self.events.send_signaling(SignalingEvent::AnswerReceived {
+                                            peer,
+                                            call_id: request.call_id.clone(),
+                                            message: request.clone(),
+                                        });
+                                    }
+                                    Some(signaling_message::Message::IceCandidate(_)) => {
+                                        self.events.send_signaling(SignalingEvent::IceCandidateReceived {
+                                            peer,
+                                            call_id: request.call_id.clone(),
+                                            message: request.clone(),
+                                        });
+                                    }
+                                    Some(signaling_message::Message::Control(_)) => {
+                                        self.events.send_signaling(SignalingEvent::ControlReceived {
+                                            peer,
+                                            call_id: request.call_id.clone(),
+                                            message: request.clone(),
+                                        });
+                                    }
+                                    None => {}
+                                }
+
+                                // Handle request and send response
+                                let handler = self.signaling_handler.clone();
+                                let peer_did = format!("did:peer:{}", peer); // Simplified - should look up actual DID
+                                match futures::executor::block_on(
+                                    handler.handle_message(peer_did, request)
+                                ) {
+                                    Ok(response) => {
+                                        debug!("Sending WebRTC signaling response for {:?}", request_id);
+                                        let _ = self
+                                            .swarm
+                                            .behaviour_mut()
+                                            .signaling
+                                            .send_response(channel, response);
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to handle signaling request: {}", e);
+                                    }
+                                }
+                            }
+                            Message::Response {
+                                request_id,
+                                response,
+                            } => {
+                                debug!(
+                                    "Received WebRTC signaling response {:?} from {} for call {}",
+                                    request_id, peer, response.call_id
+                                );
+
+                                // Send appropriate event based on message type
+                                match &response.message {
+                                    Some(signaling_message::Message::Offer(_)) => {
+                                        self.events.send_signaling(SignalingEvent::OfferReceived {
+                                            peer,
+                                            call_id: response.call_id.clone(),
+                                            message: response,
+                                        });
+                                    }
+                                    Some(signaling_message::Message::Answer(_)) => {
+                                        self.events.send_signaling(SignalingEvent::AnswerReceived {
+                                            peer,
+                                            call_id: response.call_id.clone(),
+                                            message: response,
+                                        });
+                                    }
+                                    Some(signaling_message::Message::IceCandidate(_)) => {
+                                        self.events.send_signaling(SignalingEvent::IceCandidateReceived {
+                                            peer,
+                                            call_id: response.call_id.clone(),
+                                            message: response,
+                                        });
+                                    }
+                                    Some(signaling_message::Message::Control(_)) => {
+                                        self.events.send_signaling(SignalingEvent::ControlReceived {
+                                            peer,
+                                            call_id: response.call_id.clone(),
+                                            message: response,
+                                        });
+                                    }
+                                    None => {}
+                                }
+                            }
+                        },
+                        Event::OutboundFailure {
+                            peer,
+                            request_id,
+                            error,
+                            ..
+                        } => {
+                            warn!(
+                                "WebRTC signaling request {:?} to {} failed: {}",
+                                request_id, peer, error
+                            );
+                        }
+                        Event::InboundFailure {
+                            peer,
+                            request_id,
+                            error,
+                            ..
+                        } => {
+                            warn!(
+                                "WebRTC signaling request {:?} from {} failed: {}",
+                                request_id, peer, error
+                            );
+                        }
+                        Event::ResponseSent { peer, request_id, .. } => {
+                            debug!("WebRTC signaling response {:?} sent to {}", request_id, peer);
+                        }
+                    }
+                },
             },
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
@@ -253,17 +615,24 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[tokio::test]
     async fn test_node_creation() {
-        let config = Config::default();
+        let dir = tempdir().unwrap();
+        let mut config = Config::default();
+        config.storage_path = dir.path().to_path_buf();
+
         let node = Node::new(config).unwrap();
         assert!(!node.peer_id().to_string().is_empty());
     }
 
     #[tokio::test]
     async fn test_node_listen() {
-        let config = Config::default();
+        let dir = tempdir().unwrap();
+        let mut config = Config::default();
+        config.storage_path = dir.path().to_path_buf();
+
         let mut node = Node::new(config.clone()).unwrap();
         node.listen(&config).await.unwrap();
     }

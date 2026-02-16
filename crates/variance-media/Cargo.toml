@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 variance-proto = { path = "../variance-proto" }
-variance-p2p = { path = "../variance-p2p" }
 
 # libp2p
 libp2p = { workspace = true }
@@ -14,6 +13,7 @@ libp2p = { workspace = true }
 # Async
 tokio = { workspace = true }
 futures = { workspace = true }
+async-trait = { workspace = true }
 
 # Serialization
 prost = { workspace = true }

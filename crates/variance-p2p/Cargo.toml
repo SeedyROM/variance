@@ -6,6 +6,9 @@ license.workspace = true
 
 [dependencies]
 variance-proto = { path = "../variance-proto" }
+variance-identity = { path = "../variance-identity" }
+variance-messaging = { path = "../variance-messaging" }
+variance-media = { path = "../variance-media" }
 
 # libp2p
 libp2p = { workspace = true }
@@ -15,6 +18,7 @@ libp2p-identity = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 futures = { workspace = true }
+async-trait = { workspace = true }
 
 # Serialization
 prost = { workspace = true }
@@ -36,3 +40,15 @@ rand = { workspace = true }
 
 # Storage
 sled = { workspace = true }
+
+# Utils
+dirs = "5.0"
+
+# Time
+chrono = { workspace = true }
+
+# IDs
+ulid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

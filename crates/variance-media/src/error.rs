@@ -41,7 +41,10 @@ mod tests {
         let err = Error::InvalidState {
             message: "cannot accept ended call".to_string(),
         };
-        assert_eq!(err.to_string(), "Invalid call state: cannot accept ended call");
+        assert_eq!(
+            err.to_string(),
+            "Invalid call state: cannot accept ended call"
+        );
     }
 
     #[test]

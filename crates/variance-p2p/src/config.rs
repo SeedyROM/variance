@@ -1,5 +1,6 @@
 use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -20,6 +21,16 @@ pub struct Config {
     /// GossipSub configuration
     #[serde(default)]
     pub gossipsub_config: GossipsubConfig,
+
+    /// Storage path for local data
+    #[serde(default = "default_storage_path")]
+    pub storage_path: PathBuf,
+}
+
+fn default_storage_path() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("variance")
 }
 
 impl Default for Config {
@@ -33,6 +44,7 @@ impl Default for Config {
             enable_mdns: true,
             kad_config: KadConfig::default(),
             gossipsub_config: GossipsubConfig::default(),
+            storage_path: default_storage_path(),
         }
     }
 }

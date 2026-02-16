@@ -6,8 +6,12 @@
 pub mod behaviour;
 pub mod config;
 pub mod error;
+pub mod events;
+pub mod handlers;
 pub mod node;
 pub mod protocols;
 
+pub use config::Config;
 pub use error::{Error, Result};
+pub use events::{EventChannels, IdentityEvent, OfflineMessageEvent, P2pEvent, SignalingEvent};
 pub use node::Node;

@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 variance-proto = { path = "../variance-proto" }
-variance-p2p = { path = "../variance-p2p" }
 variance-identity = { path = "../variance-identity" }
 
 # libp2p

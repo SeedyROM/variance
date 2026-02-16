@@ -11,6 +11,7 @@ pub mod direct;
 pub mod error;
 pub mod group;
 pub mod offline;
+pub mod protocol;
 pub mod receipts;
 pub mod storage;
 pub mod typing;
