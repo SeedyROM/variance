@@ -68,6 +68,11 @@ impl IdentityHandler {
         }
         drop(cache);
 
+        // TODO: IPFS/IPNS resolution for persistent DID storage
+        // - Query IPFS for DID document by content hash
+        // - Resolve IPNS name to latest DID document version
+        // - Cache result for future lookups
+        // - Handle IPFS timeout/unavailability gracefully
         // If not in cache, we need IPFS/IPNS resolution
         // For now, return not found with a message about IPFS integration
         Ok(create_not_found_response(
@@ -88,6 +93,16 @@ impl IdentityHandler {
         }
         drop(cache);
 
+        // TODO: Multi-step username resolution
+        // 1. DHT provider record lookup for peers who have this username
+        //    - Query Kademlia DHT for provider records with username as key
+        //    - Get list of peers who claim to know this username
+        // 2. Custom protocol query to those peers
+        //    - Send identity request to each provider peer
+        //    - Verify DID document username matches
+        // 3. IPFS/IPNS resolution as fallback
+        //    - Try resolving via IPNS if DHT lookup fails
+        // 4. Cache successful result
         // If not in cache, we need:
         // 1. DHT provider record lookup for peers who have this username
         // 2. Custom protocol query to those peers

@@ -49,6 +49,13 @@ impl DirectMessageHandler {
     /// This is called when starting a new conversation.
     /// Alice knows Bob's public key and establishes the first session.
     /// Note: Alice must send the first message.
+    ///
+    /// TODO: Define public key exchange protocol
+    /// Current implementation assumes Alice already has Bob's X25519 public key.
+    /// Need to specify how public keys are discovered:
+    /// 1. Include X25519 key in DID document?
+    /// 2. Separate key exchange protocol message?
+    /// 3. Use initial handshake message with ephemeral keys?
     pub async fn init_session_as_initiator(
         &self,
         recipient_did: String,

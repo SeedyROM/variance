@@ -7,6 +7,15 @@ use variance_proto::media_proto::{CallState, CallStatus, CallType};
 /// Call manager
 ///
 /// Manages active call states and lifecycle.
+///
+/// TODO: Integrate with actual WebRTC PeerConnection
+/// Current implementation is state-only. Need to add:
+/// - WebRTC PeerConnection creation and management
+/// - Media stream handling (audio/video capture)
+/// - ICE candidate gathering and connectivity
+/// - DTLS-SRTP for encrypted media transport
+/// - Statistics and quality monitoring
+/// - Device enumeration and selection
 pub struct CallManager {
     /// Local DID
     local_did: String,

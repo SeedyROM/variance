@@ -58,7 +58,13 @@ impl OfflineMessageHandler {
             }
             Err(e) => {
                 error!("Failed to fetch offline messages: {}", e);
-                // Return empty response on error (could also return error variant if protocol supports it)
+                // TODO: Return proper error response instead of empty response
+                // Options:
+                // 1. Add error variant to OfflineMessageResponse protobuf
+                // 2. Use request/response error handling at protocol level
+                // 3. Define error codes in response metadata
+                // Current behavior silently returns empty, which is ambiguous
+                // (can't distinguish "no messages" from "storage error")
                 Ok(OfflineMessageResponse {
                     messages: vec![],
                     has_more: false,

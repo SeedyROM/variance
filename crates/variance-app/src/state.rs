@@ -22,6 +22,14 @@ pub struct IdentityFile {
 /// - Messaging handlers (direct, group, receipts, typing)
 /// - Media handlers (calls, signaling)
 /// - Storage
+///
+/// TODO: Integrate with P2P node for network communication
+/// Currently, AppState has all the business logic handlers but no
+/// connection to the libp2p Node for actually sending messages.
+/// Need to add:
+/// - Arc<Node> or message sender channels
+/// - Event subscription and routing to handlers
+/// - Message delivery coordination between handlers and network
 #[derive(Clone)]
 pub struct AppState {
     /// Direct messaging handler

@@ -48,6 +48,13 @@ impl SignalingHandler {
             message.call_id, peer_did
         );
 
+        // TODO: Verify message signature
+        // 1. Extract sender_did from message
+        // 2. Query identity system for sender's DID document
+        // 3. Get verification key from DID document
+        // 4. Verify message.signature using ed25519
+        // 5. Reject message if verification fails
+        // Security risk: Currently accepting unverified messages
         // Verify signature if we have the sender's public key
         // TODO: Fetch sender's public key from identity system
         // For now, skip verification
@@ -87,6 +94,13 @@ impl SignalingHandler {
         calls.insert(message.call_id.clone(), peer_did.clone());
         drop(calls);
 
+        // TODO: Delegate to full call manager implementation
+        // 1. Create WebRTC PeerConnection
+        // 2. Set remote description from offer.sdp
+        // 3. Gather ICE candidates
+        // 4. Create answer with local SDP
+        // 5. Return answer message
+        // Current: Only sends RING control, doesn't create actual answer
         // TODO: Delegate to call manager to create answer
         // For now, return a placeholder response
         let media_handler = self.media_handler.read().await;
@@ -119,6 +133,12 @@ impl SignalingHandler {
         debug!("Handling answer for call {}", message.call_id);
 
         // TODO: Delegate to call manager to process answer
+        // 1. Find existing PeerConnection for this call
+        // 2. Set remote description from answer.sdp
+        // 3. Start ICE connectivity checks
+        // 4. Update call state to CONNECTED when ICE succeeds
+        // Current: Only sends ACCEPT control, doesn't process SDP
+        // TODO: Delegate to call manager to process answer
         // For now, send acknowledgment
         let media_handler = self.media_handler.read().await;
         if let Some(ref handler) = *media_handler {
@@ -148,6 +168,13 @@ impl SignalingHandler {
     ) -> Result<SignalingMessage> {
         debug!("Handling ICE candidate for call {}", message.call_id);
 
+        // TODO: Delegate to call manager to process ICE candidate
+        // 1. Find existing PeerConnection for this call
+        // 2. Extract ICE candidate from message
+        // 3. Add ICE candidate to PeerConnection
+        // 4. Let WebRTC handle connectivity checks
+        // Current: ICE candidates are received but never added to connection
+        // This will prevent calls from connecting in most NAT scenarios
         // TODO: Delegate to call manager to process ICE candidate
         // For now, just acknowledge receipt
         // ICE candidates don't require a response in the protocol

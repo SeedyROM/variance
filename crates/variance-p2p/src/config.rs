@@ -25,6 +25,19 @@ pub struct Config {
     /// Storage path for local data
     #[serde(default = "default_storage_path")]
     pub storage_path: PathBuf,
+    // TODO: Add WebRTC configuration
+    // pub stun_servers: Vec<String>,
+    // pub turn_servers: Vec<TurnServer>,
+    // pub ice_transport_policy: IceTransportPolicy,
+
+    // TODO: Add rate limiting configuration
+    // pub max_requests_per_peer: usize,
+    // pub rate_limit_window_secs: u64,
+
+    // TODO: Add relay configuration
+    // pub enable_relay: bool,
+    // pub max_relay_messages: usize,
+    // pub relay_ttl_days: u32,
 }
 
 fn default_storage_path() -> PathBuf {

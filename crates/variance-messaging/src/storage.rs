@@ -53,6 +53,10 @@ pub trait MessageStorage: Send + Sync {
     async fn delete_offline(&self, message_id: &str) -> Result<()>;
 
     /// Clean up expired offline messages (TTL enforcement)
+    ///
+    /// TODO: Implement automatic cleanup scheduling
+    /// This method exists but needs to be called periodically.
+    /// Should add background task that runs cleanup every hour.
     async fn cleanup_expired(&self) -> Result<usize>;
 
     /// Store a read receipt

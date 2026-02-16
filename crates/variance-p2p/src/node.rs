@@ -144,6 +144,16 @@ impl Node {
         &self.events
     }
 
+    // TODO: Add methods for sending messages from application layer
+    // pub async fn send_identity_request(&mut self, peer: PeerId, request: IdentityRequest) -> Result<IdentityResponse>
+    // pub async fn send_signaling_message(&mut self, peer_did: String, message: SignalingMessage) -> Result<()>
+    // pub async fn send_direct_message(&mut self, message: DirectMessage) -> Result<()>
+    // pub async fn publish_group_message(&mut self, group_id: String, message: GroupMessage) -> Result<()>
+    //
+    // These are needed to connect the HTTP API layer to the P2P network.
+    // Currently, handlers process incoming requests but there's no way
+    // for the application to initiate outbound communication.
+
     pub async fn listen(&mut self, config: &Config) -> Result<()> {
         for addr in &config.listen_addresses {
             self.swarm

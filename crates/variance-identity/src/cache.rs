@@ -96,6 +96,11 @@ impl<K: std::hash::Hash + Eq, V: Clone> L2Cache<K, V> {
 }
 
 /// L3: Disk cache (24 hours) using sled
+///
+/// TODO: Add persistence cleanup and monitoring
+/// - Background task to evict expired entries
+/// - Metrics for cache hit rates by layer
+/// - Disk space monitoring and limits
 struct L3Cache {
     db: sled::Db,
     ttl: Duration,

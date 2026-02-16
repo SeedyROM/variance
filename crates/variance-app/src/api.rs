@@ -189,6 +189,14 @@ async fn end_call(
 
 // ===== Signaling Handlers =====
 
+// TODO: Integrate with P2P node for actual message transmission
+// Current implementation only creates local SignalingMessage structs
+// but doesn't send them over the network. Need to:
+// 1. Accept Arc<Node> or message sender in AppState
+// 2. Call node.send_signaling_message(peer_did, message)
+// 3. Handle network errors and retries
+// 4. Add request/response tracking for acknowledgments
+
 async fn send_offer(
     State(state): State<AppState>,
     Json(req): Json<SendOfferRequest>,
