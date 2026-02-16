@@ -54,8 +54,8 @@ impl Default for CacheConfig {
     fn default() -> Self {
         Self {
             disk_cache_path: PathBuf::from("~/.variance/identity/cache"),
-            l1_ttl_seconds: 5 * 60,      // 5 minutes
-            l2_ttl_seconds: 60 * 60,     // 1 hour
+            l1_ttl_seconds: 5 * 60,       // 5 minutes
+            l2_ttl_seconds: 60 * 60,      // 1 hour
             l3_ttl_seconds: 24 * 60 * 60, // 24 hours
         }
     }

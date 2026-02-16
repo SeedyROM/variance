@@ -135,10 +135,7 @@ mod tests {
         config.add_stun_server("stun:stun.example.com:3478".to_string());
 
         assert_eq!(config.ice_servers.len(), 3);
-        assert_eq!(
-            config.ice_servers[2].urls[0],
-            "stun:stun.example.com:3478"
-        );
+        assert_eq!(config.ice_servers[2].urls[0], "stun:stun.example.com:3478");
         assert!(config.ice_servers[2].username.is_none());
     }
 
@@ -152,10 +149,7 @@ mod tests {
         );
 
         assert_eq!(config.ice_servers.len(), 3);
-        assert_eq!(
-            config.ice_servers[2].urls[0],
-            "turn:turn.example.com:3478"
-        );
+        assert_eq!(config.ice_servers[2].urls[0], "turn:turn.example.com:3478");
         assert_eq!(config.ice_servers[2].username, Some("user".to_string()));
         assert_eq!(config.ice_servers[2].credential, Some("pass".to_string()));
     }
@@ -195,10 +189,7 @@ mod tests {
         let restored = MediaConfig::from_proto(&proto);
 
         assert_eq!(config.ice_servers.len(), restored.ice_servers.len());
-        assert_eq!(
-            config.ice_transport_policy,
-            restored.ice_transport_policy
-        );
+        assert_eq!(config.ice_transport_policy, restored.ice_transport_policy);
         assert_eq!(
             config.ice_servers[2].username,
             restored.ice_servers[2].username

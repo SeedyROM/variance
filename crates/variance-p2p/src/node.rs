@@ -1,9 +1,9 @@
 use crate::{behaviour::VarianceBehaviour, config::Config, error::*, events::*, handlers};
 use futures::StreamExt;
+use libp2p::swarm::SwarmEvent;
 use libp2p::{
     gossipsub, identify, kad, mdns, noise, ping, tcp, yamux, PeerId, Swarm, SwarmBuilder,
 };
-use libp2p::swarm::SwarmEvent;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,7 +29,8 @@ impl Node {
         // Build Kademlia DHT
         let mut kad_config = kad::Config::default();
         kad_config.set_replication_factor(
-            NonZeroUsize::new(config.kad_config.replication_factor).unwrap_or(NonZeroUsize::new(20).unwrap()),
+            NonZeroUsize::new(config.kad_config.replication_factor)
+                .unwrap_or(NonZeroUsize::new(20).unwrap()),
         );
         kad_config.set_provider_record_ttl(Some(Duration::from_secs(
             config.kad_config.provider_record_ttl,
@@ -168,14 +169,21 @@ impl Node {
                 .kad
                 .add_address(&peer_id, bootstrap.multiaddr.clone());
 
-            info!("Added bootstrap peer: {} at {}", peer_id, bootstrap.multiaddr);
+            info!(
+                "Added bootstrap peer: {} at {}",
+                peer_id, bootstrap.multiaddr
+            );
         }
 
         // Bootstrap the DHT
         if !config.bootstrap_peers.is_empty() {
-            self.swarm.behaviour_mut().kad.bootstrap().map_err(|e| Error::Kad {
-                message: format!("Bootstrap failed: {:?}", e),
-            })?;
+            self.swarm
+                .behaviour_mut()
+                .kad
+                .bootstrap()
+                .map_err(|e| Error::Kad {
+                    message: format!("Bootstrap failed: {:?}", e),
+                })?;
         }
 
         Ok(())
@@ -204,7 +212,9 @@ impl Node {
             }
             SwarmEvent::Behaviour(event) => match event {
                 crate::behaviour::VarianceBehaviourEvent::Kad(kad_event) => match kad_event {
-                    kad::Event::RoutingUpdated { peer, addresses, .. } => {
+                    kad::Event::RoutingUpdated {
+                        peer, addresses, ..
+                    } => {
                         debug!("Routing updated for {}: {:?}", peer, addresses);
                     }
                     kad::Event::InboundRequest { request } => {
@@ -229,7 +239,10 @@ impl Node {
                     mdns::Event::Discovered(peers) => {
                         for (peer_id, multiaddr) in peers {
                             info!("Discovered peer via mDNS: {} at {}", peer_id, multiaddr);
-                            self.swarm.behaviour_mut().kad.add_address(&peer_id, multiaddr);
+                            self.swarm
+                                .behaviour_mut()
+                                .kad
+                                .add_address(&peer_id, multiaddr);
                         }
                     }
                     mdns::Event::Expired(peers) => {
@@ -355,7 +368,9 @@ impl Node {
                                 request_id, peer, error
                             );
                         }
-                        Event::ResponseSent { peer, request_id, .. } => {
+                        Event::ResponseSent {
+                            peer, request_id, ..
+                        } => {
                             debug!("Identity response {:?} sent to {}", request_id, peer);
                         }
                     }
@@ -375,11 +390,13 @@ impl Node {
                                 );
 
                                 // Send event
-                                self.events.send_offline_message(OfflineMessageEvent::FetchRequested {
-                                    peer,
-                                    did: request.did.clone(),
-                                    limit: request.limit,
-                                });
+                                self.events.send_offline_message(
+                                    OfflineMessageEvent::FetchRequested {
+                                        peer,
+                                        did: request.did.clone(),
+                                        limit: request.limit,
+                                    },
+                                );
 
                                 // Handle request and send response
                                 let handler = self.offline_handler.clone();
@@ -413,11 +430,13 @@ impl Node {
                                 );
 
                                 // Send event with all received messages
-                                self.events.send_offline_message(OfflineMessageEvent::MessagesReceived {
-                                    peer,
-                                    messages: response.messages,
-                                    has_more: response.has_more,
-                                });
+                                self.events.send_offline_message(
+                                    OfflineMessageEvent::MessagesReceived {
+                                        peer,
+                                        messages: response.messages,
+                                        has_more: response.has_more,
+                                    },
+                                );
                             }
                         },
                         Event::OutboundFailure {
@@ -442,7 +461,9 @@ impl Node {
                                 request_id, peer, error
                             );
                         }
-                        Event::ResponseSent { peer, request_id, .. } => {
+                        Event::ResponseSent {
+                            peer, request_id, ..
+                        } => {
                             debug!("Offline message response {:?} sent to {}", request_id, peer);
                         }
                     }
@@ -473,25 +494,31 @@ impl Node {
                                         });
                                     }
                                     Some(signaling_message::Message::Answer(_)) => {
-                                        self.events.send_signaling(SignalingEvent::AnswerReceived {
-                                            peer,
-                                            call_id: request.call_id.clone(),
-                                            message: request.clone(),
-                                        });
+                                        self.events.send_signaling(
+                                            SignalingEvent::AnswerReceived {
+                                                peer,
+                                                call_id: request.call_id.clone(),
+                                                message: request.clone(),
+                                            },
+                                        );
                                     }
                                     Some(signaling_message::Message::IceCandidate(_)) => {
-                                        self.events.send_signaling(SignalingEvent::IceCandidateReceived {
-                                            peer,
-                                            call_id: request.call_id.clone(),
-                                            message: request.clone(),
-                                        });
+                                        self.events.send_signaling(
+                                            SignalingEvent::IceCandidateReceived {
+                                                peer,
+                                                call_id: request.call_id.clone(),
+                                                message: request.clone(),
+                                            },
+                                        );
                                     }
                                     Some(signaling_message::Message::Control(_)) => {
-                                        self.events.send_signaling(SignalingEvent::ControlReceived {
-                                            peer,
-                                            call_id: request.call_id.clone(),
-                                            message: request.clone(),
-                                        });
+                                        self.events.send_signaling(
+                                            SignalingEvent::ControlReceived {
+                                                peer,
+                                                call_id: request.call_id.clone(),
+                                                message: request.clone(),
+                                            },
+                                        );
                                     }
                                     None => {}
                                 }
@@ -500,10 +527,13 @@ impl Node {
                                 let handler = self.signaling_handler.clone();
                                 let peer_did = format!("did:peer:{}", peer); // Simplified - should look up actual DID
                                 match futures::executor::block_on(
-                                    handler.handle_message(peer_did, request)
+                                    handler.handle_message(peer_did, request),
                                 ) {
                                     Ok(response) => {
-                                        debug!("Sending WebRTC signaling response for {:?}", request_id);
+                                        debug!(
+                                            "Sending WebRTC signaling response for {:?}",
+                                            request_id
+                                        );
                                         let _ = self
                                             .swarm
                                             .behaviour_mut()
@@ -534,25 +564,31 @@ impl Node {
                                         });
                                     }
                                     Some(signaling_message::Message::Answer(_)) => {
-                                        self.events.send_signaling(SignalingEvent::AnswerReceived {
-                                            peer,
-                                            call_id: response.call_id.clone(),
-                                            message: response,
-                                        });
+                                        self.events.send_signaling(
+                                            SignalingEvent::AnswerReceived {
+                                                peer,
+                                                call_id: response.call_id.clone(),
+                                                message: response,
+                                            },
+                                        );
                                     }
                                     Some(signaling_message::Message::IceCandidate(_)) => {
-                                        self.events.send_signaling(SignalingEvent::IceCandidateReceived {
-                                            peer,
-                                            call_id: response.call_id.clone(),
-                                            message: response,
-                                        });
+                                        self.events.send_signaling(
+                                            SignalingEvent::IceCandidateReceived {
+                                                peer,
+                                                call_id: response.call_id.clone(),
+                                                message: response,
+                                            },
+                                        );
                                     }
                                     Some(signaling_message::Message::Control(_)) => {
-                                        self.events.send_signaling(SignalingEvent::ControlReceived {
-                                            peer,
-                                            call_id: response.call_id.clone(),
-                                            message: response,
-                                        });
+                                        self.events.send_signaling(
+                                            SignalingEvent::ControlReceived {
+                                                peer,
+                                                call_id: response.call_id.clone(),
+                                                message: response,
+                                            },
+                                        );
                                     }
                                     None => {}
                                 }
@@ -580,16 +616,25 @@ impl Node {
                                 request_id, peer, error
                             );
                         }
-                        Event::ResponseSent { peer, request_id, .. } => {
-                            debug!("WebRTC signaling response {:?} sent to {}", request_id, peer);
+                        Event::ResponseSent {
+                            peer, request_id, ..
+                        } => {
+                            debug!(
+                                "WebRTC signaling response {:?} sent to {}",
+                                request_id, peer
+                            );
                         }
                     }
-                },
+                }
             },
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
             } => {
-                info!("Connection established to {} via {}", peer_id, endpoint.get_remote_address());
+                info!(
+                    "Connection established to {} via {}",
+                    peer_id,
+                    endpoint.get_remote_address()
+                );
             }
             SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
                 debug!("Connection to {} closed: {:?}", peer_id, cause);
@@ -604,8 +649,15 @@ impl Node {
                     warn!("Outgoing connection failed: {}", error);
                 }
             }
-            SwarmEvent::IncomingConnectionError { send_back_addr, error, .. } => {
-                warn!("Incoming connection from {} failed: {}", send_back_addr, error);
+            SwarmEvent::IncomingConnectionError {
+                send_back_addr,
+                error,
+                ..
+            } => {
+                warn!(
+                    "Incoming connection from {} failed: {}",
+                    send_back_addr, error
+                );
             }
             _ => {}
         }

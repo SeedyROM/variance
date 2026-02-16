@@ -1,7 +1,4 @@
-use libp2p::{
-    gossipsub, identify, kad, mdns, ping, request_response,
-    swarm::NetworkBehaviour,
-};
+use libp2p::{gossipsub, identify, kad, mdns, ping, request_response, swarm::NetworkBehaviour};
 
 /// Combined network behaviour for Variance P2P
 #[derive(NetworkBehaviour)]
@@ -25,7 +22,8 @@ pub struct VarianceBehaviour {
     pub identity: request_response::Behaviour<crate::protocols::identity::IdentityCodec>,
 
     /// Custom protocol: Offline message relay
-    pub offline_messages: request_response::Behaviour<crate::protocols::messaging::OfflineMessageCodec>,
+    pub offline_messages:
+        request_response::Behaviour<crate::protocols::messaging::OfflineMessageCodec>,
 
     /// Custom protocol: WebRTC signaling
     pub signaling: request_response::Behaviour<crate::protocols::media::SignalingCodec>,

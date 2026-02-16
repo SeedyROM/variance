@@ -19,5 +19,5 @@ pub mod media {
 
 // Re-exports for convenience
 pub use identity::v1 as identity_proto;
-pub use messaging::v1 as messaging_proto;
 pub use media::v1 as media_proto;
+pub use messaging::v1 as messaging_proto;

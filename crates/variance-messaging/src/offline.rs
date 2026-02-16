@@ -249,10 +249,7 @@ mod tests {
         let response = handler.fetch_messages(request).await.unwrap();
 
         assert_eq!(response.messages.len(), 1);
-        assert_eq!(
-            response.messages[0].recipient_did,
-            "did:variance:bob"
-        );
+        assert_eq!(response.messages[0].recipient_did, "did:variance:bob");
         assert!(!response.has_more);
     }
 
@@ -328,9 +325,7 @@ mod tests {
 
         let envelope1 = handler.create_envelope(
             "did:variance:bob".to_string(),
-            variance_proto::messaging_proto::offline_message_envelope::Message::Direct(
-                direct_msg1,
-            ),
+            variance_proto::messaging_proto::offline_message_envelope::Message::Direct(direct_msg1),
         );
 
         handler.store_message(envelope1).await.unwrap();
@@ -350,9 +345,7 @@ mod tests {
 
         let envelope2 = handler.create_envelope(
             "did:variance:bob".to_string(),
-            variance_proto::messaging_proto::offline_message_envelope::Message::Direct(
-                direct_msg2,
-            ),
+            variance_proto::messaging_proto::offline_message_envelope::Message::Direct(direct_msg2),
         );
 
         handler.store_message(envelope2).await.unwrap();
@@ -370,7 +363,9 @@ mod tests {
 
         // Verify it's the later message by checking the inner message timestamp
         match &response.messages[0].message {
-            Some(variance_proto::messaging_proto::offline_message_envelope::Message::Direct(msg)) => {
+            Some(variance_proto::messaging_proto::offline_message_envelope::Message::Direct(
+                msg,
+            )) => {
                 assert_eq!(msg.timestamp, new_time);
                 assert_eq!(msg.id, "msg2");
             }
@@ -401,9 +396,7 @@ mod tests {
 
         let envelope = handler.create_envelope(
             "did:variance:bob".to_string(),
-            variance_proto::messaging_proto::offline_message_envelope::Message::Direct(
-                direct_msg,
-            ),
+            variance_proto::messaging_proto::offline_message_envelope::Message::Direct(direct_msg),
         );
 
         // Store message
@@ -433,8 +426,7 @@ mod tests {
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         // Use short TTL for testing
-        let handler =
-            OfflineRelayHandler::with_ttl("relay1".to_string(), storage, 0);
+        let handler = OfflineRelayHandler::with_ttl("relay1".to_string(), storage, 0);
 
         let direct_msg = DirectMessage {
             id: Ulid::new().to_string(),
@@ -451,9 +443,7 @@ mod tests {
         // Create envelope with TTL=0 (expires immediately)
         let envelope = handler.create_envelope(
             "did:variance:bob".to_string(),
-            variance_proto::messaging_proto::offline_message_envelope::Message::Direct(
-                direct_msg,
-            ),
+            variance_proto::messaging_proto::offline_message_envelope::Message::Direct(direct_msg),
         );
 
         handler.store_message(envelope).await.unwrap();

@@ -4,7 +4,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::debug;
 use variance_identity::did::Did;
-use variance_identity::protocol::{create_error_response, create_not_found_response, create_success_response};
+use variance_identity::protocol::{
+    create_error_response, create_not_found_response, create_success_response,
+};
 use variance_proto::identity_proto::{IdentityRequest, IdentityResponse};
 
 /// Identity resolution handler
@@ -39,9 +41,9 @@ impl IdentityHandler {
             Some(variance_proto::identity_proto::identity_request::Query::Did(did)) => {
                 self.resolve_did(&did).await
             }
-            Some(variance_proto::identity_proto::identity_request::Query::Username(username_query)) => {
-                self.resolve_username(&username_query.username).await
-            }
+            Some(variance_proto::identity_proto::identity_request::Query::Username(
+                username_query,
+            )) => self.resolve_username(&username_query.username).await,
             Some(variance_proto::identity_proto::identity_request::Query::PeerId(peer_id)) => {
                 // Resolve DID by peer ID (convert peer_id to DID format)
                 let did = format!("did:peer:{}", peer_id);
@@ -139,9 +141,11 @@ mod tests {
         let handler = IdentityHandler::new(peer_id);
 
         let request = IdentityRequest {
-            query: Some(variance_proto::identity_proto::identity_request::Query::Did(
-                "did:peer:unknown".to_string(),
-            )),
+            query: Some(
+                variance_proto::identity_proto::identity_request::Query::Did(
+                    "did:peer:unknown".to_string(),
+                ),
+            ),
             requester_did: None,
             timestamp: 0,
         };
@@ -166,9 +170,7 @@ mod tests {
 
         // Try to resolve it
         let request = IdentityRequest {
-            query: Some(variance_proto::identity_proto::identity_request::Query::Did(
-                did_id,
-            )),
+            query: Some(variance_proto::identity_proto::identity_request::Query::Did(did_id)),
             requester_did: None,
             timestamp: 0,
         };
@@ -193,13 +195,15 @@ mod tests {
 
         // Resolve by username
         let request = IdentityRequest {
-            query: Some(variance_proto::identity_proto::identity_request::Query::Username(
-                variance_proto::identity_proto::UsernameQuery {
-                    username: "alice".to_string(),
-                    discriminator: None,
-                    subnet_id: None,
-                },
-            )),
+            query: Some(
+                variance_proto::identity_proto::identity_request::Query::Username(
+                    variance_proto::identity_proto::UsernameQuery {
+                        username: "alice".to_string(),
+                        discriminator: None,
+                        subnet_id: None,
+                    },
+                ),
+            ),
             requester_did: None,
             timestamp: 0,
         };

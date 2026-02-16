@@ -49,11 +49,7 @@ impl ReceiptHandler {
     }
 
     /// Internal: Send a receipt with given status
-    async fn send_receipt(
-        &self,
-        message_id: String,
-        status: ReceiptStatus,
-    ) -> Result<ReadReceipt> {
+    async fn send_receipt(&self, message_id: String, status: ReceiptStatus) -> Result<ReadReceipt> {
         let timestamp = chrono::Utc::now().timestamp_millis();
 
         let mut receipt = ReadReceipt {
@@ -128,15 +124,12 @@ impl ReceiptHandler {
         data.extend_from_slice(&receipt.status.to_le_bytes());
         data.extend_from_slice(&receipt.timestamp.to_le_bytes());
 
-        let signature = Signature::from_bytes(
-            receipt
-                .signature
-                .as_slice()
-                .try_into()
-                .map_err(|_| Error::InvalidSignature {
+        let signature =
+            Signature::from_bytes(receipt.signature.as_slice().try_into().map_err(|_| {
+                Error::InvalidSignature {
                     message_id: receipt.message_id.clone(),
-                })?,
-        );
+                }
+            })?);
 
         reader_public_key
             .verify(&data, &signature)
@@ -162,11 +155,7 @@ mod tests {
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = ReceiptHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler = ReceiptHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         assert_eq!(handler.local_did, "did:variance:alice");
     }
@@ -177,11 +166,7 @@ mod tests {
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = ReceiptHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler = ReceiptHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         let message_id = Ulid::new().to_string();
         let receipt = handler.send_delivered(message_id.clone()).await.unwrap();
@@ -198,11 +183,7 @@ mod tests {
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = ReceiptHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler = ReceiptHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         let message_id = Ulid::new().to_string();
         let receipt = handler.send_read(message_id.clone()).await.unwrap();
@@ -219,11 +200,7 @@ mod tests {
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
 
-        let handler = ReceiptHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler = ReceiptHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         let message_id = Ulid::new().to_string();
         let receipt = handler.send_delivered(message_id).await.unwrap();
@@ -242,11 +219,7 @@ mod tests {
         let signing_key = SigningKey::generate(&mut OsRng);
         let wrong_key = SigningKey::generate(&mut OsRng).verifying_key();
 
-        let handler = ReceiptHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler = ReceiptHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         let message_id = Ulid::new().to_string();
         let receipt = handler.send_delivered(message_id).await.unwrap();
@@ -263,19 +236,12 @@ mod tests {
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = ReceiptHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler = ReceiptHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         let message_id = Ulid::new().to_string();
 
         // Send delivered receipt
-        handler
-            .send_delivered(message_id.clone())
-            .await
-            .unwrap();
+        handler.send_delivered(message_id.clone()).await.unwrap();
 
         // Wait a moment to ensure different timestamps
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
@@ -295,19 +261,12 @@ mod tests {
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = ReceiptHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler = ReceiptHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         let message_id = Ulid::new().to_string();
 
         // Send delivered receipt
-        handler
-            .send_delivered(message_id.clone())
-            .await
-            .unwrap();
+        handler.send_delivered(message_id.clone()).await.unwrap();
 
         // Wait a moment
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;

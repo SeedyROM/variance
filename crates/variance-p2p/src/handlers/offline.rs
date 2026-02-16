@@ -27,11 +27,15 @@ impl OfflineMessageHandler {
 
     /// Create with local storage at a specific path
     pub fn with_local_storage(peer_id: String, storage_path: &std::path::Path) -> Result<Self> {
-        let storage = Arc::new(
-            LocalMessageStorage::new(storage_path).map_err(|e| Error::Transport {
-                source: Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
-            })?,
-        );
+        let storage =
+            Arc::new(
+                LocalMessageStorage::new(storage_path).map_err(|e| Error::Transport {
+                    source: Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    )),
+                })?,
+            );
 
         Ok(Self::new(peer_id, storage))
     }
@@ -149,10 +153,7 @@ mod tests {
         let response = handler.handle_request(request).await.unwrap();
 
         assert_eq!(response.messages.len(), 1);
-        assert_eq!(
-            response.messages[0].recipient_did,
-            "did:variance:bob"
-        );
+        assert_eq!(response.messages[0].recipient_did, "did:variance:bob");
         assert!(!response.has_more);
     }
 

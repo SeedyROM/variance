@@ -66,11 +66,12 @@ impl CallManager {
 
     /// Accept an incoming call
     pub fn accept_call(&self, call_id: &str) -> Result<Call> {
-        let mut call_ref = self.calls.get_mut(call_id).ok_or_else(|| {
-            Error::CallNotFound {
+        let mut call_ref = self
+            .calls
+            .get_mut(call_id)
+            .ok_or_else(|| Error::CallNotFound {
                 call_id: call_id.to_string(),
-            }
-        })?;
+            })?;
 
         if call_ref.status != CallStatus::Ringing {
             return Err(Error::InvalidState {
@@ -84,11 +85,12 @@ impl CallManager {
 
     /// Reject an incoming call
     pub fn reject_call(&self, call_id: &str) -> Result<Call> {
-        let mut call_ref = self.calls.get_mut(call_id).ok_or_else(|| {
-            Error::CallNotFound {
+        let mut call_ref = self
+            .calls
+            .get_mut(call_id)
+            .ok_or_else(|| Error::CallNotFound {
                 call_id: call_id.to_string(),
-            }
-        })?;
+            })?;
 
         if call_ref.status != CallStatus::Ringing {
             return Err(Error::InvalidState {
@@ -111,11 +113,12 @@ impl CallManager {
 
     /// Mark call as active (connected)
     pub fn activate_call(&self, call_id: &str) -> Result<Call> {
-        let mut call_ref = self.calls.get_mut(call_id).ok_or_else(|| {
-            Error::CallNotFound {
+        let mut call_ref = self
+            .calls
+            .get_mut(call_id)
+            .ok_or_else(|| Error::CallNotFound {
                 call_id: call_id.to_string(),
-            }
-        })?;
+            })?;
 
         if call_ref.status != CallStatus::Connecting {
             return Err(Error::InvalidState {
@@ -129,11 +132,12 @@ impl CallManager {
 
     /// End an active call
     pub fn end_call(&self, call_id: &str) -> Result<Call> {
-        let mut call_ref = self.calls.get_mut(call_id).ok_or_else(|| {
-            Error::CallNotFound {
+        let mut call_ref = self
+            .calls
+            .get_mut(call_id)
+            .ok_or_else(|| Error::CallNotFound {
                 call_id: call_id.to_string(),
-            }
-        })?;
+            })?;
 
         let now = chrono::Utc::now().timestamp_millis();
         call_ref.status = CallStatus::Ended;
@@ -150,11 +154,12 @@ impl CallManager {
 
     /// Mark call as failed
     pub fn fail_call(&self, call_id: &str) -> Result<Call> {
-        let mut call_ref = self.calls.get_mut(call_id).ok_or_else(|| {
-            Error::CallNotFound {
+        let mut call_ref = self
+            .calls
+            .get_mut(call_id)
+            .ok_or_else(|| Error::CallNotFound {
                 call_id: call_id.to_string(),
-            }
-        })?;
+            })?;
 
         let now = chrono::Utc::now().timestamp_millis();
         call_ref.status = CallStatus::Failed;

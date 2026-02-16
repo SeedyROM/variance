@@ -30,8 +30,7 @@ impl request_response::Codec for IdentityCodec {
     {
         let mut buf = Vec::new();
         io.read_to_end(&mut buf).await?;
-        prost::Message::decode(&buf[..])
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     async fn read_response<T>(
@@ -44,8 +43,7 @@ impl request_response::Codec for IdentityCodec {
     {
         let mut buf = Vec::new();
         io.read_to_end(&mut buf).await?;
-        prost::Message::decode(&buf[..])
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     async fn write_request<T>(
@@ -94,10 +92,8 @@ pub fn create_identity_behaviour() -> IdentityBehaviour {
 }
 
 /// Events from the identity protocol
-pub type IdentityEvent = request_response::Event<
-    identity_proto::IdentityRequest,
-    identity_proto::IdentityResponse,
->;
+pub type IdentityEvent =
+    request_response::Event<identity_proto::IdentityRequest, identity_proto::IdentityResponse>;
 
 /// Helper to create an identity request for a username
 pub fn create_username_request(

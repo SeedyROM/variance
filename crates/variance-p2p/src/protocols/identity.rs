@@ -28,8 +28,7 @@ impl request_response::Codec for IdentityCodec {
     {
         let mut buf = Vec::new();
         io.read_to_end(&mut buf).await?;
-        prost::Message::decode(&buf[..])
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     async fn read_response<T>(
@@ -42,8 +41,7 @@ impl request_response::Codec for IdentityCodec {
     {
         let mut buf = Vec::new();
         io.read_to_end(&mut buf).await?;
-        prost::Message::decode(&buf[..])
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     async fn write_request<T>(

@@ -161,8 +161,8 @@ impl SignalingHandler {
         message: SignalingMessage,
     ) -> Result<SignalingMessage> {
         if let Some(signaling_message::Message::Control(ref control)) = message.message {
-            let control_type = CallControlType::try_from(control.r#type)
-                .unwrap_or(CallControlType::Unspecified);
+            let control_type =
+                CallControlType::try_from(control.r#type).unwrap_or(CallControlType::Unspecified);
 
             debug!(
                 "Handling control message {:?} for call {} from {}",
@@ -220,7 +220,8 @@ mod tests {
         let handler = SignalingHandler::new();
 
         let signing_key = SigningKey::generate(&mut OsRng);
-        let media_handler = MediaSignalingHandler::new("did:variance:alice".to_string(), signing_key);
+        let media_handler =
+            MediaSignalingHandler::new("did:variance:alice".to_string(), signing_key);
 
         handler.set_media_handler(media_handler).await;
 

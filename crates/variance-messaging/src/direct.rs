@@ -93,11 +93,11 @@ impl DirectMessageHandler {
     ) -> Result<DirectMessage> {
         // Get or create session
         let mut sessions = self.sessions.write().await;
-        let ratchet = sessions.get_mut(&recipient_did).ok_or_else(|| {
-            Error::DoubleRatchet {
+        let ratchet = sessions
+            .get_mut(&recipient_did)
+            .ok_or_else(|| Error::DoubleRatchet {
                 message: format!("No session with {}", recipient_did),
-            }
-        })?;
+            })?;
 
         // Serialize content using protobuf
         let plaintext = prost::Message::encode_to_vec(&content);
@@ -144,11 +144,12 @@ impl DirectMessageHandler {
     pub async fn receive_message(&self, message: DirectMessage) -> Result<MessageContent> {
         // Get or create session
         let mut sessions = self.sessions.write().await;
-        let ratchet = sessions.get_mut(&message.sender_did).ok_or_else(|| {
-            Error::DoubleRatchet {
-                message: format!("No session with {}", message.sender_did),
-            }
-        })?;
+        let ratchet =
+            sessions
+                .get_mut(&message.sender_did)
+                .ok_or_else(|| Error::DoubleRatchet {
+                    message: format!("No session with {}", message.sender_did),
+                })?;
 
         // Split header and nonce from storage field
         // Header size for double-ratchet-2 is variable, nonce is 12 bytes
@@ -163,11 +164,9 @@ impl DirectMessageHandler {
         let nonce_slice = &message.nonce[nonce_start..];
 
         // Convert nonce slice to fixed-size array
-        let nonce: &[u8; 12] = nonce_slice
-            .try_into()
-            .map_err(|_| Error::InvalidFormat {
-                message: "Invalid nonce size".to_string(),
-            })?;
+        let nonce: &[u8; 12] = nonce_slice.try_into().map_err(|_| Error::InvalidFormat {
+            message: "Invalid nonce size".to_string(),
+        })?;
 
         let header = bincode::deserialize(header_bytes).map_err(|e| Error::Crypto {
             message: format!("Header deserialization failed: {}", e),
@@ -177,8 +176,8 @@ impl DirectMessageHandler {
         let plaintext = ratchet.ratchet_decrypt(&header, &message.ciphertext, nonce, b"");
 
         // Deserialize content using protobuf
-        let content =
-            MessageContent::decode(plaintext.as_slice()).map_err(|e| Error::Protocol { source: e })?;
+        let content = MessageContent::decode(plaintext.as_slice())
+            .map_err(|e| Error::Protocol { source: e })?;
 
         // Store message
         self.storage.store_direct(&message).await?;
@@ -218,15 +217,12 @@ impl DirectMessageHandler {
         data.extend_from_slice(&message.nonce);
         data.extend_from_slice(&message.timestamp.to_le_bytes());
 
-        let signature = Signature::from_bytes(
-            message
-                .signature
-                .as_slice()
-                .try_into()
-                .map_err(|_| Error::InvalidSignature {
+        let signature =
+            Signature::from_bytes(message.signature.as_slice().try_into().map_err(|_| {
+                Error::InvalidSignature {
                     message_id: message.id.clone(),
-                })?,
-        );
+                }
+            })?);
 
         sender_public_key
             .verify(&data, &signature)
@@ -278,11 +274,8 @@ mod tests {
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = DirectMessageHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler =
+            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         assert_eq!(handler.local_did, "did:variance:alice");
     }
@@ -293,11 +286,8 @@ mod tests {
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = DirectMessageHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler =
+            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         let message = DirectMessage {
             id: Ulid::new().to_string(),
@@ -337,11 +327,8 @@ mod tests {
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
 
-        let handler = DirectMessageHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler =
+            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         let mut message = DirectMessage {
             id: Ulid::new().to_string(),
@@ -372,11 +359,8 @@ mod tests {
         let signing_key = SigningKey::generate(&mut OsRng);
         let wrong_key = SigningKey::generate(&mut OsRng).verifying_key();
 
-        let handler = DirectMessageHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler =
+            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         let mut message = DirectMessage {
             id: Ulid::new().to_string(),
@@ -407,11 +391,8 @@ mod tests {
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
 
-        let handler = DirectMessageHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler =
+            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         let message = DirectMessage {
             id: Ulid::new().to_string(),
@@ -428,6 +409,9 @@ mod tests {
         // Verify with invalid signature should fail
         let result = handler.verify_message_with_key(&message, &verifying_key);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::InvalidSignature { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::InvalidSignature { .. }
+        ));
     }
 }

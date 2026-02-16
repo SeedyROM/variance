@@ -73,8 +73,9 @@ impl AppState {
             .map_err(|e| anyhow::anyhow!("Invalid signing key format: {}", e))?;
 
         let signing_key = ed25519_dalek::SigningKey::from_bytes(
-            &signing_key_bytes.try_into()
-                .map_err(|_| anyhow::anyhow!("Invalid signing key length"))?
+            &signing_key_bytes
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("Invalid signing key length"))?,
         );
 
         // For now, generate a separate signaling key (in the future, this might also be stored)
@@ -140,10 +141,7 @@ impl AppState {
                 storage.clone(),
             )),
             typing: Arc::new(TypingHandler::new(local_did.clone())),
-            offline_relay: Arc::new(OfflineRelayHandler::new(
-                local_did.clone(),
-                storage.clone(),
-            )),
+            offline_relay: Arc::new(OfflineRelayHandler::new(local_did.clone(), storage.clone())),
             calls: Arc::new(CallManager::new(local_did.clone())),
             signaling: Arc::new(SignalingHandler::new(local_did.clone(), signaling_key)),
             storage,
@@ -161,10 +159,8 @@ mod tests {
     fn test_create_state() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let state = AppState::with_db_path(
-            "did:variance:test".to_string(),
-            db_path.to_str().unwrap(),
-        );
+        let state =
+            AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
 
         assert_eq!(state.local_did, "did:variance:test");
     }
@@ -173,10 +169,8 @@ mod tests {
     fn test_state_clone() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let state = AppState::with_db_path(
-            "did:variance:test".to_string(),
-            db_path.to_str().unwrap(),
-        );
+        let state =
+            AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
         let cloned = state.clone();
 
         assert_eq!(state.local_did, cloned.local_did);
@@ -186,10 +180,8 @@ mod tests {
     fn test_state_components() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let state = AppState::with_db_path(
-            "did:variance:alice".to_string(),
-            db_path.to_str().unwrap(),
-        );
+        let state =
+            AppState::with_db_path("did:variance:alice".to_string(), db_path.to_str().unwrap());
 
         // Verify all components are initialized
         assert_eq!(Arc::strong_count(&state.direct_messaging), 1);

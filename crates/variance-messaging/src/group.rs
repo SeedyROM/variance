@@ -104,16 +104,13 @@ impl GroupMessageHandler {
     ///
     /// Only admin/moderators can add members.
     /// Returns a GroupInvitation that should be sent to the invitee.
-    pub async fn add_member(
-        &self,
-        group_id: &str,
-        invitee_did: String,
-    ) -> Result<GroupInvitation> {
-        let mut group_ref = self.groups.get_mut(group_id).ok_or_else(|| {
-            Error::GroupNotFound {
+    pub async fn add_member(&self, group_id: &str, invitee_did: String) -> Result<GroupInvitation> {
+        let mut group_ref = self
+            .groups
+            .get_mut(group_id)
+            .ok_or_else(|| Error::GroupNotFound {
                 group_id: group_id.to_string(),
-            }
-        })?;
+            })?;
 
         // Check authorization
         if !self.is_admin_or_moderator(&group_ref, &self.local_did) {
@@ -169,11 +166,12 @@ impl GroupMessageHandler {
     ///
     /// Only admin can remove members. After removal, rotates the group key.
     pub async fn remove_member(&self, group_id: &str, member_did: &str) -> Result<()> {
-        let mut group_ref = self.groups.get_mut(group_id).ok_or_else(|| {
-            Error::GroupNotFound {
+        let mut group_ref = self
+            .groups
+            .get_mut(group_id)
+            .ok_or_else(|| Error::GroupNotFound {
                 group_id: group_id.to_string(),
-            }
-        })?;
+            })?;
 
         // Only admin can remove
         if group_ref.admin_did != self.local_did {
@@ -197,17 +195,22 @@ impl GroupMessageHandler {
     /// Generates a new key and increments version.
     /// Should be called after member removal or periodically.
     pub async fn rotate_key(&self, group_id: &str) -> Result<()> {
-        let mut group_ref = self.groups.get_mut(group_id).ok_or_else(|| {
-            Error::GroupNotFound {
+        let mut group_ref = self
+            .groups
+            .get_mut(group_id)
+            .ok_or_else(|| Error::GroupNotFound {
                 group_id: group_id.to_string(),
-            }
-        })?;
+            })?;
 
         // Generate new key
         let mut key_bytes = vec![0u8; 32];
         rand::thread_rng().fill_bytes(&mut key_bytes);
 
-        let old_version = group_ref.current_key.as_ref().map(|k| k.version).unwrap_or(0);
+        let old_version = group_ref
+            .current_key
+            .as_ref()
+            .map(|k| k.version)
+            .unwrap_or(0);
 
         let new_key = GroupKey {
             version: old_version + 1,
@@ -234,9 +237,12 @@ impl GroupMessageHandler {
         content: MessageContent,
     ) -> Result<GroupMessage> {
         // Check membership
-        let group = self.groups.get(&group_id).ok_or_else(|| Error::GroupNotFound {
-            group_id: group_id.clone(),
-        })?;
+        let group = self
+            .groups
+            .get(&group_id)
+            .ok_or_else(|| Error::GroupNotFound {
+                group_id: group_id.clone(),
+            })?;
 
         if !group.members.iter().any(|m| m.did == self.local_did) {
             return Err(Error::Unauthorized {
@@ -246,9 +252,12 @@ impl GroupMessageHandler {
         drop(group);
 
         // Get group key
-        let group_key = self.group_keys.get(&group_id).ok_or_else(|| Error::Encryption {
-            message: "Group key not found".to_string(),
-        })?;
+        let group_key = self
+            .group_keys
+            .get(&group_id)
+            .ok_or_else(|| Error::Encryption {
+                message: "Group key not found".to_string(),
+            })?;
 
         // Serialize content using protobuf
         let plaintext = prost::Message::encode_to_vec(&content);
@@ -263,11 +272,12 @@ impl GroupMessageHandler {
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        let ciphertext = cipher
-            .encrypt(nonce, plaintext.as_ref())
-            .map_err(|e| Error::Encryption {
-                message: format!("AES-GCM encryption failed: {}", e),
-            })?;
+        let ciphertext =
+            cipher
+                .encrypt(nonce, plaintext.as_ref())
+                .map_err(|e| Error::Encryption {
+                    message: format!("AES-GCM encryption failed: {}", e),
+                })?;
 
         drop(group_key);
 
@@ -318,12 +328,12 @@ impl GroupMessageHandler {
         drop(group);
 
         // Get group key
-        let group_key = self
-            .group_keys
-            .get(&message.group_id)
-            .ok_or_else(|| Error::Decryption {
-                message: "Group key not found".to_string(),
-            })?;
+        let group_key =
+            self.group_keys
+                .get(&message.group_id)
+                .ok_or_else(|| Error::Decryption {
+                    message: "Group key not found".to_string(),
+                })?;
 
         // Decrypt with AES-256-GCM
         let cipher = Aes256Gcm::new_from_slice(&group_key).map_err(|e| Error::Crypto {
@@ -347,8 +357,8 @@ impl GroupMessageHandler {
         drop(group_key);
 
         // Deserialize content using protobuf
-        let content =
-            MessageContent::decode(plaintext.as_slice()).map_err(|e| Error::Protocol { source: e })?;
+        let content = MessageContent::decode(plaintext.as_slice())
+            .map_err(|e| Error::Protocol { source: e })?;
 
         // Store message
         self.storage.store_group(&message).await?;
@@ -366,7 +376,13 @@ impl GroupMessageHandler {
         Ok(self
             .groups
             .iter()
-            .filter(|entry| entry.value().members.iter().any(|m| m.did == self.local_did))
+            .filter(|entry| {
+                entry
+                    .value()
+                    .members
+                    .iter()
+                    .any(|m| m.did == self.local_did)
+            })
             .map(|entry| entry.value().clone())
             .collect())
     }
@@ -421,15 +437,12 @@ impl GroupMessageHandler {
         data.extend_from_slice(&message.nonce);
         data.extend_from_slice(&message.timestamp.to_le_bytes());
 
-        let signature = Signature::from_bytes(
-            message
-                .signature
-                .as_slice()
-                .try_into()
-                .map_err(|_| Error::InvalidSignature {
+        let signature =
+            Signature::from_bytes(message.signature.as_slice().try_into().map_err(|_| {
+                Error::InvalidSignature {
                     message_id: message.id.clone(),
-                })?,
-        );
+                }
+            })?);
 
         sender_public_key
             .verify(&data, &signature)
@@ -493,11 +506,8 @@ mod tests {
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = GroupMessageHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler =
+            GroupMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         let (group_id, group) = handler
             .create_group("Test Group".to_string(), Some("A test group".to_string()))
@@ -520,11 +530,8 @@ mod tests {
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = GroupMessageHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler =
+            GroupMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         let (group_id, _) = handler
             .create_group("Test Group".to_string(), None)
@@ -553,11 +560,8 @@ mod tests {
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = GroupMessageHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler =
+            GroupMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         let (group_id, _) = handler
             .create_group("Test Group".to_string(), None)
@@ -597,11 +601,8 @@ mod tests {
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
 
-        let handler = GroupMessageHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler =
+            GroupMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         let (group_id, _) = handler
             .create_group("Test Group".to_string(), None)
@@ -705,11 +706,8 @@ mod tests {
         let signing_key = SigningKey::generate(&mut OsRng);
         let wrong_key = SigningKey::generate(&mut OsRng).verifying_key();
 
-        let handler = GroupMessageHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            storage,
-        );
+        let handler =
+            GroupMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
 
         let (group_id, _) = handler
             .create_group("Test Group".to_string(), None)
@@ -729,6 +727,9 @@ mod tests {
         // Verify with wrong key should fail
         let result = handler.verify_message_with_key(&message, &wrong_key);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::InvalidSignature { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::InvalidSignature { .. }
+        ));
     }
 }

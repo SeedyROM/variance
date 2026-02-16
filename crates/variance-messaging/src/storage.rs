@@ -2,7 +2,9 @@ use crate::error::*;
 use async_trait::async_trait;
 use prost::Message;
 use std::path::Path;
-use variance_proto::messaging_proto::{DirectMessage, GroupMessage, OfflineMessageEnvelope, ReadReceipt};
+use variance_proto::messaging_proto::{
+    DirectMessage, GroupMessage, OfflineMessageEnvelope, ReadReceipt,
+};
 
 /// Message storage backend abstraction
 ///
@@ -319,12 +321,12 @@ impl MessageStorage for LocalMessageStorage {
                 .map_err(|e| Error::Protocol { source: e })?;
 
             let env_id = match &envelope.message {
-                Some(variance_proto::messaging_proto::offline_message_envelope::Message::Direct(
-                    msg,
-                )) => &msg.id,
-                Some(variance_proto::messaging_proto::offline_message_envelope::Message::Group(
-                    msg,
-                )) => &msg.id,
+                Some(
+                    variance_proto::messaging_proto::offline_message_envelope::Message::Direct(msg),
+                ) => &msg.id,
+                Some(
+                    variance_proto::messaging_proto::offline_message_envelope::Message::Group(msg),
+                ) => &msg.id,
                 None => continue,
             };
 
@@ -639,9 +641,7 @@ mod tests {
         let envelope1 = OfflineMessageEnvelope {
             recipient_did: "did:variance:bob".to_string(),
             message: Some(
-                variance_proto::messaging_proto::offline_message_envelope::Message::Direct(
-                    expired,
-                ),
+                variance_proto::messaging_proto::offline_message_envelope::Message::Direct(expired),
             ),
             relay_peer_id: "peer123".to_string(),
             stored_at: 1000,

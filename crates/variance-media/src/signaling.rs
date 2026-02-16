@@ -1,8 +1,7 @@
 use crate::error::*;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use variance_proto::media_proto::{
-    signaling_message, Answer, CallControl, CallControlType, IceCandidate, Offer,
-    SignalingMessage,
+    signaling_message, Answer, CallControl, CallControlType, IceCandidate, Offer, SignalingMessage,
 };
 
 /// WebRTC signaling handler
@@ -202,15 +201,12 @@ impl SignalingHandler {
             }
         }
 
-        let signature = Signature::from_bytes(
-            message
-                .signature
-                .as_slice()
-                .try_into()
-                .map_err(|_| Error::InvalidSignature {
+        let signature =
+            Signature::from_bytes(message.signature.as_slice().try_into().map_err(|_| {
+                Error::InvalidSignature {
                     call_id: message.call_id.clone(),
-                })?,
-        );
+                }
+            })?);
 
         sender_public_key
             .verify(&data, &signature)
@@ -374,7 +370,10 @@ mod tests {
         // Verify with wrong key should fail
         let result = handler.verify_message(&message, &wrong_key);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::InvalidSignature { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::InvalidSignature { .. }
+        ));
     }
 
     #[test]

@@ -44,7 +44,10 @@ pub enum OfflineMessageEvent {
     },
 
     /// Successfully stored an offline message for relay
-    MessageStored { message_id: String, recipient: String },
+    MessageStored {
+        message_id: String,
+        recipient: String,
+    },
 }
 
 /// Events from the WebRTC signaling protocol

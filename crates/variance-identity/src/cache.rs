@@ -152,8 +152,7 @@ impl L3Cache {
             expires_at: now + self.ttl.as_secs(),
         };
 
-        let data =
-            serde_json::to_vec(&entry).map_err(|e| Error::Serialization { source: e })?;
+        let data = serde_json::to_vec(&entry).map_err(|e| Error::Serialization { source: e })?;
         self.db
             .insert(key.as_bytes(), data)
             .map_err(|e| Error::Storage { source: e })?;
