@@ -44,12 +44,14 @@ variance/
 | Crate | Purpose | Key Dependencies |
 |-------|---------|------------------|
 | `variance-proto` | Protobuf schemas | prost |
-| `variance-p2p` | libp2p networking | libp2p, tokio |
-| `variance-identity` | DID & identity | variance-p2p, ed25519-dalek |
-| `variance-messaging` | Messaging logic | variance-identity, ulid |
-| `variance-media` | WebRTC signaling | variance-p2p |
-| `variance-app` | HTTP API & state | axum, all crates |
+| `variance-p2p` | libp2p networking + protocol handlers | libp2p, tokio, variance-{identity,messaging,media} |
+| `variance-identity` | DID & identity logic | variance-proto, ed25519-dalek |
+| `variance-messaging` | Messaging logic | variance-proto, variance-identity, ulid |
+| `variance-media` | WebRTC signaling logic | variance-proto, ed25519-dalek |
+| `variance-app` | HTTP API & state | axum, variance-p2p |
 | `variance-cli` | CLI entry point | variance-app, clap |
+
+**Note:** As of 2026-02-15, the dependency flow was corrected. `variance-p2p` now depends on the business logic crates (not vice versa) to wire up protocol handlers.
 
 ## Technology Stack
 
@@ -188,19 +190,70 @@ RUST_LOG=variance=trace,libp2p=debug cargo run --bin variance -- start
 
 ## Project Status
 
-**Phase**: Foundation / Early Development
+**Phase**: Core Protocol Implementation
 
+**Recently Completed (2026-02-15):**
+- ✅ Protocol handlers with business logic integration
+- ✅ Event channel system for application layer
+- ✅ Integration test coverage (36/36 passing)
+- ✅ Fixed circular dependencies in crate graph
+
+### Implementation Checklist
+
+**Foundation:**
 - [x] Workspace structure
-- [x] Protobuf schemas
-- [ ] libp2p node setup
-- [ ] DID generation and IPNS publishing
-- [ ] Identity resolution protocol
-- [ ] Caching layer
-- [ ] Direct messaging
-- [ ] Group messaging
-- [ ] WebRTC signaling
-- [ ] HTTP API
-- [ ] Tauri desktop app
+- [x] Protobuf schemas (identity, messaging, media)
+- [x] libp2p node setup (DHT, GossipSub, mDNS, Identify, Ping)
+- [x] Custom protocol codecs (request/response)
+- [x] Protocol handlers with event channels
+
+**Identity System:**
+- [x] DID generation (ed25519 keys)
+- [x] Identity resolution protocol handler
+- [x] In-memory caching layer
+- [ ] 🚧 IPFS/IPNS integration for persistent storage
+- [ ] 🚧 DHT provider records for username discovery
+- [ ] 🚧 Multi-layer cache (disk + network fallback)
+
+**Messaging:**
+- [x] Protobuf message schemas
+- [x] Double Ratchet encryption for direct messages (full implementation)
+- [x] AES-256-GCM for group messages (full implementation)
+- [x] Offline message relay protocol handler
+- [x] Local storage backend (sled)
+- [x] GossipSub integration for groups
+- [ ] 🚧 Read receipts and typing indicators
+- [ ] 🚧 Message delivery acknowledgments
+
+**Media (WebRTC):**
+- [x] Signaling protocol handler
+- [x] Offer/Answer/ICE/Control message handling
+- [x] Message signing and verification
+- [ ] 🚧 Full call manager implementation
+- [ ] 🚧 WebRTC peer connection integration
+- [ ] 🚧 STUN/TURN configuration
+
+**Application Layer:**
+- [x] HTTP API framework (axum)
+- [x] Event subscription system
+- [x] CLI with identity management
+- [ ] 🚧 Complete REST API endpoints
+- [ ] 🚧 WebSocket events for Tauri
+- [ ] 🚧 Tauri desktop application
+
+**Testing & Documentation:**
+- [x] Unit tests for all handlers
+- [x] Integration tests for protocol flows
+- [x] Architecture documentation
+- [x] CHANGELOG tracking progress
+
+### Next Priorities
+
+1. **IPFS/IPNS Integration** - Persistent identity storage
+2. **Call Manager** - Full WebRTC peer connection stack
+3. **Public API** - Expose protocol functionality to application layer
+4. **Message Delivery** - Wire up event subscriptions to deliver messages
+5. **Tauri Integration** - Desktop app with event subscriptions
 
 ## License
 
