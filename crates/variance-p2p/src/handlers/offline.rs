@@ -30,10 +30,7 @@ impl OfflineMessageHandler {
         let storage =
             Arc::new(
                 LocalMessageStorage::new(storage_path).map_err(|e| Error::Transport {
-                    source: Box::new(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        e.to_string(),
-                    )),
+                    source: Box::new(std::io::Error::other(e.to_string())),
                 })?,
             );
 

@@ -1,0 +1,44 @@
+repos:
+  # General pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        name: trim trailing whitespace
+      - id: end-of-file-fixer
+        name: fix end of files
+      - id: check-yaml
+        name: check yaml files
+      - id: check-toml
+        name: check toml files
+      - id: check-added-large-files
+        name: check for large files
+        args: ['--maxkb=500']
+      - id: check-merge-conflict
+        name: check for merge conflicts
+
+  # Rust-specific hooks
+  - repo: https://github.com/doublify/pre-commit-rust
+    rev: v1.0
+    hooks:
+      - id: fmt
+        name: cargo fmt
+        description: Run cargo fmt on Rust files
+      - id: clippy
+        name: cargo clippy
+        description: Run cargo clippy on Rust files with auto-fix
+        args: ['--fix', '--allow-staged', '--allow-dirty', '--all-targets', '--all-features', '--', '-D', 'warnings']
+      - id: cargo-check
+        name: cargo check
+        description: Run cargo check
+
+  # Local hooks for testing
+  - repo: local
+    hooks:
+      - id: cargo-test
+        name: cargo test
+        entry: cargo test
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        files: \.(rs|toml)$

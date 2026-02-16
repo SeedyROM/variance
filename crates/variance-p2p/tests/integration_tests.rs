@@ -8,9 +8,11 @@ use variance_proto::media_proto::{signaling_message, CallType, Offer, SignalingM
 /// Helper to create a test node with temporary storage
 async fn create_test_node() -> (Node, tempfile::TempDir) {
     let dir = tempdir().unwrap();
-    let mut config = Config::default();
-    config.storage_path = dir.path().to_path_buf();
-    config.bootstrap_peers = vec![];
+    let config = Config {
+        storage_path: dir.path().to_path_buf(),
+        bootstrap_peers: vec![],
+        ..Default::default()
+    };
 
     let node = Node::new(config).unwrap();
     (node, dir)

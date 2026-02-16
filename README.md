@@ -156,6 +156,71 @@ variance start  # Start the node (auto-loads identity from .variance/identity.js
 cargo test
 ```
 
+### Pre-Commit Hooks
+
+This project uses [pre-commit](https://pre-commit.com/) to automatically run checks before commits and pushes. The hooks ensure code quality by running formatters, linters, and tests.
+
+**Installation:**
+
+1. Install pre-commit (if not already installed):
+   ```bash
+   # macOS
+   brew install pre-commit
+
+   # Linux/macOS with pip
+   pip install pre-commit
+
+   # Or use pipx
+   pipx install pre-commit
+   ```
+
+2. Install the git hooks in your local repository:
+   ```bash
+   pre-commit install
+   pre-commit install --hook-type pre-push
+   ```
+
+**What Gets Checked:**
+
+On every commit:
+- **Trailing whitespace removal** - Cleans up line endings
+- **End-of-file fixer** - Ensures files end with a newline
+- **YAML/TOML validation** - Checks config files for syntax errors
+- **Large file detection** - Prevents files >500KB from being committed
+- **Merge conflict markers** - Catches unresolved conflicts
+- **`cargo fmt`** - Auto-formats Rust code
+- **`cargo clippy`** - Lints Rust code with auto-fixes (treats warnings as errors)
+- **`cargo check`** - Verifies code compiles
+
+On every push:
+- **`cargo test`** - Runs the full test suite
+
+**Manual Usage:**
+
+```bash
+# Run all hooks on all files (useful after installation)
+pre-commit run --all-files
+
+# Run only on staged files
+pre-commit run
+
+# Run specific hook
+pre-commit run cargo-fmt --all-files
+pre-commit run clippy --all-files
+
+# Skip hooks for a specific commit (not recommended)
+git commit --no-verify
+```
+
+**Updating Hooks:**
+
+```bash
+# Update hook versions to latest
+pre-commit autoupdate
+```
+
+The pre-commit configuration is in [`.pre-commit-config.yaml`](.pre-commit-config.yaml).
+
 ### Code Generation (Protobufs)
 
 Protobufs are automatically compiled during build via `prost-build` in `variance-proto/build.rs`.

@@ -672,8 +672,10 @@ mod tests {
     #[tokio::test]
     async fn test_node_creation() {
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
-        config.storage_path = dir.path().to_path_buf();
+        let config = Config {
+            storage_path: dir.path().to_path_buf(),
+            ..Default::default()
+        };
 
         let node = Node::new(config).unwrap();
         assert!(!node.peer_id().to_string().is_empty());
@@ -682,8 +684,10 @@ mod tests {
     #[tokio::test]
     async fn test_node_listen() {
         let dir = tempdir().unwrap();
-        let mut config = Config::default();
-        config.storage_path = dir.path().to_path_buf();
+        let config = Config {
+            storage_path: dir.path().to_path_buf(),
+            ..Default::default()
+        };
 
         let mut node = Node::new(config.clone()).unwrap();
         node.listen(&config).await.unwrap();
