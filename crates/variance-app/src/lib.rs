@@ -12,6 +12,7 @@ pub mod config;
 pub mod error;
 pub mod event_router;
 pub mod identity_gen;
+pub mod node;
 pub mod state;
 pub mod websocket;
 
@@ -19,5 +20,6 @@ pub use api::create_router;
 pub use config::AppConfig;
 pub use error::{Error, Result};
 pub use event_router::EventRouter;
+pub use node::{start_node, RunningNode};
 pub use state::AppState;
 pub use websocket::WebSocketManager;

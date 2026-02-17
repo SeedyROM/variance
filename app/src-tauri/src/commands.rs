@@ -1,6 +1,5 @@
-use std::sync::Arc;
 use tauri::State;
-use variance_app::{identity_gen, AppConfig, AppState, EventRouter};
+use variance_app::{identity_gen, start_node as node_start, AppConfig};
 
 use crate::state::NodeState;
 
@@ -102,60 +101,14 @@ pub async fn start_node(state: State<'_, NodeState>, identity_path: String) -> R
 
     let config = AppConfig::default();
 
-    let base_dir = std::env::var("HOME")
-        .map(|h| std::path::PathBuf::from(h).join(".variance"))
-        .unwrap_or_else(|_| std::path::PathBuf::from(".variance"));
-
-    let mut listen_addresses = Vec::new();
-    for addr_str in &config.p2p.listen_addrs {
-        let addr = addr_str
-            .parse()
-            .map_err(|e| format!("Invalid listen address {}: {}", addr_str, e))?;
-        listen_addresses.push(addr);
-    }
-
-    let p2p_config = variance_p2p::Config {
-        listen_addresses,
-        bootstrap_peers: vec![],
-        enable_mdns: true,
-        storage_path: base_dir.clone(),
-        ..Default::default()
-    };
-
-    let (mut node, node_handle) =
-        variance_p2p::Node::new(p2p_config.clone()).map_err(|e| e.to_string())?;
-
-    let event_channels = Arc::new(node.events().clone());
-
-    let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
-
-    let p2p_config_clone = p2p_config.clone();
-    tokio::spawn(async move {
-        if let Err(e) = node.listen(&p2p_config_clone).await {
-            tracing::error!("P2P listen error: {}", e);
-            return;
-        }
-        if let Err(e) = node.run(shutdown_rx).await {
-            tracing::error!("P2P node error: {}", e);
-        }
-    });
-
     let identity_file_path = std::path::Path::new(&identity_path);
-    let db_path = base_dir.join("messages.db");
 
-    let app_state = AppState::from_identity_file(
-        identity_file_path,
-        db_path.to_str().unwrap(),
-        node_handle,
-        Some(event_channels.clone()),
-    )
-    .map_err(|e| format!("Failed to load identity: {}", e))?;
+    // Start the variance node (P2P + AppState + EventRouter + Router)
+    let node = node_start(&config, identity_file_path)
+        .await
+        .map_err(|e| format!("Failed to start Variance node: {}", e))?;
 
-    let event_router = EventRouter::new(app_state.ws_manager.clone());
-    event_router.start((*event_channels).clone());
-
-    let router = variance_app::create_router(app_state.clone());
-
+    // Bind HTTP server to random port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| format!("Failed to bind: {}", e))?;
@@ -167,15 +120,18 @@ pub async fn start_node(state: State<'_, NodeState>, identity_path: String) -> R
 
     tracing::info!("Variance HTTP API started on port {}", port);
 
+    // Spawn HTTP server in background
+    let router = node.router;
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, router).await {
             tracing::error!("HTTP server error: {}", e);
         }
     });
 
-    *state.app_state.write().await = Some(app_state);
+    // Store state for later shutdown
+    *state.app_state.write().await = Some(node.app_state);
     *state.server_port.write().await = Some(port);
-    *state.shutdown_tx.write().await = Some(shutdown_tx);
+    *state.shutdown_tx.write().await = Some(node.shutdown_tx);
 
     Ok(port)
 }

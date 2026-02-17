@@ -7,6 +7,7 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
+use tower_http::cors::{Any, CorsLayer};
 use variance_media::Call;
 use variance_messaging::storage::MessageStorage;
 use variance_p2p::events::{DirectMessageEvent, GroupMessageEvent};
@@ -15,6 +16,11 @@ use variance_proto::messaging_proto::{MessageContent, ReceiptStatus};
 
 /// Create the HTTP API router
 pub fn create_router(state: AppState) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     Router::new()
         // Health check
         .route("/health", get(health_check))
@@ -54,6 +60,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/typing/start", post(start_typing))
         .route("/typing/stop", post(stop_typing))
         .route("/typing/{recipient}", get(get_typing_users))
+        .layer(cors)
         .with_state(state)
 }
 

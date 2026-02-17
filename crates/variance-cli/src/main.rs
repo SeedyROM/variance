@@ -2,10 +2,9 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Arc;
 use tokio::signal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use variance_app::{create_router, identity_gen, AppConfig, AppState, EventRouter};
+use variance_app::{identity_gen, start_node, AppConfig};
 
 #[derive(Parser)]
 #[command(name = "variance")]
@@ -117,7 +116,7 @@ async fn main() -> Result<()> {
             config,
             listen,
             did,
-        } => start_node(config, listen, did).await?,
+        } => start_node_cmd(config, listen, did).await?,
 
         Commands::Config { action } => match action {
             ConfigAction::Init { output, force } => init_config(output, force)?,
@@ -135,7 +134,7 @@ async fn main() -> Result<()> {
 }
 
 /// Start the Variance node with HTTP API
-async fn start_node(
+async fn start_node_cmd(
     config_path: String,
     listen_override: Option<String>,
     did_override: Option<String>,
@@ -160,8 +159,6 @@ async fn start_node(
             .context("Invalid server configuration")?
     };
 
-    tracing::info!("HTTP API will listen on: {}", listen_addr);
-
     // Warn if DID override is provided (deprecated)
     if did_override.is_some() {
         tracing::warn!("--did flag is deprecated and ignored. Identity is loaded from file.");
@@ -180,79 +177,12 @@ async fn start_node(
         );
     }
 
-    tracing::info!("Loading identity from: {}", identity_path.display());
+    // Start the variance node (P2P + AppState + EventRouter + Router)
+    let node = start_node(&config, identity_path)
+        .await
+        .context("Failed to start Variance node")?;
 
-    // Create P2P node configuration
-    let mut listen_addresses = Vec::new();
-    for addr_str in &config.p2p.listen_addrs {
-        listen_addresses.push(
-            addr_str
-                .parse()
-                .with_context(|| format!("Invalid listen address: {}", addr_str))?,
-        );
-    }
-
-    let mut bootstrap_peers = Vec::new();
-    for peer_str in &config.p2p.bootstrap_peers {
-        let parts: Vec<&str> = peer_str.split('@').collect();
-        if parts.len() == 2 {
-            bootstrap_peers.push(variance_p2p::BootstrapPeer {
-                peer_id: parts[0].to_string(),
-                multiaddr: parts[1]
-                    .parse()
-                    .with_context(|| format!("Invalid bootstrap peer address: {}", parts[1]))?,
-            });
-        } else {
-            tracing::warn!("Skipping invalid bootstrap peer format: {}", peer_str);
-        }
-    }
-
-    let p2p_config = variance_p2p::Config {
-        listen_addresses,
-        bootstrap_peers,
-        enable_mdns: true,
-        storage_path: config.storage.base_dir.clone(),
-        ..Default::default()
-    };
-
-    // Create P2P node and get handle
-    tracing::info!("Initializing P2P node...");
-    let (mut node, node_handle) = variance_p2p::Node::new(p2p_config.clone())?;
-
-    // Get EventChannels reference before spawning node
-    let event_channels = Arc::new(node.events().clone());
-
-    // Spawn node in background task
-    let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
-    let node_task = tokio::spawn(async move {
-        // Start listening on configured addresses
-        if let Err(e) = node.listen(&p2p_config).await {
-            tracing::error!("Failed to start listening: {}", e);
-            return Err(e);
-        }
-        // Run event loop
-        node.run(shutdown_rx).await
-    });
-
-    tracing::info!("P2P node running, creating application state...");
-
-    // Create app state with the node handle and event channels
-    let state = AppState::from_identity_file(
-        identity_path,
-        config.storage.message_db_path.to_str().unwrap(),
-        node_handle,
-        Some(event_channels.clone()),
-    )?;
-
-    // Start event router to bridge P2P events to WebSocket clients
-    let router = EventRouter::new(state.ws_manager.clone());
-    router.start((*event_channels).clone());
-    tracing::info!("EventRouter started");
-
-    tracing::info!("Local DID: {}", state.local_did);
-
-    // Create Axum router
-    let app = create_router(state);
+    tracing::info!("Local DID: {}", node.app_state.local_did);
 
     // Create TCP listener
     let listener = tokio::net::TcpListener::bind(listen_addr)
@@ -263,9 +193,14 @@ async fn start_node(
     tracing::info!("  HTTP API: http://{}", listen_addr);
     tracing::info!("  Press Ctrl+C to shutdown");
 
+    // Extract components before moving router
+    let router = node.router;
+    let shutdown_tx = node.shutdown_tx;
+    let node_task = node.node_task;
+
     // Start HTTP server with graceful shutdown
     tokio::select! {
-        result = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()) => {
+        result = axum::serve(listener, router).with_graceful_shutdown(shutdown_signal()) => {
             result.context("HTTP server error")?;
         }
     }
