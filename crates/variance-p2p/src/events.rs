@@ -3,6 +3,7 @@
 //! Provides event channels for protocol events that the application layer can subscribe to.
 
 use libp2p::PeerId;
+use tokio::sync::broadcast;
 use variance_proto::identity_proto::{IdentityRequest, IdentityResponse};
 use variance_proto::media_proto::SignalingMessage;
 use variance_proto::messaging_proto::{DirectMessage, GroupMessage, OfflineMessageEnvelope};
@@ -127,21 +128,21 @@ pub enum P2pEvent {
 /// Event channels for protocol events
 #[derive(Clone)]
 pub struct EventChannels {
-    pub identity: tokio::sync::broadcast::Sender<IdentityEvent>,
-    pub offline_messages: tokio::sync::broadcast::Sender<OfflineMessageEvent>,
-    pub signaling: tokio::sync::broadcast::Sender<SignalingEvent>,
-    pub direct_messages: tokio::sync::broadcast::Sender<DirectMessageEvent>,
-    pub group_messages: tokio::sync::broadcast::Sender<GroupMessageEvent>,
+    pub identity: broadcast::Sender<IdentityEvent>,
+    pub offline_messages: broadcast::Sender<OfflineMessageEvent>,
+    pub signaling: broadcast::Sender<SignalingEvent>,
+    pub direct_messages: broadcast::Sender<DirectMessageEvent>,
+    pub group_messages: broadcast::Sender<GroupMessageEvent>,
 }
 
 impl EventChannels {
     /// Create new event channels with the given buffer size
     pub fn new(buffer_size: usize) -> Self {
-        let (identity_tx, _) = tokio::sync::broadcast::channel(buffer_size);
-        let (offline_tx, _) = tokio::sync::broadcast::channel(buffer_size);
-        let (signaling_tx, _) = tokio::sync::broadcast::channel(buffer_size);
-        let (direct_tx, _) = tokio::sync::broadcast::channel(buffer_size);
-        let (group_tx, _) = tokio::sync::broadcast::channel(buffer_size);
+        let (identity_tx, _) = broadcast::channel(buffer_size);
+        let (offline_tx, _) = broadcast::channel(buffer_size);
+        let (signaling_tx, _) = broadcast::channel(buffer_size);
+        let (direct_tx, _) = broadcast::channel(buffer_size);
+        let (group_tx, _) = broadcast::channel(buffer_size);
 
         Self {
             identity: identity_tx,
@@ -153,31 +154,27 @@ impl EventChannels {
     }
 
     /// Subscribe to identity events
-    pub fn subscribe_identity(&self) -> tokio::sync::broadcast::Receiver<IdentityEvent> {
+    pub fn subscribe_identity(&self) -> broadcast::Receiver<IdentityEvent> {
         self.identity.subscribe()
     }
 
     /// Subscribe to offline message events
-    pub fn subscribe_offline_messages(
-        &self,
-    ) -> tokio::sync::broadcast::Receiver<OfflineMessageEvent> {
+    pub fn subscribe_offline_messages(&self) -> broadcast::Receiver<OfflineMessageEvent> {
         self.offline_messages.subscribe()
     }
 
     /// Subscribe to signaling events
-    pub fn subscribe_signaling(&self) -> tokio::sync::broadcast::Receiver<SignalingEvent> {
+    pub fn subscribe_signaling(&self) -> broadcast::Receiver<SignalingEvent> {
         self.signaling.subscribe()
     }
 
     /// Subscribe to direct message events
-    pub fn subscribe_direct_messages(
-        &self,
-    ) -> tokio::sync::broadcast::Receiver<DirectMessageEvent> {
+    pub fn subscribe_direct_messages(&self) -> broadcast::Receiver<DirectMessageEvent> {
         self.direct_messages.subscribe()
     }
 
     /// Subscribe to group message events
-    pub fn subscribe_group_messages(&self) -> tokio::sync::broadcast::Receiver<GroupMessageEvent> {
+    pub fn subscribe_group_messages(&self) -> broadcast::Receiver<GroupMessageEvent> {
         self.group_messages.subscribe()
     }
 
