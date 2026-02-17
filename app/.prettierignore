@@ -1,0 +1,20 @@
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Dependencies
+node_modules/
+pnpm-lock.yaml
+
+# Tauri generated files
+src-tauri/target/
+src-tauri/gen/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store

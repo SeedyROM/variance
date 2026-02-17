@@ -32,6 +32,17 @@ repos:
         name: cargo check
         description: Run cargo check
 
+  # JavaScript/TypeScript formatting and linting
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0-alpha.8
+    hooks:
+      - id: prettier
+        name: prettier (js/ts/jsx/tsx)
+        types_or: [javascript, jsx, ts, tsx, json, css]
+        files: ^app/
+        additional_dependencies:
+          - prettier@3.4.2
+
   # Local hooks for testing
   - repo: local
     hooks:
