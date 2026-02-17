@@ -55,6 +55,12 @@ pub struct AppState {
     /// Local DID
     pub local_did: String,
 
+    /// Hex-encoded verifying key for this identity
+    pub verifying_key: String,
+
+    /// RFC3339 timestamp when this identity was created
+    pub created_at: String,
+
     /// P2P node handle for sending messages over the network
     pub node_handle: variance_p2p::NodeHandle,
 
@@ -139,6 +145,8 @@ impl AppState {
             signaling: Arc::new(SignalingHandler::new(identity.did.clone(), signaling_key)),
             storage,
             local_did: identity.did,
+            verifying_key: identity.verifying_key,
+            created_at: identity.created_at,
             node_handle,
             ws_manager: WebSocketManager::new(),
             event_channels,
@@ -223,6 +231,8 @@ impl AppState {
             signaling: Arc::new(SignalingHandler::new(local_did.clone(), signaling_key)),
             storage,
             local_did,
+            verifying_key: "".to_string(),
+            created_at: "".to_string(),
             node_handle: Self::test_node_handle(),
             ws_manager: WebSocketManager::new(),
             event_channels: None,

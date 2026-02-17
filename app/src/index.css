@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+@variant dark (&:where([data-theme="dark"] *));
+
+@theme {
+  --color-primary-50: oklch(0.97 0.03 260);
+  --color-primary-100: oklch(0.93 0.06 260);
+  --color-primary-200: oklch(0.86 0.1 260);
+  --color-primary-300: oklch(0.76 0.14 260);
+  --color-primary-400: oklch(0.65 0.18 260);
+  --color-primary-500: oklch(0.55 0.2 260);
+  --color-primary-600: oklch(0.46 0.19 260);
+  --color-primary-700: oklch(0.38 0.17 260);
+  --color-primary-800: oklch(0.3 0.14 260);
+  --color-primary-900: oklch(0.23 0.1 260);
+
+  --color-surface-50: oklch(0.99 0 0);
+  --color-surface-100: oklch(0.97 0 0);
+  --color-surface-200: oklch(0.93 0 0);
+  --color-surface-300: oklch(0.87 0 0);
+  --color-surface-800: oklch(0.2 0 0);
+  --color-surface-900: oklch(0.13 0 0);
+  --color-surface-950: oklch(0.09 0 0);
+}
+
+html {
+  color-scheme: light;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: oklch(0.7 0 0 / 0.4);
+  border-radius: 3px;
+}

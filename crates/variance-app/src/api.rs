@@ -20,6 +20,16 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health", get(health_check))
         // WebSocket endpoint
         .route("/ws", get(crate::websocket::websocket_handler))
+        // Identity endpoints
+        .route("/identity", get(get_identity))
+        .route("/identity/resolve/{did}", get(resolve_identity))
+        // Conversation endpoints
+        .route("/conversations", get(list_conversations))
+        .route("/conversations", post(start_conversation))
+        .route(
+            "/conversations/{peer_did}",
+            axum::routing::delete(delete_conversation),
+        )
         // Message endpoints
         .route("/messages/direct", post(send_direct_message))
         .route("/messages/direct/{did}", get(get_direct_messages))
@@ -168,6 +178,32 @@ pub struct GroupMessageResponse {
     pub reply_to: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct IdentityStatusResponse {
+    pub did: String,
+    pub verifying_key: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConversationResponse {
+    pub id: String,
+    pub peer_did: String,
+    pub last_message_timestamp: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StartConversationRequest {
+    pub recipient_did: String,
+    pub text: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StartConversationResponse {
+    pub conversation_id: String,
+    pub message_id: String,
+}
+
 // ===== Health Check =====
 
 async fn health_check() -> Json<serde_json::Value> {
@@ -175,6 +211,130 @@ async fn health_check() -> Json<serde_json::Value> {
         "status": "ok",
         "service": "variance-app"
     }))
+}
+
+// ===== Identity Handlers =====
+
+async fn get_identity(State(state): State<AppState>) -> Json<IdentityStatusResponse> {
+    Json(IdentityStatusResponse {
+        did: state.local_did.clone(),
+        verifying_key: state.verifying_key.clone(),
+        created_at: state.created_at.clone(),
+    })
+}
+
+/// Resolve a DID to its identity document.
+///
+/// Full resolution requires the peer to be reachable via P2P. Currently returns
+/// the DID as-is since DHT-to-PeerId lookup is not yet wired to the API layer.
+async fn resolve_identity(
+    State(state): State<AppState>,
+    Path(did): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    // Self-resolution: return our own identity without network round-trip
+    if did == state.local_did {
+        return Ok(Json(serde_json::json!({
+            "did": did,
+            "verifying_key": state.verifying_key,
+            "created_at": state.created_at,
+            "resolved": true,
+        })));
+    }
+
+    // Remote resolution requires mapping DID → PeerId which needs DHT integration.
+    // Return the DID with a flag indicating it is not yet resolved.
+    Ok(Json(serde_json::json!({
+        "did": did,
+        "resolved": false,
+    })))
+}
+
+// ===== Conversation Handlers =====
+
+async fn list_conversations(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ConversationResponse>>> {
+    use variance_messaging::storage::MessageStorage;
+
+    let conversations = state
+        .storage
+        .list_direct_conversations(&state.local_did)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to list conversations: {}", e),
+        })?;
+
+    let responses = conversations
+        .into_iter()
+        .map(|(peer_did, last_message_timestamp)| {
+            let id = conversation_id(&state.local_did, &peer_did);
+            ConversationResponse {
+                id,
+                peer_did,
+                last_message_timestamp,
+            }
+        })
+        .collect();
+
+    Ok(Json(responses))
+}
+
+async fn start_conversation(
+    State(state): State<AppState>,
+    Json(req): Json<StartConversationRequest>,
+) -> Result<Json<StartConversationResponse>> {
+    let content = variance_proto::messaging_proto::MessageContent {
+        text: req.text,
+        attachments: vec![],
+        mentions: vec![],
+        reply_to: None,
+        metadata: Default::default(),
+    };
+
+    let message = state
+        .direct_messaging
+        .send_message(req.recipient_did.clone(), content)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to send message: {}", e),
+        })?;
+
+    if let Some(ref channels) = state.event_channels {
+        channels.send_direct_message(variance_p2p::events::DirectMessageEvent::MessageSent {
+            message_id: message.id.clone(),
+            recipient: req.recipient_did.clone(),
+        });
+    }
+
+    let conversation_id = conversation_id(&state.local_did, &req.recipient_did);
+
+    Ok(Json(StartConversationResponse {
+        conversation_id,
+        message_id: message.id,
+    }))
+}
+
+async fn delete_conversation(
+    State(state): State<AppState>,
+    Path(peer_did): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    use variance_messaging::storage::MessageStorage;
+
+    state
+        .storage
+        .delete_direct_conversation(&state.local_did, &peer_did)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to delete conversation: {}", e),
+        })?;
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+fn conversation_id(did1: &str, did2: &str) -> String {
+    let mut dids = [did1, did2];
+    dids.sort();
+    format!("{}:{}", dids[0], dids[1])
 }
 
 // ===== Message Handlers =====
@@ -889,5 +1049,163 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_get_identity() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/identity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["did"], "did:variance:test");
+    }
+
+    #[tokio::test]
+    async fn test_list_conversations_empty() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/conversations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_conversations_with_messages() {
+        use variance_messaging::storage::MessageStorage;
+        use variance_proto::messaging_proto::{DirectMessage, MessageType};
+
+        let state = test_state();
+
+        // Store a message directly in storage
+        let msg = DirectMessage {
+            id: "test-msg-001".to_string(),
+            sender_did: "did:variance:test".to_string(),
+            recipient_did: "did:variance:peer".to_string(),
+            ciphertext: vec![],
+            nonce: vec![],
+            signature: vec![],
+            timestamp: 9999,
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+        };
+        state.storage.store_direct(&msg).await.unwrap();
+
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/conversations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["peer_did"], "did:variance:peer");
+        assert_eq!(arr[0]["last_message_timestamp"], 9999);
+    }
+
+    #[tokio::test]
+    async fn test_delete_conversation() {
+        use variance_messaging::storage::MessageStorage;
+        use variance_proto::messaging_proto::{DirectMessage, MessageType};
+
+        let state = test_state();
+
+        let msg = DirectMessage {
+            id: "test-msg-002".to_string(),
+            sender_did: "did:variance:test".to_string(),
+            recipient_did: "did:variance:deleteme".to_string(),
+            ciphertext: vec![],
+            nonce: vec![],
+            signature: vec![],
+            timestamp: 5000,
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+        };
+        state.storage.store_direct(&msg).await.unwrap();
+
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/conversations/did:variance:deleteme")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_start_conversation() {
+        let app = create_router(test_state());
+
+        let req_body = serde_json::json!({
+            "recipient_did": "did:variance:bob",
+            "text": "Hello!"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/conversations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["conversation_id"].as_str().is_some());
+        assert!(json["message_id"].as_str().is_some());
     }
 }
