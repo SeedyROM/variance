@@ -169,9 +169,13 @@ async fn reject_call(
     State(state): State<AppState>,
     Path(call_id): Path<String>,
 ) -> Result<Json<CallResponse>> {
-    let call = state.calls.reject_call(&call_id).map_err(|e| Error::App {
-        message: e.to_string(),
-    })?;
+    let call = state
+        .calls
+        .reject_call(&call_id)
+        .await
+        .map_err(|e| Error::App {
+            message: e.to_string(),
+        })?;
 
     Ok(Json(call_to_response(&call)))
 }
@@ -180,9 +184,13 @@ async fn end_call(
     State(state): State<AppState>,
     Path(call_id): Path<String>,
 ) -> Result<Json<CallResponse>> {
-    let call = state.calls.end_call(&call_id).map_err(|e| Error::App {
-        message: e.to_string(),
-    })?;
+    let call = state
+        .calls
+        .end_call(&call_id)
+        .await
+        .map_err(|e| Error::App {
+            message: e.to_string(),
+        })?;
 
     Ok(Json(call_to_response(&call)))
 }

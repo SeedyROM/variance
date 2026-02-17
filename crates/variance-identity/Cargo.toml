@@ -37,6 +37,10 @@ hex = { workspace = true }
 # Storage
 sled = { workspace = true }
 
+# IPFS
+ipfs-api-backend-hyper = { version = "0.6", default-features = false, features = ["with-builder", "with-send-sync"] }
+cid = "0.11"
+
 # Concurrency
 dashmap = { workspace = true }
 

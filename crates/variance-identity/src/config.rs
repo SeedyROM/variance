@@ -1,5 +1,7 @@
+use crate::storage::{IdentityStorage, IpfsStorage, LocalStorage};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Identity system configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +59,19 @@ impl Default for CacheConfig {
             l1_ttl_seconds: 5 * 60,       // 5 minutes
             l2_ttl_seconds: 60 * 60,      // 1 hour
             l3_ttl_seconds: 24 * 60 * 60, // 24 hours
+        }
+    }
+}
+
+impl IdentityConfig {
+    /// Create a storage backend based on configuration
+    ///
+    /// Returns a trait object that implements IdentityStorage.
+    /// The backend type (Local or IPFS) is determined by the config.
+    pub fn create_storage(&self) -> crate::error::Result<Arc<dyn IdentityStorage>> {
+        match &self.storage {
+            StorageConfig::Local { db_path } => Ok(Arc::new(LocalStorage::new(db_path)?)),
+            StorageConfig::Ipfs { api_url, .. } => Ok(Arc::new(IpfsStorage::new(api_url)?)),
         }
     }
 }
@@ -123,5 +138,33 @@ mod tests {
 
         let config: IdentityConfig = serde_json::from_str(json).unwrap();
         assert!(matches!(config.storage, StorageConfig::Local { .. }));
+    }
+
+    #[test]
+    fn test_create_local_storage() {
+        let config = IdentityConfig {
+            storage: StorageConfig::Local {
+                db_path: PathBuf::from("/tmp/test-storage"),
+            },
+            cache: CacheConfig::default(),
+        };
+
+        let storage = config.create_storage();
+        assert!(storage.is_ok());
+    }
+
+    #[test]
+    fn test_create_ipfs_storage() {
+        let config = IdentityConfig {
+            storage: StorageConfig::Ipfs {
+                api_url: "http://127.0.0.1:5001".to_string(),
+                gateway_url: None,
+            },
+            cache: CacheConfig::default(),
+        };
+
+        // Should succeed in creating client (doesn't connect yet)
+        let storage = config.create_storage();
+        assert!(storage.is_ok());
     }
 }

@@ -22,6 +22,12 @@ pub enum Error {
 
     #[snafu(display("Media error: {message}"))]
     Media { message: String },
+
+    #[snafu(display("WebRTC error: {message}"))]
+    WebRtc { message: String },
+
+    #[snafu(display("I/O error: {source}"))]
+    Io { source: std::io::Error },
 }
 
 #[cfg(test)]

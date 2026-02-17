@@ -120,7 +120,13 @@ impl AppState {
                 identity.did.clone(),
                 storage.clone(),
             )),
-            calls: Arc::new(CallManager::new(identity.did.clone())),
+            calls: Arc::new(
+                CallManager::new(
+                    identity.did.clone(),
+                    vec!["stun:stun.l.google.com:19302".to_string()],
+                )
+                .map_err(|e| anyhow::anyhow!("Failed to create call manager: {}", e))?,
+            ),
             signaling: Arc::new(SignalingHandler::new(identity.did.clone(), signaling_key)),
             storage,
             local_did: identity.did,
@@ -196,7 +202,13 @@ impl AppState {
             )),
             typing: Arc::new(TypingHandler::new(local_did.clone())),
             offline_relay: Arc::new(OfflineRelayHandler::new(local_did.clone(), storage.clone())),
-            calls: Arc::new(CallManager::new(local_did.clone())),
+            calls: Arc::new(
+                CallManager::new(
+                    local_did.clone(),
+                    vec!["stun:stun.l.google.com:19302".to_string()],
+                )
+                .expect("Failed to create call manager"),
+            ),
             signaling: Arc::new(SignalingHandler::new(local_did.clone(), signaling_key)),
             storage,
             local_did,

@@ -37,5 +37,9 @@ ulid = "1.1"
 # Time
 chrono = { workspace = true }
 
+# WebRTC
+webrtc = "0.17"
+interceptor = "0.17"
+
 [dev-dependencies]
 rand = { workspace = true }

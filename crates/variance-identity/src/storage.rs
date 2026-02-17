@@ -130,23 +130,225 @@ impl IdentityStorage for LocalStorage {
     }
 }
 
-/// IPFS storage implementation (TODO)
+/// IPFS storage implementation
 ///
-/// This will integrate with a real IPFS daemon for production use.
-/// Implementation requires:
-/// - IPFS client library (e.g., rust-ipfs or ipfs-api)
+/// Integrates with a real IPFS daemon for production use.
+/// Requires:
 /// - IPFS daemon running locally or remotely
 /// - IPNS key management for mutable pointers
 ///
-/// When implemented, this should:
+/// Features:
 /// - Store DID documents in IPFS (get real CIDs)
 /// - Publish IPNS records for mutable updates
 /// - Resolve IPNS names to current CIDs
-/// - Handle IPFS pinning for important content
-#[allow(dead_code)]
 pub struct IpfsStorage {
-    // TODO: Add IPFS client when ready
-    // client: ipfs_api::IpfsClient,
+    client: ipfs_api_backend_hyper::IpfsClient,
+    /// Cache of username → IPNS key name for publishing
+    ipns_keys: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
+}
+
+impl IpfsStorage {
+    /// Create a new IPFS storage instance
+    ///
+    /// # Arguments
+    /// * `api_url` - IPFS API endpoint (e.g., "http://127.0.0.1:5001")
+    ///
+    /// Supports both HTTP URLs and multiaddr format:
+    /// - HTTP: "http://127.0.0.1:5001"
+    /// - Multiaddr: "/ip4/127.0.0.1/tcp/5001"
+    pub fn new(api_url: &str) -> Result<Self> {
+        use ipfs_api_backend_hyper::TryFromUri;
+
+        let client = if api_url.starts_with('/') {
+            // Multiaddr format
+            ipfs_api_backend_hyper::IpfsClient::from_multiaddr_str(api_url).map_err(|e| {
+                Error::Crypto {
+                    message: format!("Invalid multiaddr: {}", e),
+                }
+            })?
+        } else if api_url.starts_with("http://") || api_url.starts_with("https://") {
+            // HTTP URL format - convert to multiaddr
+            let url_str = api_url
+                .strip_prefix("http://")
+                .or_else(|| api_url.strip_prefix("https://"))
+                .unwrap_or(api_url);
+
+            let parts: Vec<&str> = url_str.split(':').collect();
+            let host = parts.first().copied().unwrap_or("127.0.0.1");
+            let port = parts
+                .get(1)
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(5001);
+
+            let multiaddr = format!("/ip4/{}/tcp/{}", host, port);
+            ipfs_api_backend_hyper::IpfsClient::from_multiaddr_str(&multiaddr).map_err(|e| {
+                Error::Crypto {
+                    message: format!("Failed to create IPFS client: {}", e),
+                }
+            })?
+        } else {
+            // Default to localhost:5001
+            ipfs_api_backend_hyper::IpfsClient::default()
+        };
+
+        Ok(Self {
+            client,
+            ipns_keys: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+        })
+    }
+}
+
+#[async_trait]
+impl IdentityStorage for IpfsStorage {
+    async fn store(&self, did: &Did) -> Result<String> {
+        use ipfs_api_backend_hyper::IpfsApi;
+
+        // Serialize DID to JSON
+        let json = serde_json::to_vec(did).map_err(|e| Error::Serialization { source: e })?;
+
+        // Clone client for moving into spawn
+        let client = self.client.clone();
+
+        // Spawn task to make future Send (ipfs-api-backend-hyper futures are not Send)
+        let handle = tokio::task::spawn(async move {
+            let cursor = std::io::Cursor::new(json);
+            client.add(cursor).await
+        });
+
+        let response = handle
+            .await
+            .map_err(|e| Error::Crypto {
+                message: format!("Task join error: {}", e),
+            })?
+            .map_err(|e| Error::Crypto {
+                message: format!("Failed to add DID to IPFS: {}", e),
+            })?;
+
+        // Return IPFS CID
+        Ok(response.hash)
+    }
+
+    async fn fetch(&self, cid: &str) -> Result<Option<Did>> {
+        use futures::TryStreamExt;
+        use ipfs_api_backend_hyper::IpfsApi;
+
+        let client = self.client.clone();
+        let cid = cid.to_string();
+
+        // Spawn task to make future Send
+        let handle = tokio::task::spawn(async move {
+            client
+                .cat(&cid)
+                .map_ok(|chunk| chunk.to_vec())
+                .try_concat()
+                .await
+        });
+
+        // Fetch from IPFS
+        let data = match handle.await.map_err(|e| Error::Crypto {
+            message: format!("Task join error: {}", e),
+        })? {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("not found") || err_str.contains("no such file") {
+                    return Ok(None); // CID doesn't exist
+                }
+                return Err(Error::Crypto {
+                    message: format!("Failed to fetch from IPFS: {}", e),
+                });
+            }
+        };
+
+        // Parse JSON to DID
+        let did = serde_json::from_slice(&data).map_err(|e| Error::Serialization { source: e })?;
+
+        Ok(Some(did))
+    }
+
+    async fn publish(&self, name: &str, content_id: &str) -> Result<()> {
+        use ipfs_api_backend_hyper::IpfsApi;
+
+        let key_name = format!("variance-{}", name);
+        let client = self.client.clone();
+        let content_id = content_id.to_string();
+        let key_name_check = key_name.clone();
+
+        // Check if key exists and create if needed
+        let handle = tokio::task::spawn(async move {
+            use ipfs_api_backend_hyper::request::KeyType;
+
+            let keys = client.key_list().await?;
+
+            if !keys.keys.iter().any(|k| k.name == key_name_check) {
+                // Create new IPNS key with Ed25519
+                client
+                    .key_gen(&key_name_check, KeyType::Ed25519, 2048)
+                    .await?;
+            }
+
+            // Publish CID to IPNS
+            client
+                .name_publish(&content_id, false, None, None, Some(&key_name_check))
+                .await
+        });
+
+        handle
+            .await
+            .map_err(|e| Error::Crypto {
+                message: format!("Task join error: {}", e),
+            })?
+            .map_err(|e| Error::Crypto {
+                message: format!("Failed to publish to IPNS: {}", e),
+            })?;
+
+        // Cache key name
+        self.ipns_keys
+            .write()
+            .await
+            .insert(name.to_string(), key_name);
+
+        Ok(())
+    }
+
+    async fn resolve(&self, name: &str) -> Result<Option<String>> {
+        use ipfs_api_backend_hyper::IpfsApi;
+
+        let key_name = format!("variance-{}", name);
+        let client = self.client.clone();
+
+        // Spawn task to make future Send
+        let handle =
+            tokio::task::spawn(
+                async move { client.name_resolve(Some(&key_name), false, false).await },
+            );
+
+        // Resolve IPNS name to CID
+        match handle.await.map_err(|e| Error::Crypto {
+            message: format!("Task join error: {}", e),
+        })? {
+            Ok(resolved) => {
+                // Extract CID from /ipfs/<cid> path
+                let cid = resolved
+                    .path
+                    .strip_prefix("/ipfs/")
+                    .unwrap_or(&resolved.path)
+                    .to_string();
+                Ok(Some(cid))
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("not found") || err_str.contains("no such name") {
+                    return Ok(None);
+                }
+                Err(Error::Crypto {
+                    message: format!("Failed to resolve IPNS name: {}", e),
+                })
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -267,6 +469,121 @@ mod tests {
         let storage = LocalStorage::new(dir.path()).unwrap();
 
         let result = storage.resolve("nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    // IPFS storage tests (require running IPFS daemon)
+    // Run with: cargo test --package variance-identity -- --ignored
+
+    #[tokio::test]
+    #[ignore] // Requires running IPFS daemon on localhost:5001
+    async fn test_ipfs_store_and_fetch() {
+        let storage = IpfsStorage::new("http://127.0.0.1:5001").unwrap();
+
+        let peer_id = PeerId::random();
+        let did = Did::new(&peer_id).unwrap();
+
+        // Store in IPFS
+        let cid = storage.store(&did).await.unwrap();
+        assert!(cid.starts_with("Qm") || cid.starts_with("bafy"));
+
+        // Fetch back
+        let fetched = storage.fetch(&cid).await.unwrap().unwrap();
+        assert_eq!(fetched.id, did.id);
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires running IPFS daemon on localhost:5001
+    async fn test_ipfs_missing_content() {
+        let storage = IpfsStorage::new("http://127.0.0.1:5001").unwrap();
+
+        // Try to fetch non-existent CID
+        let result = storage
+            .fetch("QmNotRealCIDxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires running IPFS daemon on localhost:5001
+    async fn test_ipns_publish_and_resolve() {
+        let storage = IpfsStorage::new("http://127.0.0.1:5001").unwrap();
+
+        let peer_id = PeerId::random();
+        let did = Did::new(&peer_id).unwrap();
+
+        // Use a unique name to avoid conflicts with other tests
+        let username = format!("test-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap());
+
+        // Store and publish
+        let cid = storage.store(&did).await.unwrap();
+        storage.publish(&username, &cid).await.unwrap();
+
+        // Resolve username
+        let resolved_cid = storage.resolve(&username).await.unwrap().unwrap();
+        assert_eq!(resolved_cid, cid);
+
+        // Fetch DID via resolved CID
+        let fetched = storage.fetch(&resolved_cid).await.unwrap().unwrap();
+        assert_eq!(fetched.id, did.id);
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires running IPFS daemon on localhost:5001
+    async fn test_ipns_update() {
+        let storage = IpfsStorage::new("http://127.0.0.1:5001").unwrap();
+
+        let peer_id = PeerId::random();
+        let did1 = Did::new(&peer_id).unwrap();
+        let mut did2 = Did::new(&peer_id).unwrap();
+
+        // Use a unique name to avoid conflicts with other tests
+        let username = format!(
+            "test-update-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        );
+
+        // Store first version
+        let cid1 = storage.store(&did1).await.unwrap();
+        storage.publish(&username, &cid1).await.unwrap();
+
+        // Update profile
+        did2.update_profile(
+            Some("Alice Updated".to_string()),
+            None,
+            Some("New bio".to_string()),
+        );
+
+        // Store second version
+        let cid2 = storage.store(&did2).await.unwrap();
+        storage.publish(&username, &cid2).await.unwrap();
+
+        // Resolve should return latest
+        let resolved = storage.resolve(&username).await.unwrap().unwrap();
+        assert_eq!(resolved, cid2);
+        assert_ne!(cid1, cid2);
+
+        // Both versions should still be fetchable
+        let v1 = storage.fetch(&cid1).await.unwrap().unwrap();
+        let v2 = storage.fetch(&cid2).await.unwrap().unwrap();
+        assert!(v1.document.display_name.is_none());
+        assert_eq!(v2.document.display_name, Some("Alice Updated".to_string()));
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires running IPFS daemon on localhost:5001
+    async fn test_ipns_missing_name() {
+        let storage = IpfsStorage::new("http://127.0.0.1:5001").unwrap();
+
+        // Try to resolve non-existent name
+        let result = storage
+            .resolve(&format!(
+                "nonexistent-{}",
+                chrono::Utc::now().timestamp_nanos_opt().unwrap()
+            ))
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
 }
