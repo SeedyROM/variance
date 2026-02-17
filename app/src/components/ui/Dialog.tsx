@@ -9,7 +9,13 @@ interface DialogProps {
   className?: string;
 }
 
-export function Dialog({ open, onClose, title, children, className }: DialogProps) {
+export function Dialog({
+  open,
+  onClose,
+  title,
+  children,
+  className,
+}: DialogProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -33,8 +39,8 @@ export function Dialog({ open, onClose, title, children, className }: DialogProp
     >
       <div
         className={cn(
-          "relative w-full max-w-md rounded-xl bg-surface-50 p-6 shadow-xl dark:bg-surface-900",
-          className
+          "relative w-full max-w-md rounded-xl bg-surface-50 p-6 border border-gray-500 dark:border-gray-500 dark:bg-surface-900",
+          className,
         )}
       >
         <div className="mb-4 flex items-center justify-between">
@@ -45,8 +51,18 @@ export function Dialog({ open, onClose, title, children, className }: DialogProp
             onClick={onClose}
             className="rounded-lg p-1 hover:bg-surface-200 dark:hover:bg-surface-800 text-surface-500"
           >
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            <svg
+              className="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M6 18L18 6M6 6l12 12"
+              />
             </svg>
           </button>
         </div>
