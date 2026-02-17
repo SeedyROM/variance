@@ -16,6 +16,7 @@ pub struct IdentityFile {
     pub signing_key: String,
     pub verifying_key: String,
     pub signaling_key: String,
+    pub x25519_key: String,
     pub created_at: String,
 }
 
@@ -112,12 +113,23 @@ impl AppState {
                 .map_err(|_| anyhow::anyhow!("Invalid signaling key length"))?,
         );
 
+        // Parse x25519 key from hex
+        let x25519_key_bytes = hex::decode(&identity.x25519_key)
+            .map_err(|e| anyhow::anyhow!("Invalid x25519 key format: {}", e))?;
+
+        let x25519_key_array: [u8; 32] = x25519_key_bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Invalid x25519 key length"))?;
+
+        let x25519_secret = x25519_dalek::StaticSecret::from(x25519_key_array);
+
         let storage = Arc::new(LocalMessageStorage::new(db_path)?);
 
         Ok(Self {
             direct_messaging: Arc::new(DirectMessageHandler::new(
                 identity.did.clone(),
                 signing_key.clone(),
+                x25519_secret,
                 storage.clone(),
             )),
             group_messaging: Arc::new(GroupMessageHandler::new(
@@ -189,6 +201,12 @@ impl AppState {
                     variance_p2p::NodeCommand::UnsubscribeFromTopic { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
+                    variance_p2p::NodeCommand::ProvideUsername { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    variance_p2p::NodeCommand::FindUsernameProviders { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(vec![]));
+                    }
                 }
             }
         });
@@ -207,6 +225,7 @@ impl AppState {
             direct_messaging: Arc::new(DirectMessageHandler::new(
                 local_did.clone(),
                 signing_key.clone(),
+                x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng),
                 storage.clone(),
             )),
             group_messaging: Arc::new(GroupMessageHandler::new(

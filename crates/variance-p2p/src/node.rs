@@ -29,6 +29,11 @@ pub struct Node {
         libp2p::request_response::OutboundRequestId,
         oneshot::Sender<Result<IdentityResponse>>,
     >,
+    /// Pending get_providers queries: query_id → (accumulated peers, response sender)
+    pending_provider_queries: std::collections::HashMap<
+        kad::QueryId,
+        (Vec<PeerId>, oneshot::Sender<Result<Vec<PeerId>>>),
+    >,
     /// DID to PeerId mapping for routing signaling messages
     did_to_peer: Arc<tokio::sync::RwLock<HashMap<String, PeerId>>>,
 }
@@ -154,6 +159,7 @@ impl Node {
             events,
             command_rx,
             pending_identity_requests: HashMap::new(),
+            pending_provider_queries: std::collections::HashMap::new(),
             did_to_peer: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         };
 
@@ -339,6 +345,23 @@ impl Node {
                     }));
                 }
             }
+            NodeCommand::ProvideUsername { key, response_tx } => {
+                match self.swarm.behaviour_mut().kad.start_providing(key) {
+                    Ok(_) => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    Err(e) => {
+                        let _ = response_tx.send(Err(Error::Kad {
+                            message: format!("start_providing failed: {:?}", e),
+                        }));
+                    }
+                }
+            }
+            NodeCommand::FindUsernameProviders { key, response_tx } => {
+                let query_id = self.swarm.behaviour_mut().kad.get_providers(key);
+                self.pending_provider_queries
+                    .insert(query_id, (Vec::new(), response_tx));
+            }
         }
     }
 
@@ -357,6 +380,30 @@ impl Node {
                     kad::Event::InboundRequest { request } => {
                         debug!("Inbound DHT request: {:?}", request);
                     }
+                    kad::Event::OutboundQueryProgressed { id, result, .. } => match result {
+                        kad::QueryResult::GetProviders(Ok(
+                            kad::GetProvidersOk::FoundProviders { providers, .. },
+                        )) => {
+                            if let Some((peers, _)) = self.pending_provider_queries.get_mut(&id) {
+                                peers.extend(providers);
+                            }
+                        }
+                        kad::QueryResult::GetProviders(Ok(
+                            kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. },
+                        )) => {
+                            if let Some((peers, tx)) = self.pending_provider_queries.remove(&id) {
+                                let _ = tx.send(Ok(peers));
+                            }
+                        }
+                        kad::QueryResult::GetProviders(Err(e)) => {
+                            if let Some((_, tx)) = self.pending_provider_queries.remove(&id) {
+                                let _ = tx.send(Err(Error::Kad {
+                                    message: format!("get_providers failed: {:?}", e),
+                                }));
+                            }
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 },
                 crate::behaviour::VarianceBehaviourEvent::Gossipsub(gossipsub_event) => {

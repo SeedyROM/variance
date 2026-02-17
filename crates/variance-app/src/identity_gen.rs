@@ -2,6 +2,7 @@ use anyhow::Result;
 use bip39::{Language, Mnemonic};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand::RngCore;
+use x25519_dalek::StaticSecret as X25519Secret;
 
 use crate::state::IdentityFile;
 
@@ -26,6 +27,7 @@ pub fn generate() -> Result<(IdentityFile, String)> {
     let signing_key = derive_signing_key(&mnemonic);
     let verifying_key = signing_key.verifying_key();
     let signaling_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+    let x25519_secret = X25519Secret::random_from_rng(rand::thread_rng());
     let did = did_from_verifying_key(&verifying_key);
 
     let phrase = mnemonic.to_string();
@@ -34,6 +36,7 @@ pub fn generate() -> Result<(IdentityFile, String)> {
         signing_key: hex::encode(signing_key.to_bytes()),
         verifying_key: hex::encode(verifying_key.to_bytes()),
         signaling_key: hex::encode(signaling_key.to_bytes()),
+        x25519_key: hex::encode(x25519_secret.to_bytes()),
         created_at: chrono::Utc::now().to_rfc3339(),
     };
 
@@ -54,6 +57,7 @@ pub fn recover(mnemonic_phrase: &str) -> Result<IdentityFile> {
     let signing_key = derive_signing_key(&mnemonic);
     let verifying_key = signing_key.verifying_key();
     let signaling_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+    let x25519_secret = X25519Secret::random_from_rng(rand::thread_rng());
     let did = did_from_verifying_key(&verifying_key);
 
     Ok(IdentityFile {
@@ -61,6 +65,7 @@ pub fn recover(mnemonic_phrase: &str) -> Result<IdentityFile> {
         signing_key: hex::encode(signing_key.to_bytes()),
         verifying_key: hex::encode(verifying_key.to_bytes()),
         signaling_key: hex::encode(signaling_key.to_bytes()),
+        x25519_key: hex::encode(x25519_secret.to_bytes()),
         created_at: chrono::Utc::now().to_rfc3339(),
     })
 }

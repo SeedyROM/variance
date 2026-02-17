@@ -47,6 +47,24 @@ pub enum NodeCommand {
         topic: String,
         response_tx: oneshot::Sender<Result<()>>,
     },
+
+    /// Publish a DHT provider record announcing this node serves the given username key.
+    /// Key should be constructed with `username_dht_key(username)`.
+    ProvideUsername {
+        key: libp2p::kad::RecordKey,
+        response_tx: oneshot::Sender<Result<()>>,
+    },
+
+    /// Find peers that have announced they provide the given username key.
+    FindUsernameProviders {
+        key: libp2p::kad::RecordKey,
+        response_tx: oneshot::Sender<Result<Vec<libp2p::PeerId>>>,
+    },
+}
+
+/// Construct the DHT record key for a username, e.g. "alice#0001".
+pub fn username_dht_key(username: &str) -> libp2p::kad::RecordKey {
+    libp2p::kad::RecordKey::new(&format!("/variance/username/{}", username))
 }
 
 /// Handle for sending commands to the P2P node
@@ -167,6 +185,44 @@ impl NodeHandle {
                 message: "Failed to send command to node".to_string(),
             })?;
 
+        response_rx
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to receive response from node".to_string(),
+            })?
+    }
+
+    /// Publish a DHT provider record for the given username
+    pub async fn provide_username(&self, username: &str) -> Result<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(NodeCommand::ProvideUsername {
+                key: username_dht_key(username),
+                response_tx,
+            })
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to send command to node".to_string(),
+            })?;
+        response_rx
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to receive response from node".to_string(),
+            })?
+    }
+
+    /// Find peers that provide the given username
+    pub async fn find_username_providers(&self, username: &str) -> Result<Vec<libp2p::PeerId>> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.command_tx
+            .send(NodeCommand::FindUsernameProviders {
+                key: username_dht_key(username),
+                response_tx,
+            })
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to send command to node".to_string(),
+            })?;
         response_rx
             .await
             .map_err(|_| crate::error::Error::Protocol {

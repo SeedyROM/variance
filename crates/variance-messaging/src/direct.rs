@@ -22,6 +22,9 @@ pub struct DirectMessageHandler {
     /// Signing key for message authentication
     signing_key: SigningKey,
 
+    /// Long-term X25519 key for establishing sessions as responder
+    long_term_secret: x25519_dalek::StaticSecret,
+
     /// Ratchet sessions indexed by conversation partner DID
     sessions: Arc<RwLock<HashMap<String, Ratchet<StaticSecret>>>>,
 
@@ -34,14 +37,21 @@ impl DirectMessageHandler {
     pub fn new(
         local_did: String,
         signing_key: SigningKey,
+        long_term_secret: x25519_dalek::StaticSecret,
         storage: Arc<dyn MessageStorage>,
     ) -> Self {
         Self {
             local_did,
             signing_key,
+            long_term_secret,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             storage,
         }
+    }
+
+    /// Return the X25519 public key corresponding to the long-term secret
+    pub fn long_term_public_key(&self) -> x25519_dalek::PublicKey {
+        x25519_dalek::PublicKey::from(&self.long_term_secret)
     }
 
     /// Initialize a session as initiator only if one doesn't already exist for this peer.
@@ -127,8 +137,7 @@ impl DirectMessageHandler {
             });
         }
 
-        let local_secret = StaticSecret::random_from_rng(OsRng);
-        let shared_secret = local_secret.diffie_hellman(&sender_public_key);
+        let shared_secret = self.long_term_secret.diffie_hellman(&sender_public_key);
 
         if shared_secret.as_bytes() == &[0u8; 32] {
             return Err(Error::Crypto {
@@ -334,8 +343,12 @@ mod tests {
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler =
-            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
+        let handler = DirectMessageHandler::new(
+            "did:variance:alice".to_string(),
+            signing_key,
+            StaticSecret::random_from_rng(OsRng),
+            storage,
+        );
 
         assert_eq!(handler.local_did, "did:variance:alice");
     }
@@ -346,8 +359,12 @@ mod tests {
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler =
-            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
+        let handler = DirectMessageHandler::new(
+            "did:variance:alice".to_string(),
+            signing_key,
+            StaticSecret::random_from_rng(OsRng),
+            storage,
+        );
 
         let message = DirectMessage {
             id: Ulid::new().to_string(),
@@ -387,8 +404,12 @@ mod tests {
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
 
-        let handler =
-            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
+        let handler = DirectMessageHandler::new(
+            "did:variance:alice".to_string(),
+            signing_key,
+            StaticSecret::random_from_rng(OsRng),
+            storage,
+        );
 
         let mut message = DirectMessage {
             id: Ulid::new().to_string(),
@@ -419,8 +440,12 @@ mod tests {
         let signing_key = SigningKey::generate(&mut OsRng);
         let wrong_key = SigningKey::generate(&mut OsRng).verifying_key();
 
-        let handler =
-            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
+        let handler = DirectMessageHandler::new(
+            "did:variance:alice".to_string(),
+            signing_key,
+            StaticSecret::random_from_rng(OsRng),
+            storage,
+        );
 
         let mut message = DirectMessage {
             id: Ulid::new().to_string(),
@@ -451,8 +476,12 @@ mod tests {
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
 
-        let handler =
-            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
+        let handler = DirectMessageHandler::new(
+            "did:variance:alice".to_string(),
+            signing_key,
+            StaticSecret::random_from_rng(OsRng),
+            storage,
+        );
 
         let message = DirectMessage {
             id: Ulid::new().to_string(),
@@ -480,8 +509,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler =
-            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
+        let handler = DirectMessageHandler::new(
+            "did:variance:alice".to_string(),
+            signing_key,
+            StaticSecret::random_from_rng(OsRng),
+            storage,
+        );
 
         let zero_key = PublicKey::from([0u8; 32]);
         let result = handler
@@ -497,8 +530,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler =
-            DirectMessageHandler::new("did:variance:bob".to_string(), signing_key, storage);
+        let handler = DirectMessageHandler::new(
+            "did:variance:bob".to_string(),
+            signing_key,
+            StaticSecret::random_from_rng(OsRng),
+            storage,
+        );
 
         let zero_key = PublicKey::from([0u8; 32]);
         let result = handler
@@ -514,8 +551,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler =
-            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
+        let handler = DirectMessageHandler::new(
+            "did:variance:alice".to_string(),
+            signing_key,
+            StaticSecret::random_from_rng(OsRng),
+            storage,
+        );
 
         // A real X25519 keypair produces a valid (non-zero) public key.
         let recipient_secret = StaticSecret::random_from_rng(OsRng);
@@ -533,8 +574,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
         let signing_key = SigningKey::generate(&mut OsRng);
-        let handler =
-            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
+        let handler = DirectMessageHandler::new(
+            "did:variance:alice".to_string(),
+            signing_key,
+            StaticSecret::random_from_rng(OsRng),
+            storage,
+        );
 
         let recipient_secret = StaticSecret::random_from_rng(OsRng);
         let recipient_public_key = PublicKey::from(&recipient_secret);

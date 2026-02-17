@@ -30,6 +30,7 @@ pub fn create_router(state: AppState) -> Router {
         // Identity endpoints
         .route("/identity", get(get_identity))
         .route("/identity/resolve/{did}", get(resolve_identity))
+        .route("/identity/username", post(register_username))
         // Conversation endpoints
         .route("/conversations", get(list_conversations))
         .route("/conversations", post(start_conversation))
@@ -216,6 +217,11 @@ pub struct StartConversationResponse {
     pub message_id: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RegisterUsernameRequest {
+    pub username: String,
+}
+
 // ===== Health Check =====
 
 async fn health_check() -> Json<serde_json::Value> {
@@ -258,6 +264,30 @@ async fn resolve_identity(
     Ok(Json(serde_json::json!({
         "did": did,
         "resolved": false,
+    })))
+}
+
+async fn register_username(
+    State(state): State<AppState>,
+    Json(req): Json<RegisterUsernameRequest>,
+) -> Result<Json<serde_json::Value>> {
+    variance_identity::username::UsernameRegistry::validate_username(&req.username).map_err(
+        |e| Error::BadRequest {
+            message: format!("Invalid username: {}", e),
+        },
+    )?;
+
+    state
+        .node_handle
+        .provide_username(&req.username)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to publish username to DHT: {}", e),
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "username": req.username,
+        "did": state.local_did,
     })))
 }
 
@@ -525,7 +555,10 @@ async fn create_call(
         "screen" => CallType::ScreenShare,
         _ => {
             return Err(Error::BadRequest {
-                message: format!("Invalid call type '{}'. Expected: audio, video, screen", req.call_type),
+                message: format!(
+                    "Invalid call type '{}'. Expected: audio, video, screen",
+                    req.call_type
+                ),
             })
         }
     };
@@ -593,7 +626,10 @@ async fn send_offer(
         "screen" => CallType::ScreenShare,
         _ => {
             return Err(Error::BadRequest {
-                message: format!("Invalid call type '{}'. Expected: audio, video, screen", req.call_type),
+                message: format!(
+                    "Invalid call type '{}'. Expected: audio, video, screen",
+                    req.call_type
+                ),
             })
         }
     };
@@ -1225,8 +1261,7 @@ mod tests {
         let app = create_router(test_state());
 
         // Simulate the recipient's X25519 key (in real usage, fetched from their DID document).
-        let recipient_secret =
-            x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let recipient_secret = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
         let recipient_public_key = x25519_dalek::PublicKey::from(&recipient_secret);
         let key_hex = hex::encode(recipient_public_key.as_bytes());
 
@@ -1256,6 +1291,47 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["conversation_id"].as_str().is_some());
         assert!(json["message_id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_register_username() {
+        let app = create_router(test_state());
+        let req_body = serde_json::json!({ "username": "alice" });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/identity/username")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["username"], "alice");
+    }
+
+    #[tokio::test]
+    async fn test_register_invalid_username() {
+        let app = create_router(test_state());
+        let req_body = serde_json::json!({ "username": "alice@bad" });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/identity/username")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
