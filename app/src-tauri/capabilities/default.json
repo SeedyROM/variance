@@ -2,9 +2,5 @@
   "identifier": "default",
   "description": "Default capabilities for Variance desktop",
   "windows": ["main"],
-  "permissions": [
-    "core:default",
-    "fs:default",
-    "dialog:default"
-  ]
+  "permissions": ["core:default", "fs:default", "dialog:default"]
 }

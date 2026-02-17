@@ -13,8 +13,8 @@ export function MnemonicDisplay({ words, onConfirmed }: MnemonicDisplayProps) {
     <div className="flex flex-col gap-4">
       <div className="rounded-lg border border-amber-400/40 bg-amber-50 p-3 dark:bg-amber-950/30">
         <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
-          Write down these 12 words in order. They are the only way to recover
-          your identity. Never share them or store them digitally.
+          Write down these 12 words in order. They are the only way to recover your identity. Never
+          share them or store them digitally.
         </p>
       </div>
 

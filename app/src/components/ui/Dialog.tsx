@@ -9,13 +9,7 @@ interface DialogProps {
   className?: string;
 }
 
-export function Dialog({
-  open,
-  onClose,
-  title,
-  children,
-  className,
-}: DialogProps) {
+export function Dialog({ open, onClose, title, children, className }: DialogProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -40,23 +34,16 @@ export function Dialog({
       <div
         className={cn(
           "relative w-full max-w-md rounded-xl bg-surface-50 p-6 border border-gray-500 dark:border-gray-500 dark:bg-surface-900",
-          className,
+          className
         )}
       >
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-50">
-            {title}
-          </h2>
+          <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-50">{title}</h2>
           <button
             onClick={onClose}
             className="rounded-lg p-1 hover:bg-surface-200 dark:hover:bg-surface-800 text-surface-500"
           >
-            <svg
-              className="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"

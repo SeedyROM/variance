@@ -71,10 +71,7 @@ export function GenerateStep({ onBack, onComplete }: GenerateStepProps) {
       <p className="mb-6 text-sm text-surface-600 dark:text-surface-400">
         Your DID: <span className="font-mono text-xs text-primary-500">{identity.did}</span>
       </p>
-      <MnemonicDisplay
-        words={identity.mnemonic}
-        onConfirmed={() => onComplete(identity.did)}
-      />
+      <MnemonicDisplay words={identity.mnemonic} onConfirmed={() => onComplete(identity.did)} />
     </div>
   );
 }

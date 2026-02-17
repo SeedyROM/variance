@@ -34,9 +34,7 @@ export function ConversationList() {
     <div className="flex h-full w-72 flex-col border-r border-surface-200 bg-surface-50 dark:border-surface-800 dark:bg-surface-900">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-surface-200 px-4 py-3 dark:border-surface-800">
-        <h2 className="font-semibold text-surface-900 dark:text-surface-50">
-          Messages
-        </h2>
+        <h2 className="font-semibold text-surface-900 dark:text-surface-50">Messages</h2>
         <button
           onClick={() => setShowNew(true)}
           className="rounded-lg p-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 text-surface-500"

@@ -58,15 +58,11 @@ export function MessageView({ peerDid }: MessageViewProps) {
           <div className="flex flex-col gap-1.5">
             {messages.map((msg, i) => {
               const showDivider =
-                i === 0 ||
-                isDifferentDay(messages[i - 1].timestamp, msg.timestamp);
+                i === 0 || isDifferentDay(messages[i - 1].timestamp, msg.timestamp);
               return (
                 <div key={msg.id}>
                   {showDivider && <DateDivider timestamp={msg.timestamp} />}
-                  <MessageBubble
-                    message={msg}
-                    isOwn={msg.sender_did === localDid}
-                  />
+                  <MessageBubble message={msg} isOwn={msg.sender_did === localDid} />
                 </div>
               );
             })}

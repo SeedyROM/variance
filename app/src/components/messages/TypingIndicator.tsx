@@ -16,9 +16,7 @@ export function TypingIndicator({ users }: TypingIndicatorProps) {
           />
         ))}
       </div>
-      <span className="text-xs text-surface-500">
-        {users[0].slice(-8)} is typing…
-      </span>
+      <span className="text-xs text-surface-500">{users[0].slice(-8)} is typing…</span>
     </div>
   );
 }

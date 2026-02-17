@@ -11,11 +11,7 @@ interface NewConversationModalProps {
   onCreated: (conversationId: string) => void;
 }
 
-export function NewConversationModal({
-  open,
-  onClose,
-  onCreated,
-}: NewConversationModalProps) {
+export function NewConversationModal({ open, onClose, onCreated }: NewConversationModalProps) {
   const [recipientDid, setRecipientDid] = useState("");
   const [initialText, setInitialText] = useState("Hello!");
   const queryClient = useQueryClient();
@@ -35,8 +31,7 @@ export function NewConversationModal({
     },
   });
 
-  const isValid =
-    recipientDid.trim().startsWith("did:") && initialText.trim().length > 0;
+  const isValid = recipientDid.trim().startsWith("did:") && initialText.trim().length > 0;
 
   return (
     <Dialog open={open} onClose={onClose} title="New Conversation">
@@ -47,9 +42,7 @@ export function NewConversationModal({
           onChange={(e) => setRecipientDid(e.target.value)}
           placeholder="did:variance:..."
           error={
-            recipientDid && !recipientDid.startsWith("did:")
-              ? "Must start with did:"
-              : undefined
+            recipientDid && !recipientDid.startsWith("did:") ? "Must start with did:" : undefined
           }
         />
 
@@ -60,9 +53,7 @@ export function NewConversationModal({
           placeholder="Hello!"
         />
 
-        {mutation.error && (
-          <p className="text-xs text-red-500">{String(mutation.error)}</p>
-        )}
+        {mutation.error && <p className="text-xs text-red-500">{String(mutation.error)}</p>}
 
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={onClose}>

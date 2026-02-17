@@ -34,16 +34,10 @@ export function OnboardingShell({ onComplete }: OnboardingShellProps) {
           />
         )}
         {step === "generate" && (
-          <GenerateStep
-            onBack={() => setStep("welcome")}
-            onComplete={handleGenerated}
-          />
+          <GenerateStep onBack={() => setStep("welcome")} onComplete={handleGenerated} />
         )}
         {step === "recover" && (
-          <RecoverStep
-            onBack={() => setStep("welcome")}
-            onComplete={handleRecovered}
-          />
+          <RecoverStep onBack={() => setStep("welcome")} onComplete={handleRecovered} />
         )}
         {step === "complete" && completedDid && (
           <SetupComplete did={completedDid} onStart={onComplete} />

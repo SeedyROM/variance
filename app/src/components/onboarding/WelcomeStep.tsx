@@ -22,21 +22,12 @@ export function WelcomeStep({ onGenerate, onRecover }: WelcomeStepProps) {
       </div>
 
       <div className="flex flex-col gap-3">
-        <Button
-          size="lg"
-          className="w-full"
-          onClick={onGenerate}
-        >
+        <Button size="lg" className="w-full" onClick={onGenerate}>
           <Shield className="h-4 w-4" />
           Create new identity
         </Button>
 
-        <Button
-          variant="secondary"
-          size="lg"
-          className="w-full"
-          onClick={onRecover}
-        >
+        <Button variant="secondary" size="lg" className="w-full" onClick={onRecover}>
           <RefreshCw className="h-4 w-4" />
           Recover existing identity
         </Button>

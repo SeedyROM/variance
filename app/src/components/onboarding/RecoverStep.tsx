@@ -64,9 +64,7 @@ export function RecoverStep({ onBack, onComplete }: RecoverStepProps) {
         />
         <p className="text-xs text-surface-500">
           {wordCount} / 12 words
-          {wordCount > 12 && (
-            <span className="ml-1 text-red-500">— too many words</span>
-          )}
+          {wordCount > 12 && <span className="ml-1 text-red-500">— too many words</span>}
         </p>
       </div>
 
@@ -76,12 +74,7 @@ export function RecoverStep({ onBack, onComplete }: RecoverStepProps) {
         </div>
       )}
 
-      <Button
-        className="w-full"
-        disabled={!isValid}
-        loading={loading}
-        onClick={handleRecover}
-      >
+      <Button className="w-full" disabled={!isValid} loading={loading} onClick={handleRecover}>
         Recover identity
       </Button>
     </div>

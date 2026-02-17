@@ -69,10 +69,9 @@ export const conversationsApi = {
     }),
 
   delete: (peerDid: string) =>
-    request<{ success: boolean }>(
-      `/conversations/${encodeURIComponent(peerDid)}`,
-      { method: "DELETE" }
-    ),
+    request<{ success: boolean }>(`/conversations/${encodeURIComponent(peerDid)}`, {
+      method: "DELETE",
+    }),
 };
 
 // ===== Messages =====
@@ -100,6 +99,5 @@ export const typingApi = {
   stop: (body: TypingRequest) =>
     request("/typing/stop", { method: "POST", body: JSON.stringify(body) }),
 
-  get: (recipient: string) =>
-    request<TypingUsers>(`/typing/${encodeURIComponent(recipient)}`),
+  get: (recipient: string) => request<TypingUsers>(`/typing/${encodeURIComponent(recipient)}`),
 };

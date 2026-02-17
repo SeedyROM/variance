@@ -23,8 +23,7 @@ export const useIdentityStore = create<IdentityStore>()(
       identityPath: null,
       isOnboarded: false,
 
-      setIdentity: (did, verifyingKey, createdAt) =>
-        set({ did, verifyingKey, createdAt }),
+      setIdentity: (did, verifyingKey, createdAt) => set({ did, verifyingKey, createdAt }),
       setIdentityPath: (identityPath) => set({ identityPath }),
       setIsOnboarded: (isOnboarded) => set({ isOnboarded }),
       reset: () =>

@@ -75,10 +75,7 @@ export class VarianceWebSocket {
   private scheduleReconnect() {
     if (this.stopped) return;
     this.reconnectTimer = setTimeout(() => {
-      this.reconnectDelay = Math.min(
-        this.reconnectDelay * 2,
-        MAX_RECONNECT_DELAY
-      );
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY);
       void this.attemptConnect();
     }, this.reconnectDelay);
   }

@@ -16,11 +16,7 @@ function LoadingScreen() {
   return (
     <div className="flex h-screen items-center justify-center bg-surface-100 dark:bg-surface-950 overscroll-none">
       <div className="flex flex-col items-center gap-3">
-        <svg
-          className="h-8 w-8 animate-spin text-primary-500"
-          fill="none"
-          viewBox="0 0 24 24"
-        >
+        <svg className="h-8 w-8 animate-spin text-primary-500" fill="none" viewBox="0 0 24 24">
           <circle
             className="opacity-25"
             cx="12"
@@ -94,9 +90,7 @@ function MainShell() {
           <MessageView peerDid={activePeerDid} />
         ) : (
           <div className="flex h-full items-center justify-center">
-            <p className="text-sm text-surface-400">
-              Select a conversation or start a new one
-            </p>
+            <p className="text-sm text-surface-400">Select a conversation or start a new one</p>
           </div>
         )}
       </main>
@@ -122,8 +116,7 @@ export function App() {
     const startNode = async () => {
       setNodeStatus("starting");
       try {
-        const path =
-          identityPath ?? (await invoke<string>("default_identity_path"));
+        const path = identityPath ?? (await invoke<string>("default_identity_path"));
         const port = await invoke<number>("start_node", {
           identityPath: path,
         });
@@ -157,9 +150,7 @@ export function App() {
     return (
       <div className="flex h-screen items-center justify-center bg-surface-100 dark:bg-surface-950 p-4">
         <div className="rounded-xl bg-red-50 p-6 dark:bg-red-950/30 text-center max-w-sm">
-          <p className="font-semibold text-red-700 dark:text-red-400">
-            Failed to start node
-          </p>
+          <p className="font-semibold text-red-700 dark:text-red-400">Failed to start node</p>
           <p className="mt-2 text-sm text-red-600 dark:text-red-500">
             Check your identity file and try again.
           </p>

@@ -7,6 +7,5 @@ interface MessagingStore {
 
 export const useMessagingStore = create<MessagingStore>((set) => ({
   activeConversationId: null,
-  setActiveConversationId: (activeConversationId) =>
-    set({ activeConversationId }),
+  setActiveConversationId: (activeConversationId) => set({ activeConversationId }),
 }));
