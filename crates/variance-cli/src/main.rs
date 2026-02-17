@@ -5,9 +5,10 @@ use ed25519_dalek::SigningKey;
 use rand::RngCore;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::Arc;
 use tokio::signal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use variance_app::{create_router, AppConfig, AppState};
+use variance_app::{create_router, AppConfig, AppState, EventRouter};
 
 #[derive(Parser)]
 #[command(name = "variance")]
@@ -221,6 +222,9 @@ async fn start_node(
     tracing::info!("Initializing P2P node...");
     let (mut node, node_handle) = variance_p2p::Node::new(p2p_config.clone())?;
 
+    // Get EventChannels reference before spawning node
+    let event_channels = Arc::new(node.events().clone());
+
     // Spawn node in background task
     let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
     let node_task = tokio::spawn(async move {
@@ -235,12 +239,18 @@ async fn start_node(
 
     tracing::info!("P2P node running, creating application state...");
 
-    // Create app state with the node handle
+    // Create app state with the node handle and event channels
     let state = AppState::from_identity_file(
         identity_path,
         config.storage.message_db_path.to_str().unwrap(),
         node_handle,
+        Some(event_channels.clone()),
     )?;
+
+    // Start event router to bridge P2P events to WebSocket clients
+    let router = EventRouter::new(state.ws_manager.clone());
+    router.start((*event_channels).clone());
+    tracing::info!("EventRouter started");
 
     tracing::info!("Local DID: {}", state.local_did);
 

@@ -8,14 +8,23 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use variance_media::Call;
+use variance_messaging::storage::MessageStorage;
+use variance_p2p::events::{DirectMessageEvent, GroupMessageEvent};
 use variance_proto::media_proto::{CallControlType, CallType};
-use variance_proto::messaging_proto::ReceiptStatus;
+use variance_proto::messaging_proto::{MessageContent, ReceiptStatus};
 
 /// Create the HTTP API router
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         // Health check
         .route("/health", get(health_check))
+        // WebSocket endpoint
+        .route("/ws", get(crate::websocket::websocket_handler))
+        // Message endpoints
+        .route("/messages/direct", post(send_direct_message))
+        .route("/messages/direct/{did}", get(get_direct_messages))
+        .route("/messages/group", post(send_group_message))
+        .route("/messages/group/{group_id}", get(get_group_messages))
         // Call endpoints
         .route("/calls/create", post(create_call))
         .route("/calls/active", get(list_active_calls))
@@ -118,6 +127,47 @@ pub struct TypingUsersResponse {
     pub users: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SendDirectMessageRequest {
+    pub recipient_did: String,
+    pub text: String,
+    pub reply_to: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SendGroupMessageRequest {
+    pub group_id: String,
+    pub text: String,
+    pub reply_to: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MessageResponse {
+    pub message_id: String,
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DirectMessageResponse {
+    pub id: String,
+    pub sender_did: String,
+    pub recipient_did: String,
+    pub text: String,
+    pub timestamp: i64,
+    pub reply_to: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GroupMessageResponse {
+    pub id: String,
+    pub sender_did: String,
+    pub group_id: String,
+    pub text: String,
+    pub timestamp: i64,
+    pub reply_to: Option<String>,
+}
+
 // ===== Health Check =====
 
 async fn health_check() -> Json<serde_json::Value> {
@@ -125,6 +175,143 @@ async fn health_check() -> Json<serde_json::Value> {
         "status": "ok",
         "service": "variance-app"
     }))
+}
+
+// ===== Message Handlers =====
+
+async fn send_direct_message(
+    State(state): State<AppState>,
+    Json(req): Json<SendDirectMessageRequest>,
+) -> Result<Json<MessageResponse>> {
+    // Create message content
+    let content = MessageContent {
+        text: req.text,
+        attachments: vec![],
+        mentions: vec![],
+        reply_to: req.reply_to,
+        metadata: Default::default(),
+    };
+
+    // Send message
+    let message = state
+        .direct_messaging
+        .send_message(req.recipient_did.clone(), content)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to send message: {}", e),
+        })?;
+
+    // Emit event if event channels are available
+    if let Some(ref channels) = state.event_channels {
+        channels.send_direct_message(DirectMessageEvent::MessageSent {
+            message_id: message.id.clone(),
+            recipient: req.recipient_did,
+        });
+    }
+
+    Ok(Json(MessageResponse {
+        message_id: message.id,
+        success: true,
+        message: "Message sent successfully".to_string(),
+    }))
+}
+
+async fn send_group_message(
+    State(state): State<AppState>,
+    Json(req): Json<SendGroupMessageRequest>,
+) -> Result<Json<MessageResponse>> {
+    // Create message content
+    let content = MessageContent {
+        text: req.text,
+        attachments: vec![],
+        mentions: vec![],
+        reply_to: req.reply_to,
+        metadata: Default::default(),
+    };
+
+    // Send message
+    let message = state
+        .group_messaging
+        .send_message(req.group_id.clone(), content)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to send message: {}", e),
+        })?;
+
+    // Emit event if event channels are available
+    if let Some(ref channels) = state.event_channels {
+        channels.send_group_message(GroupMessageEvent::MessageSent {
+            message_id: message.id.clone(),
+            group_id: req.group_id,
+        });
+    }
+
+    Ok(Json(MessageResponse {
+        message_id: message.id,
+        success: true,
+        message: "Message sent successfully".to_string(),
+    }))
+}
+
+async fn get_direct_messages(
+    State(state): State<AppState>,
+    Path(did): Path<String>,
+) -> Result<Json<Vec<DirectMessageResponse>>> {
+    // Get messages from storage
+    let messages = state
+        .storage
+        .as_ref()
+        .fetch_direct(&state.local_did, &did, 50, None)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to get messages: {}", e),
+        })?;
+
+    // Convert to response format
+    // Note: We can't decrypt here without the session, so just return metadata
+    let responses = messages
+        .iter()
+        .map(|m| DirectMessageResponse {
+            id: m.id.clone(),
+            sender_did: m.sender_did.clone(),
+            recipient_did: m.recipient_did.clone(),
+            text: "[encrypted]".to_string(), // Would need decryption
+            timestamp: m.timestamp,
+            reply_to: m.reply_to.clone(),
+        })
+        .collect();
+
+    Ok(Json(responses))
+}
+
+async fn get_group_messages(
+    State(state): State<AppState>,
+    Path(group_id): Path<String>,
+) -> Result<Json<Vec<GroupMessageResponse>>> {
+    // Get messages from storage
+    let messages = state
+        .storage
+        .as_ref()
+        .fetch_group(&group_id, 50, None)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to get messages: {}", e),
+        })?;
+
+    // Convert to response format
+    let responses = messages
+        .iter()
+        .map(|m| GroupMessageResponse {
+            id: m.id.clone(),
+            sender_did: m.sender_did.clone(),
+            group_id: m.group_id.clone(),
+            text: "[encrypted]".to_string(), // Would need decryption
+            timestamp: m.timestamp,
+            reply_to: m.reply_to.clone(),
+        })
+        .collect();
+
+    Ok(Json(responses))
 }
 
 // ===== Call Handlers =====

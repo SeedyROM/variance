@@ -7,6 +7,8 @@ use variance_messaging::{
     receipts::ReceiptHandler, storage::LocalMessageStorage, typing::TypingHandler,
 };
 
+use crate::websocket::WebSocketManager;
+
 /// Identity file format (DID + signing keys)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentityFile {
@@ -55,6 +57,12 @@ pub struct AppState {
 
     /// P2P node handle for sending messages over the network
     pub node_handle: variance_p2p::NodeHandle,
+
+    /// WebSocket connection manager
+    pub ws_manager: WebSocketManager,
+
+    /// P2P event channels for real-time updates
+    pub event_channels: Option<Arc<variance_p2p::EventChannels>>,
 }
 
 impl AppState {
@@ -74,6 +82,7 @@ impl AppState {
         identity_path: &Path,
         db_path: &str,
         node_handle: variance_p2p::NodeHandle,
+        event_channels: Option<Arc<variance_p2p::EventChannels>>,
     ) -> anyhow::Result<Self> {
         let identity = Self::load_identity(identity_path)?;
 
@@ -131,6 +140,8 @@ impl AppState {
             storage,
             local_did: identity.did,
             node_handle,
+            ws_manager: WebSocketManager::new(),
+            event_channels,
         })
     }
 
@@ -213,6 +224,8 @@ impl AppState {
             storage,
             local_did,
             node_handle: Self::test_node_handle(),
+            ws_manager: WebSocketManager::new(),
+            event_channels: None,
         }
     }
 }
