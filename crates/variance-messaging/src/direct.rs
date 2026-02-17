@@ -44,6 +44,25 @@ impl DirectMessageHandler {
         }
     }
 
+    /// Initialize a session as initiator only if one doesn't already exist for this peer.
+    ///
+    /// Idempotent - safe to call before every outbound message; skips initialization
+    /// when a session is already active.
+    pub async fn init_session_if_needed(
+        &self,
+        recipient_did: &str,
+        recipient_public_key: PublicKey,
+    ) -> Result<()> {
+        {
+            let sessions = self.sessions.read().await;
+            if sessions.contains_key(recipient_did) {
+                return Ok(());
+            }
+        }
+        self.init_session_as_initiator(recipient_did.to_string(), recipient_public_key)
+            .await
+    }
+
     /// Initialize a new ratchet session as initiator (Alice)
     ///
     /// This is called when starting a new conversation.
@@ -61,8 +80,28 @@ impl DirectMessageHandler {
         recipient_did: String,
         recipient_public_key: PublicKey,
     ) -> Result<()> {
+        // Reject the all-zeros public key: it is a low-order point on Curve25519.
+        // DH with any low-order point produces an all-zeros output, so every session
+        // initialized this way would share the same "secret" — a catastrophic failure.
+        // RFC 7748 §6.1 requires checking the DH output for all-zeros for this reason.
+        if recipient_public_key.as_bytes() == &[0u8; 32] {
+            return Err(Error::Crypto {
+                message: "Recipient public key is the zero point (low-order point on Curve25519)"
+                    .to_string(),
+            });
+        }
+
         let local_secret = StaticSecret::random_from_rng(OsRng);
         let shared_secret = local_secret.diffie_hellman(&recipient_public_key);
+
+        // RFC 7748 §6.1: reject a all-zeros DH result, which indicates the peer supplied
+        // a low-order point other than zero (there are several on Curve25519).
+        if shared_secret.as_bytes() == &[0u8; 32] {
+            return Err(Error::Crypto {
+                message: "X25519 key exchange produced a zero shared secret (low-order point)"
+                    .to_string(),
+            });
+        }
 
         let ratchet = Ratchet::init_alice(*shared_secret.as_bytes(), recipient_public_key);
 
@@ -81,8 +120,22 @@ impl DirectMessageHandler {
         sender_did: String,
         sender_public_key: PublicKey,
     ) -> Result<PublicKey> {
+        if sender_public_key.as_bytes() == &[0u8; 32] {
+            return Err(Error::Crypto {
+                message: "Sender public key is the zero point (low-order point on Curve25519)"
+                    .to_string(),
+            });
+        }
+
         let local_secret = StaticSecret::random_from_rng(OsRng);
         let shared_secret = local_secret.diffie_hellman(&sender_public_key);
+
+        if shared_secret.as_bytes() == &[0u8; 32] {
+            return Err(Error::Crypto {
+                message: "X25519 key exchange produced a zero shared secret (low-order point)"
+                    .to_string(),
+            });
+        }
 
         let (ratchet, bob_public_key) = Ratchet::init_bob(*shared_secret.as_bytes());
 
@@ -420,5 +473,91 @@ mod tests {
             result.unwrap_err(),
             Error::InvalidSignature { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn test_rejects_zero_public_key_as_initiator() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let handler =
+            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
+
+        let zero_key = PublicKey::from([0u8; 32]);
+        let result = handler
+            .init_session_as_initiator("did:variance:bob".to_string(), zero_key)
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::Crypto { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_rejects_zero_public_key_as_responder() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let handler =
+            DirectMessageHandler::new("did:variance:bob".to_string(), signing_key, storage);
+
+        let zero_key = PublicKey::from([0u8; 32]);
+        let result = handler
+            .init_session_as_responder("did:variance:alice".to_string(), zero_key)
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::Crypto { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_accepts_valid_public_key() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let handler =
+            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
+
+        // A real X25519 keypair produces a valid (non-zero) public key.
+        let recipient_secret = StaticSecret::random_from_rng(OsRng);
+        let recipient_public_key = PublicKey::from(&recipient_secret);
+
+        let result = handler
+            .init_session_as_initiator("did:variance:bob".to_string(), recipient_public_key)
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_init_session_if_needed_idempotent() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let handler =
+            DirectMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
+
+        let recipient_secret = StaticSecret::random_from_rng(OsRng);
+        let recipient_public_key = PublicKey::from(&recipient_secret);
+
+        // First call initializes the session.
+        handler
+            .init_session_if_needed("did:variance:bob", recipient_public_key)
+            .await
+            .unwrap();
+
+        // Second call with a different key should be a no-op (session already exists).
+        let other_secret = StaticSecret::random_from_rng(OsRng);
+        let other_key = PublicKey::from(&other_secret);
+        handler
+            .init_session_if_needed("did:variance:bob", other_key)
+            .await
+            .unwrap();
+
+        // Second call must not have broken the session: send should succeed.
+        // (If init_session_if_needed overwrote the session instead of skipping,
+        // it would replace with `other_key`; we can't verify key identity here,
+        // but the session count staying at 1 is observable via a successful send.)
+        let sessions = handler.sessions.read().await;
+        assert_eq!(sessions.len(), 1);
     }
 }

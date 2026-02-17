@@ -13,6 +13,7 @@ use variance_messaging::storage::MessageStorage;
 use variance_p2p::events::{DirectMessageEvent, GroupMessageEvent};
 use variance_proto::media_proto::{CallControlType, CallType};
 use variance_proto::messaging_proto::{MessageContent, ReceiptStatus};
+use x25519_dalek::PublicKey as X25519PublicKey;
 
 /// Create the HTTP API router
 pub fn create_router(state: AppState) -> Router {
@@ -203,6 +204,10 @@ pub struct ConversationResponse {
 pub struct StartConversationRequest {
     pub recipient_did: String,
     pub text: String,
+    /// Hex-encoded X25519 public key of the recipient.
+    /// Required when starting a new conversation (no existing ratchet session).
+    /// Obtained from the recipient's DID document `keyAgreement` field.
+    pub recipient_x25519_key: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -290,6 +295,25 @@ async fn start_conversation(
     State(state): State<AppState>,
     Json(req): Json<StartConversationRequest>,
 ) -> Result<Json<StartConversationResponse>> {
+    // Bootstrap the ratchet session when the caller provides the recipient's X25519 key.
+    // In normal flow this key comes from the recipient's DID document `keyAgreement` field.
+    if let Some(key_hex) = &req.recipient_x25519_key {
+        let key_bytes = hex::decode(key_hex).map_err(|_| Error::BadRequest {
+            message: "recipient_x25519_key must be hex-encoded".to_string(),
+        })?;
+        let key_array: [u8; 32] = key_bytes.try_into().map_err(|_| Error::BadRequest {
+            message: "recipient_x25519_key must be exactly 32 bytes".to_string(),
+        })?;
+        let public_key = X25519PublicKey::from(key_array);
+        state
+            .direct_messaging
+            .init_session_if_needed(&req.recipient_did, public_key)
+            .await
+            .map_err(|e| Error::App {
+                message: format!("Failed to initialize session: {}", e),
+            })?;
+    }
+
     let content = variance_proto::messaging_proto::MessageContent {
         text: req.text,
         attachments: vec![],
@@ -302,8 +326,16 @@ async fn start_conversation(
         .direct_messaging
         .send_message(req.recipient_did.clone(), content)
         .await
-        .map_err(|e| Error::App {
-            message: format!("Failed to send message: {}", e),
+        .map_err(|e| match &e {
+            variance_messaging::Error::DoubleRatchet { .. } => Error::SessionRequired {
+                message: format!(
+                    "No ratchet session with peer. Provide recipient_x25519_key to start: {}",
+                    e
+                ),
+            },
+            _ => Error::App {
+                message: format!("Failed to send message: {}", e),
+            },
         })?;
 
     if let Some(ref channels) = state.event_channels {
@@ -492,8 +524,8 @@ async fn create_call(
         "video" => CallType::Video,
         "screen" => CallType::ScreenShare,
         _ => {
-            return Err(Error::App {
-                message: format!("Invalid call type: {}", req.call_type),
+            return Err(Error::BadRequest {
+                message: format!("Invalid call type '{}'. Expected: audio, video, screen", req.call_type),
             })
         }
     };
@@ -560,8 +592,8 @@ async fn send_offer(
         "video" => CallType::Video,
         "screen" => CallType::ScreenShare,
         _ => {
-            return Err(Error::App {
-                message: format!("Invalid call type: {}", req.call_type),
+            return Err(Error::BadRequest {
+                message: format!("Invalid call type '{}'. Expected: audio, video, screen", req.call_type),
             })
         }
     };
@@ -861,7 +893,10 @@ fn receipt_status_to_string(status: i32) -> String {
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            Error::App { message } => (StatusCode::BAD_REQUEST, message),
+            Error::BadRequest { message } => (StatusCode::BAD_REQUEST, message),
+            Error::NotFound { message } => (StatusCode::NOT_FOUND, message),
+            Error::SessionRequired { message } => (StatusCode::UNPROCESSABLE_ENTITY, message),
+            Error::App { message } => (StatusCode::INTERNAL_SERVER_ERROR, message),
         };
 
         let body = Json(serde_json::json!({
@@ -1189,9 +1224,16 @@ mod tests {
     async fn test_start_conversation() {
         let app = create_router(test_state());
 
+        // Simulate the recipient's X25519 key (in real usage, fetched from their DID document).
+        let recipient_secret =
+            x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let recipient_public_key = x25519_dalek::PublicKey::from(&recipient_secret);
+        let key_hex = hex::encode(recipient_public_key.as_bytes());
+
         let req_body = serde_json::json!({
             "recipient_did": "did:variance:bob",
-            "text": "Hello!"
+            "text": "Hello!",
+            "recipient_x25519_key": key_hex,
         });
 
         let response = app
@@ -1214,5 +1256,30 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["conversation_id"].as_str().is_some());
         assert!(json["message_id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_start_conversation_without_key_fails() {
+        let app = create_router(test_state());
+
+        // No recipient_x25519_key and no existing session: must reject with 422.
+        let req_body = serde_json::json!({
+            "recipient_did": "did:variance:bob",
+            "text": "Hello!",
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/conversations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

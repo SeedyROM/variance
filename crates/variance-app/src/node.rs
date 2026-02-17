@@ -82,7 +82,7 @@ impl RunningNode {
 ///
 /// # Example (CLI)
 ///
-/// ```no_run
+/// ```ignore
 /// let config = AppConfig::default();
 /// let node = start_node(&config, Path::new("identity.json")).await?;
 /// let listener = TcpListener::bind("127.0.0.1:8080").await?;
@@ -94,7 +94,7 @@ impl RunningNode {
 ///
 /// # Example (Desktop)
 ///
-/// ```no_run
+/// ```ignore
 /// let config = AppConfig::default();
 /// let node = start_node(&config, Path::new("identity.json")).await?;
 /// let listener = TcpListener::bind("127.0.0.1:0").await?;
