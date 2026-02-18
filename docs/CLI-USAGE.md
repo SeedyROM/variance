@@ -210,6 +210,50 @@ identity_cache_dir = ".variance/identity_cache"
 message_db_path = ".variance/messages.db"
 ```
 
+## Desktop App (Tauri)
+
+The desktop application (`app/`) does **not** use the `variance` CLI binary. Instead it embeds the node
+**in-process** by linking directly against `variance_app` as a Rust library.
+
+### How it works
+
+On launch the Tauri host:
+
+1. Checks for an existing identity file at the platform data directory:
+   - **macOS**: `~/Library/Application Support/variance/identity.json`
+   - **Linux**: `~/.local/share/variance/identity.json`
+2. If no identity exists, it shows the **onboarding flow** (generate or recover via BIP39 mnemonic)
+3. Once identity is confirmed, it calls `start_node()` from `variance_app` directly — no subprocess, no port configuration needed
+4. The HTTP server binds to `127.0.0.1:0` (OS-assigned random port) and the UI connects via WebSocket on that port
+
+### Tauri Commands (exposed to the UI)
+
+| Command | Description |
+|---------|-------------|
+| `has_identity(path)` | Check if identity file exists |
+| `generate_identity(path)` | Create new DID + 12-word mnemonic, write to disk |
+| `recover_identity(mnemonic, path)` | Restore identity from BIP39 phrase |
+| `default_identity_path()` | Returns platform-appropriate identity path |
+| `start_node(identity_path)` | Start P2P node + HTTP API; returns assigned port |
+| `stop_node()` | Graceful shutdown |
+| `get_api_port()` | Returns current HTTP port (if running) |
+| `get_node_status()` | Returns `{ running, local_did, api_port }` |
+
+### Key differences from CLI usage
+
+| Aspect | CLI | Tauri Desktop |
+|--------|-----|---------------|
+| Node startup | `variance start` binary | `start_node()` Tauri command (in-process) |
+| Identity generation | `variance identity generate` | Onboarding flow → `generate_identity` command |
+| Identity recovery | `variance identity recover` | Onboarding flow → `recover_identity` command |
+| Identity path | Configurable (`--output`) | Fixed platform data dir |
+| HTTP port | Configurable (`--listen`) | OS-assigned random port (`127.0.0.1:0`) |
+| Config file | `config.toml` | Hardcoded defaults (no config file needed) |
+
+The Tauri app and the CLI are **fully interoperable** — the identity file format is identical, so an
+identity generated with `variance identity generate` can be copied to the platform data directory and
+used by the desktop app, and vice versa.
+
 ## HTTP API
 
 Once the node is running, the HTTP API is available at the configured address (default: `http://127.0.0.1:3000`).
@@ -314,12 +358,8 @@ If you get "could not acquire lock", ensure no other Variance instance is runnin
 
 ### IPFS Not Running
 
-If identity operations fail, ensure IPFS is running:
-```bash
-ipfs daemon
-```
-
-Or update `config.toml` with the correct IPFS API endpoint.
+IPFS/IPNS integration is not yet implemented. Identity documents are stored in-memory only.
+This section will be updated once IPFS integration lands.
 
 ### Lost Identity File
 

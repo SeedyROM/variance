@@ -2,22 +2,24 @@
 
 ## Quick Start
 
-This Rust implementation corrects critical architectural flaws from the Go design in `../variance-go/docs/`.
+This Rust implementation corrects critical architectural flaws from the Go design in [variance-go](https://github.com/SeedyROM/variance-go).
 
 **TL;DR Changes:**
 - ✅ DHT for peer discovery only (not data storage)
-- ✅ IPFS/IPNS for identity documents
+- ✅ IPFS/IPNS for identity documents (planned; currently in-memory)
 - ✅ Custom libp2p protocols for queries
 - ✅ Protobuf for all P2P communication
-- ✅ Multi-layer caching (80%+ hit rate target)
+- ✅ Multi-layer caching (L1→L2→L3 disk implemented; L4 network pending IPFS)
 
-**Recent Progress (2026-02-15):**
-- ✅ Protocol handlers implemented (identity, offline messages, signaling)
-- ✅ Event channel system for application layer
-- ✅ Integration tests (36/36 passing)
-- ✅ Fixed circular dependencies in crate graph
-- 🚧 IPFS/IPNS integration (TODO)
-- 🚧 Call manager WebRTC stack (TODO)
+**Recent Progress (2026-02-17):**
+- ✅ vodozemac 0.9 (replaces double-ratchet-2) — Olm Double Ratchet for DMs
+- ✅ Complete messaging: receipts, typing indicators, sled storage
+- ✅ Full HTTP REST API — all endpoints implemented
+- ✅ WebSocket event delivery for Tauri frontend
+- ✅ Tauri desktop app — onboarding, conversations, messages UI
+- ✅ 232 tests passing across all crates
+- 🚧 IPFS/IPNS integration (identity in-memory only)
+- 🚧 WebRTC peer connection (signaling done, media stream pending)
 
 ## Documentation Index
 
@@ -44,7 +46,7 @@ This Rust implementation corrects critical architectural flaws from the Go desig
 
 ## Original Go Docs (Reference Only)
 
-See `../variance-go/docs/` for the original design:
+See [variance-go](https://github.com/SeedyROM/variance-go) for the original design:
 
 | Doc | Status | Notes |
 |-----|--------|-------|

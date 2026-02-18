@@ -119,53 +119,53 @@ message IdentityUpdate {
 
 ```protobuf
 message DirectMessage {
-  string id = 1;              // ULID (sortable)
+  string id = 1;                           // ULID (chronological sort)
   string sender_did = 2;
   string recipient_did = 3;
-  bytes ciphertext = 4;       // Double Ratchet encrypted
-  bytes nonce = 5;
-  bytes signature = 6;        // Ed25519 signature
-  int64 timestamp = 7;
+  bytes ciphertext = 4;                    // OlmMessage body (to_parts().1)
+  uint32 olm_message_type = 5;            // 0 = PreKey, 1 = Normal (to_parts().0)
+  bytes signature = 6;                     // Ed25519 signature
+  int64 timestamp = 7;                     // Unix ms
   MessageType type = 8;
   optional string reply_to = 9;
+  optional bytes sender_identity_key = 10; // Curve25519 key, PreKey messages only
 }
 ```
 
-**Encryption Flow:**
+**Encryption uses `vodozemac` (Olm Double Ratchet):**
 ```rust
-// Create plaintext message
-let content = MessageContent {
-    text: "Hello!".into(),
-    attachments: vec![],
-    mentions: vec![],
-    reply_to: None,
-    metadata: HashMap::new(),
-};
-
-// Serialize
+// Encrypt (outbound session already established)
 let plaintext = content.encode_to_vec();
+let olm_message = session.encrypt(&plaintext);
+let (msg_type, ciphertext) = olm_message.to_parts();
+// msg_type: 0 = PreKey (first message), 1 = Normal (ratcheted)
 
-// Encrypt with Double Ratchet
-let (ciphertext, nonce) = ratchet_session.encrypt(&plaintext)?;
+// Sign the ciphertext
+let signature = keypair.sign(&ciphertext).to_bytes().to_vec();
 
-// Sign
-let signature = keypair.sign(&ciphertext);
-
-// Create wire message
 let dm = DirectMessage {
     id: Ulid::new().to_string(),
-    sender_did: my_did,
-    recipient_did: their_did,
+    sender_did: my_did.clone(),
+    recipient_did: their_did.clone(),
     ciphertext,
-    nonce,
+    olm_message_type: msg_type as u32,
     signature,
-    timestamp: now(),
-    type: MessageType::Text.into(),
+    timestamp: now_ms(),
+    r#type: MessageType::Text.into(),
     reply_to: None,
+    sender_identity_key: if msg_type == 0 {
+        Some(account.curve25519_key().to_vec())
+    } else {
+        None
+    },
 };
 
-// Send via libp2p stream
-stream.write_all(&dm.encode_to_vec()).await?;
+// Decrypt (inbound)
+let olm_msg = OlmMessage::from_parts(dm.olm_message_type as usize, &dm.ciphertext)?;
+// PreKey: creates new inbound session from account
+// Normal: decrypt with existing session
+let plaintext = session.decrypt(&olm_msg)?;
+let content = MessageContent::decode(&plaintext[..])?;
 ```
 
 #### Group Messages

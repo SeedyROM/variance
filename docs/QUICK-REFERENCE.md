@@ -32,26 +32,43 @@ variance/
 │   │   └── username.rs          # Registration, lookup
 │   │
 │   ├── variance-messaging/      # Chat system
-│   │   ├── direct.rs            # 1-on-1 (Double Ratchet)
-│   │   ├── group.rs             # GossipSub groups
+│   │   ├── direct.rs            # 1-on-1 (Olm Double Ratchet via vodozemac)
+│   │   ├── group.rs             # GossipSub groups (AES-256-GCM)
 │   │   ├── offline.rs           # Relay integration
-│   │   └── storage.rs           # Local persistence (sled)
+│   │   ├── storage.rs           # Local persistence (sled, ULID-sorted)
+│   │   ├── receipts.rs          # Read/delivery receipt tracking
+│   │   └── typing.rs            # Typing indicator broadcasts
 │   │
 │   ├── variance-media/          # WebRTC
-│   │   └── signaling.rs         # SDP/ICE exchange via libp2p
+│   │   ├── signaling.rs         # SDP/ICE exchange via libp2p
+│   │   └── call.rs              # Call state management
 │   │
 │   ├── variance-app/            # Application logic
-│   │   ├── api.rs               # HTTP routes (axum)
-│   │   ├── state.rs             # App state management
+│   │   ├── api.rs               # HTTP routes (axum) — all endpoints
+│   │   ├── state.rs             # App state management, IdentityFile
+│   │   ├── websocket.rs         # WebSocket handler for Tauri
+│   │   ├── event_router.rs      # Routes P2P events to WebSocket subscribers
+│   │   ├── node.rs              # Node startup and lifecycle
+│   │   ├── identity_gen.rs      # BIP39 mnemonic generation/recovery
 │   │   └── config.rs            # TOML config loading
 │   │
 │   └── variance-cli/            # Binary
-│       └── main.rs              # CLI entry point
+│       └── main.rs              # CLI entry point (clap)
+│
+├── app/                         # Tauri desktop application
+│   ├── src/                     # React/TypeScript UI
+│   │   ├── components/onboarding/   # Identity generation & recovery flow
+│   │   ├── components/conversations/ # Conversation list & modals
+│   │   ├── components/messages/      # Message view, bubbles, typing
+│   │   └── api/                     # HTTP client, WebSocket, types
+│   └── src-tauri/               # Tauri host (embeds variance_app in-process)
 │
 ├── docs/
 │   ├── ARCHITECTURE-CORRECTIONS.md  # Read this first!
 │   ├── QUICK-REFERENCE.md           # This file
-│   └── PROTOCOL-GUIDE.md            # Protobuf usage
+│   ├── PROTOCOL-GUIDE.md            # Protobuf usage
+│   ├── CLI-USAGE.md                 # CLI command reference
+│   └── CHANGELOG.md                 # Implementation progress
 │
 └── Cargo.toml                   # Workspace manifest
 ```
@@ -342,13 +359,19 @@ cors_origins = ["tauri://localhost"]
 ### Generate Identity
 
 ```bash
-cargo run --bin variance -- gen-identity --output identity.json
+cargo run --bin variance -- identity generate
+# or with custom output path
+cargo run --bin variance -- identity generate --output identity.json
 ```
 
 ### Start Node
 
 ```bash
-RUST_LOG=debug cargo run --bin variance -- start --config config.toml
+# Default (loads .variance/identity.json)
+cargo run --bin variance -- start
+
+# With custom config and debug logging
+RUST_LOG=variance=debug cargo run --bin variance -- start --config config.toml
 ```
 
 ### Test Specific Module

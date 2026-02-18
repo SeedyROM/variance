@@ -195,15 +195,15 @@ let update = IdentityUpdate {
     signature: sign(&update_data, &private_key),
 };
 
-// Broadcast to all subscribers
-gossipsub.publish(topic.clone(), bincode::serialize(&update)?)?;
+// Broadcast to all subscribers (protobuf-encoded)
+gossipsub.publish(topic.clone(), update.encode_to_vec())?;
 
 // Subscribers receive update
 match swarm.next().await {
     SwarmEvent::Behaviour(Event::Gossipsub(GossipsubEvent::Message {
         message, ..
     })) => {
-        let update: IdentityUpdate = bincode::deserialize(&message.data)?;
+        let update = IdentityUpdate::decode(&message.data[..])?;
         // Invalidate cache for this DID
         cache.remove(&update.did)?;
     }
@@ -361,36 +361,50 @@ message ChatMessage {
 
 ## Implementation Checklist
 
-### Phase 0: Foundation
-- [ ] Set up workspace with proto, p2p, identity, messaging, app crates
-- [ ] Define protobuf schemas in `variance-proto`
-- [ ] Generate Rust code from protobufs
-- [ ] Set up tracing and error handling
+### Phase 0: Foundation ✅
+- [x] Set up workspace with proto, p2p, identity, messaging, app crates
+- [x] Define protobuf schemas in `variance-proto`
+- [x] Generate Rust code from protobufs
+- [x] Set up tracing and error handling
 
 ### Phase 1: Identity with IPFS/IPNS
-- [ ] Integrate rust-ipfs or ipfs-embed
-- [ ] Implement DID generation (Ed25519 keypair)
-- [ ] Store DID documents in IPFS
-- [ ] Publish IPNS records for mutable identity
-- [ ] Implement local identity cache (LRU)
+- [x] Implement DID generation (Ed25519 keypair + BIP39 recovery)
+- [x] Implement local identity cache (multi-layer: hot/warm/disk)
+- [ ] 🚧 Integrate IPFS client (DIDs currently in-memory only)
+- [ ] 🚧 Store DID documents in IPFS
+- [ ] 🚧 Publish IPNS records for mutable identity
 
-### Phase 2: Custom Identity Protocol
-- [ ] Define identity request/response protocol
-- [ ] Implement libp2p request_response behavior
-- [ ] DHT provider records for "who has X?"
-- [ ] Direct peer queries for identity resolution
+### Phase 2: Custom Identity Protocol ✅ (minus DHT provider records)
+- [x] Define identity request/response protocol
+- [x] Implement libp2p request_response behavior
+- [x] Direct peer queries for identity resolution
+- [ ] 🚧 DHT provider records for `@username#discriminator` discovery
 
-### Phase 3: Messaging (Correct Approach)
-- [ ] Direct messages: libp2p stream protocol
-- [ ] Group messages: GossipSub with E2E encryption
-- [ ] Offline messages: Relay node storage (NOT DHT)
-- [ ] Message caching and persistence (local SQLite/Sled)
+### Phase 3: Messaging ✅
+- [x] Direct messages: Olm Double Ratchet via vodozemac (PreKey + Normal)
+- [x] Group messages: GossipSub with AES-256-GCM per-group keys
+- [x] Offline messages: Relay node storage with 30-day TTL (NOT DHT)
+- [x] Message persistence (sled KV, ULID-sorted, paginated)
+- [x] Read receipts and delivery status
+- [x] Typing indicators
 
-### Phase 4: Caching & Performance
-- [ ] Multi-layer cache (memory + disk)
-- [ ] Cache invalidation via GossipSub
+### Phase 4: Application Layer ✅
+- [x] Complete HTTP REST API (identity, messages, calls, signaling, receipts, typing)
+- [x] WebSocket event delivery to Tauri frontend
+- [x] Tauri desktop app (onboarding, conversations, messages)
+- [x] CLI (identity generate/recover/show, config, start)
+
+### Phase 5: Media
+- [x] WebRTC signaling protocol (Offer/Answer/ICE/Control via libp2p)
+- [x] Call state machine (Ringing → Connecting → Active → Ended)
+- [ ] 🚧 WebRTC peer connection (actual media stream negotiation)
+- [ ] 🚧 STUN/TURN server configuration
+
+### Phase 6: Caching & Performance
+- [x] Multi-layer cache (L1 hot 5min → L2 warm 1hr → L3 disk 24hr)
+- [ ] 🚧 Network fallback layer (blocked on IPFS integration)
+- [ ] 🚧 Cache invalidation via GossipSub identity updates
 - [ ] Metrics and observability
-- [ ] Performance testing
 
 ---
 

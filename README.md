@@ -35,6 +35,9 @@ variance/
 │   ├── variance-media/      # WebRTC media handling
 │   ├── variance-app/        # Application logic & HTTP API
 │   └── variance-cli/        # CLI binary
+├── app/                     # Tauri desktop application (React/TypeScript)
+│   ├── src/                 # UI components (onboarding, conversations, messages)
+│   └── src-tauri/          # Tauri host (embeds variance_app in-process, manages state)
 ├── docs/                    # Architecture documentation
 └── Cargo.toml              # Workspace manifest
 ```
@@ -62,7 +65,7 @@ variance/
 - **Serialization**: Protocol Buffers (prost)
 - **Tracing**: tracing + tracing-subscriber
 - **Errors**: snafu
-- **Crypto**: ed25519-dalek, x25519-dalek
+- **Crypto**: ed25519-dalek, vodozemac 0.9 (Olm/Double Ratchet for DMs), AES-256-GCM (group messages)
 - **Storage**: sled (embedded KV store)
 
 ## Getting Started
@@ -248,7 +251,7 @@ RUST_LOG=variance=trace,libp2p=debug cargo run --bin variance -- start
 
 ### Architecture
 - [ARCHITECTURE-CORRECTIONS.md](docs/ARCHITECTURE-CORRECTIONS.md) - **Read this first!** Explains why the Go design was wrong and how we fix it
-- [Go docs](../variance-go/docs/) - Original architecture docs (for reference, contains flaws)
+- [variance-go](https://github.com/SeedyROM/variance-go) - Original architecture docs (for reference, contains flaws)
 
 ### Usage
 - [CLI-USAGE.md](docs/CLI-USAGE.md) - Complete command-line interface reference
@@ -257,11 +260,12 @@ RUST_LOG=variance=trace,libp2p=debug cargo run --bin variance -- start
 
 **Phase**: Core Protocol Implementation
 
-**Recently Completed (2026-02-15):**
-- ✅ Protocol handlers with business logic integration
-- ✅ Event channel system for application layer
-- ✅ Integration test coverage (36/36 passing)
-- ✅ Fixed circular dependencies in crate graph
+**Recently Completed (2026-02-17):**
+- ✅ vodozemac 0.9 migration (replaces unmaintained double-ratchet-2)
+- ✅ Complete messaging stack: receipts, typing indicators, message storage
+- ✅ Full HTTP REST API (identity, messages, calls, signaling, receipts, typing)
+- ✅ WebSocket event delivery for Tauri frontend
+- ✅ 232 tests passing across all crates
 
 ### Implementation Checklist
 
@@ -282,29 +286,29 @@ RUST_LOG=variance=trace,libp2p=debug cargo run --bin variance -- start
 
 **Messaging:**
 - [x] Protobuf message schemas
-- [x] Double Ratchet encryption for direct messages (full implementation)
-- [x] AES-256-GCM for group messages (full implementation)
+- [x] Olm Double Ratchet encryption for direct messages (vodozemac 0.9)
+- [x] AES-256-GCM for group messages
 - [x] Offline message relay protocol handler
-- [x] Local storage backend (sled)
+- [x] Local storage backend (sled) with ULID-sorted history
 - [x] GossipSub integration for groups
-- [ ] 🚧 Read receipts and typing indicators
-- [ ] 🚧 Message delivery acknowledgments
+- [x] Read receipts and delivery status
+- [x] Typing indicators
 
 **Media (WebRTC):**
 - [x] Signaling protocol handler
 - [x] Offer/Answer/ICE/Control message handling
 - [x] Message signing and verification
-- [ ] 🚧 Full call manager implementation
-- [ ] 🚧 WebRTC peer connection integration
+- [x] Call state management (Ringing → Connecting → Active → Ended)
+- [ ] 🚧 WebRTC peer connection (media stream negotiation)
 - [ ] 🚧 STUN/TURN configuration
 
 **Application Layer:**
 - [x] HTTP API framework (axum)
+- [x] Complete REST API endpoints (identity, messages, calls, signaling, receipts, typing)
+- [x] WebSocket event delivery for Tauri frontend
 - [x] Event subscription system
 - [x] CLI with identity management
-- [ ] 🚧 Complete REST API endpoints
-- [ ] 🚧 WebSocket events for Tauri
-- [ ] 🚧 Tauri desktop application
+- [x] Tauri desktop app (onboarding, identity generation/recovery, conversations, messages UI)
 
 **Testing & Documentation:**
 - [x] Unit tests for all handlers
@@ -314,11 +318,11 @@ RUST_LOG=variance=trace,libp2p=debug cargo run --bin variance -- start
 
 ### Next Priorities
 
-1. **IPFS/IPNS Integration** - Persistent identity storage
-2. **Call Manager** - Full WebRTC peer connection stack
-3. **Public API** - Expose protocol functionality to application layer
-4. **Message Delivery** - Wire up event subscriptions to deliver messages
-5. **Tauri Integration** - Desktop app with event subscriptions
+1. **IPFS/IPNS Integration** - DID documents are currently in-memory only; need persistent storage via IPFS with IPNS mutable pointers for key rotation and profile updates
+2. **WebRTC Peer Connection** - Signaling protocol is complete; wire up actual media stream negotiation and STUN/TURN server configuration
+3. **DHT Provider Records** - Username discovery framework in place but not wired to the DHT; needed for `@user#1234` lookups across the network
+4. **Relay Node Selection** - Infrastructure for discovery and failover between relay nodes
+5. **Call UI** - Tauri frontend has message/conversation UI; call screens and media controls not yet wired
 
 ## License
 
@@ -329,12 +333,13 @@ AGPL-3.0 License. See [LICENSE](LICENSE) for details.
 This is an early-stage project. Contributions welcome once foundation is stable.
 
 Key areas for future work:
-- IPFS/IPNS integration
-- Double Ratchet implementation for DMs
-- Relay node infrastructure
+- IPFS/IPNS integration for persistent identity storage
+- WebRTC peer connection and STUN/TURN
+- DHT provider records for username discovery
+- Relay node selection and failover
 - Mobile support (iOS/Android)
 - Browser extension
 
 ---
 
-**Note**: This project learns from the mistakes in the [variance-go](../variance-go) implementation. See ARCHITECTURE-CORRECTIONS.md for details on what we're doing differently.
+**Note**: This project learns from the mistakes in the [variance-go](https://github.com/SeedyROM/variance-go) implementation. See ARCHITECTURE-CORRECTIONS.md for details on what we're doing differently.
