@@ -17,6 +17,8 @@ use tracing::{debug, info, warn};
 use variance_proto::identity_proto::IdentityResponse;
 use variance_proto::messaging_proto::{DirectMessageAck, GroupMessage};
 
+type ProviderQueryResult = (Vec<PeerId>, oneshot::Sender<Result<Vec<PeerId>>>);
+
 pub struct Node {
     swarm: Swarm<VarianceBehaviour>,
     peer_id: PeerId,
@@ -31,10 +33,7 @@ pub struct Node {
         oneshot::Sender<Result<IdentityResponse>>,
     >,
     /// Pending get_providers queries: query_id → (accumulated peers, response sender)
-    pending_provider_queries: std::collections::HashMap<
-        kad::QueryId,
-        (Vec<PeerId>, oneshot::Sender<Result<Vec<PeerId>>>),
-    >,
+    pending_provider_queries: HashMap<kad::QueryId, ProviderQueryResult>,
     /// DID to PeerId mapping for routing signaling messages
     did_to_peer: Arc<tokio::sync::RwLock<HashMap<String, PeerId>>>,
 }
