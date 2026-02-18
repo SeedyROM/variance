@@ -37,10 +37,10 @@ toml = "0.8"
 
 # Crypto
 ed25519-dalek = { workspace = true }
-x25519-dalek = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 bip39 = { workspace = true }
+vodozemac = "0.9"
 
 # Time
 chrono = { workspace = true }

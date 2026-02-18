@@ -2,7 +2,7 @@ use anyhow::Result;
 use bip39::{Language, Mnemonic};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand::RngCore;
-use x25519_dalek::StaticSecret as X25519Secret;
+use vodozemac::olm::Account;
 
 use crate::state::IdentityFile;
 
@@ -27,7 +27,7 @@ pub fn generate() -> Result<(IdentityFile, String)> {
     let signing_key = derive_signing_key(&mnemonic);
     let verifying_key = signing_key.verifying_key();
     let signaling_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
-    let x25519_secret = X25519Secret::random_from_rng(rand::thread_rng());
+    let olm_account = Account::new();
     let did = did_from_verifying_key(&verifying_key);
 
     let phrase = mnemonic.to_string();
@@ -36,7 +36,8 @@ pub fn generate() -> Result<(IdentityFile, String)> {
         signing_key: hex::encode(signing_key.to_bytes()),
         verifying_key: hex::encode(verifying_key.to_bytes()),
         signaling_key: hex::encode(signaling_key.to_bytes()),
-        x25519_key: hex::encode(x25519_secret.to_bytes()),
+        olm_account_pickle: serde_json::to_string(&olm_account.pickle())
+            .map_err(|e| anyhow::anyhow!("Failed to serialize Olm account: {}", e))?,
         created_at: chrono::Utc::now().to_rfc3339(),
     };
 
@@ -45,7 +46,8 @@ pub fn generate() -> Result<(IdentityFile, String)> {
 
 /// Recover an identity from a BIP39 mnemonic phrase.
 ///
-/// The signaling key is regenerated (it is not recoverable from the mnemonic).
+/// The signaling key and Olm account are regenerated (they are not recoverable
+/// from the mnemonic). Users must restore those from backup if needed.
 pub fn recover(mnemonic_phrase: &str) -> Result<IdentityFile> {
     let mnemonic = Mnemonic::parse_in(Language::English, mnemonic_phrase)
         .map_err(|e| anyhow::anyhow!("Invalid mnemonic: {}", e))?;
@@ -57,7 +59,7 @@ pub fn recover(mnemonic_phrase: &str) -> Result<IdentityFile> {
     let signing_key = derive_signing_key(&mnemonic);
     let verifying_key = signing_key.verifying_key();
     let signaling_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
-    let x25519_secret = X25519Secret::random_from_rng(rand::thread_rng());
+    let olm_account = Account::new();
     let did = did_from_verifying_key(&verifying_key);
 
     Ok(IdentityFile {
@@ -65,7 +67,8 @@ pub fn recover(mnemonic_phrase: &str) -> Result<IdentityFile> {
         signing_key: hex::encode(signing_key.to_bytes()),
         verifying_key: hex::encode(verifying_key.to_bytes()),
         signaling_key: hex::encode(signaling_key.to_bytes()),
-        x25519_key: hex::encode(x25519_secret.to_bytes()),
+        olm_account_pickle: serde_json::to_string(&olm_account.pickle())
+            .map_err(|e| anyhow::anyhow!("Failed to serialize Olm account: {}", e))?,
         created_at: chrono::Utc::now().to_rfc3339(),
     })
 }
@@ -102,5 +105,15 @@ mod tests {
         // 11 valid BIP39 words — bip39 crate rejects wrong-length inputs
         let short = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon";
         assert!(recover(short).is_err());
+    }
+
+    #[test]
+    fn test_generate_produces_valid_olm_account_pickle() {
+        let (identity, _phrase) = generate().unwrap();
+        let pickle: vodozemac::olm::AccountPickle =
+            serde_json::from_str(&identity.olm_account_pickle).unwrap();
+        let account = Account::from_pickle(pickle);
+        // Account must have a valid Curve25519 key
+        assert_ne!(account.curve25519_key().to_bytes(), [0u8; 32]);
     }
 }

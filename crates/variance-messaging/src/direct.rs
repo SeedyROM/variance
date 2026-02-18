@@ -1,67 +1,112 @@
 use crate::error::*;
 use crate::storage::MessageStorage;
-use double_ratchet_2::ratchet::Ratchet;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use prost::Message;
-use rand::rngs::OsRng;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use ulid::Ulid;
 use variance_proto::messaging_proto::{DirectMessage, MessageContent, MessageType};
-use x25519_dalek::{PublicKey, StaticSecret};
+use vodozemac::olm::{Account, OlmMessage, Session, SessionConfig};
+use vodozemac::Curve25519PublicKey;
 
 /// Direct message handler
 ///
-/// Manages 1-on-1 encrypted conversations using Double Ratchet protocol.
-/// Each conversation has its own ratchet state for forward secrecy.
+/// Manages 1-on-1 encrypted conversations using the Olm Double Ratchet protocol
+/// (vodozemac implementation, as used by Matrix/Element).
 pub struct DirectMessageHandler {
     /// Local DID
     local_did: String,
 
-    /// Signing key for message authentication
+    /// Ed25519 signing key for message authentication
     signing_key: SigningKey,
 
-    /// Long-term X25519 key for establishing sessions as responder
-    long_term_secret: x25519_dalek::StaticSecret,
+    /// Olm account — manages identity keys and one-time pre-keys.
+    /// Wrapped in RwLock because create_inbound_session() requires &mut.
+    account: Arc<RwLock<Account>>,
 
-    /// Ratchet sessions indexed by conversation partner DID
-    sessions: Arc<RwLock<HashMap<String, Ratchet<StaticSecret>>>>,
+    /// Cached identity key (never changes after account creation).
+    identity_key: Curve25519PublicKey,
+
+    /// Olm sessions indexed by conversation partner DID
+    sessions: Arc<RwLock<HashMap<String, Session>>>,
 
     /// Message storage backend
     storage: Arc<dyn MessageStorage>,
 }
 
 impl DirectMessageHandler {
-    /// Create a new direct message handler
+    /// Create a new direct message handler from a vodozemac `Account`.
     pub fn new(
         local_did: String,
         signing_key: SigningKey,
-        long_term_secret: x25519_dalek::StaticSecret,
+        account: Account,
         storage: Arc<dyn MessageStorage>,
     ) -> Self {
+        let identity_key = account.curve25519_key();
         Self {
             local_did,
             signing_key,
-            long_term_secret,
+            account: Arc::new(RwLock::new(account)),
+            identity_key,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             storage,
         }
     }
 
-    /// Return the X25519 public key corresponding to the long-term secret
-    pub fn long_term_public_key(&self) -> x25519_dalek::PublicKey {
-        x25519_dalek::PublicKey::from(&self.long_term_secret)
+    /// Return this node's Olm identity key (Curve25519).
+    ///
+    /// This key should be published in the DID document so peers can use it
+    /// to establish Olm sessions.
+    pub fn identity_key(&self) -> Curve25519PublicKey {
+        self.identity_key
+    }
+
+    /// Generate new one-time pre-keys and return them for publication.
+    ///
+    /// Call `mark_one_time_keys_as_published` after distributing the keys.
+    pub async fn generate_one_time_keys(&self, count: usize) {
+        self.account.write().await.generate_one_time_keys(count);
+    }
+
+    /// Return currently unpublished one-time pre-keys.
+    pub async fn one_time_keys(&self) -> HashMap<vodozemac::KeyId, Curve25519PublicKey> {
+        self.account.read().await.one_time_keys()
+    }
+
+    /// Mark all pending one-time keys as published.
+    pub async fn mark_one_time_keys_as_published(&self) {
+        self.account.write().await.mark_keys_as_published();
+    }
+
+    /// Initialize a session as initiator (Alice).
+    ///
+    /// `recipient_identity_key` is the Curve25519 key from the peer's DID document.
+    /// `recipient_one_time_key` is a one-time pre-key fetched from the peer's DID document.
+    pub async fn init_session_as_initiator(
+        &self,
+        recipient_did: String,
+        recipient_identity_key: Curve25519PublicKey,
+        recipient_one_time_key: Curve25519PublicKey,
+    ) -> Result<()> {
+        let session = self.account.read().await.create_outbound_session(
+            SessionConfig::version_2(),
+            recipient_identity_key,
+            recipient_one_time_key,
+        );
+
+        self.sessions.write().await.insert(recipient_did, session);
+        Ok(())
     }
 
     /// Initialize a session as initiator only if one doesn't already exist for this peer.
     ///
-    /// Idempotent - safe to call before every outbound message; skips initialization
-    /// when a session is already active.
+    /// Idempotent — safe to call before every outbound message.
     pub async fn init_session_if_needed(
         &self,
         recipient_did: &str,
-        recipient_public_key: PublicKey,
+        recipient_identity_key: Curve25519PublicKey,
+        recipient_one_time_key: Curve25519PublicKey,
     ) -> Result<()> {
         {
             let sessions = self.sessions.read().await;
@@ -69,223 +114,160 @@ impl DirectMessageHandler {
                 return Ok(());
             }
         }
-        self.init_session_as_initiator(recipient_did.to_string(), recipient_public_key)
-            .await
+        self.init_session_as_initiator(
+            recipient_did.to_string(),
+            recipient_identity_key,
+            recipient_one_time_key,
+        )
+        .await
     }
 
-    /// Initialize a new ratchet session as initiator (Alice)
-    ///
-    /// This is called when starting a new conversation.
-    /// Alice knows Bob's public key and establishes the first session.
-    /// Note: Alice must send the first message.
-    ///
-    /// TODO: Define public key exchange protocol
-    /// Current implementation assumes Alice already has Bob's X25519 public key.
-    /// Need to specify how public keys are discovered:
-    /// 1. Include X25519 key in DID document?
-    /// 2. Separate key exchange protocol message?
-    /// 3. Use initial handshake message with ephemeral keys?
-    pub async fn init_session_as_initiator(
-        &self,
-        recipient_did: String,
-        recipient_public_key: PublicKey,
-    ) -> Result<()> {
-        // Reject the all-zeros public key: it is a low-order point on Curve25519.
-        // DH with any low-order point produces an all-zeros output, so every session
-        // initialized this way would share the same "secret" — a catastrophic failure.
-        // RFC 7748 §6.1 requires checking the DH output for all-zeros for this reason.
-        if recipient_public_key.as_bytes() == &[0u8; 32] {
-            return Err(Error::Crypto {
-                message: "Recipient public key is the zero point (low-order point on Curve25519)"
-                    .to_string(),
-            });
-        }
-
-        let local_secret = StaticSecret::random_from_rng(OsRng);
-        let shared_secret = local_secret.diffie_hellman(&recipient_public_key);
-
-        // RFC 7748 §6.1: reject a all-zeros DH result, which indicates the peer supplied
-        // a low-order point other than zero (there are several on Curve25519).
-        if shared_secret.as_bytes() == &[0u8; 32] {
-            return Err(Error::Crypto {
-                message: "X25519 key exchange produced a zero shared secret (low-order point)"
-                    .to_string(),
-            });
-        }
-
-        let ratchet = Ratchet::init_alice(*shared_secret.as_bytes(), recipient_public_key);
-
-        let mut sessions = self.sessions.write().await;
-        sessions.insert(recipient_did, ratchet);
-
-        Ok(())
+    /// Return the number of active sessions (for testing).
+    #[cfg(test)]
+    async fn session_count(&self) -> usize {
+        self.sessions.read().await.len()
     }
 
-    /// Initialize a new ratchet session as responder (Bob)
+    /// Send a direct message.
     ///
-    /// This is called when receiving the first message in a conversation.
-    /// Returns Bob's public key which should be shared with Alice.
-    pub async fn init_session_as_responder(
-        &self,
-        sender_did: String,
-        sender_public_key: PublicKey,
-    ) -> Result<PublicKey> {
-        if sender_public_key.as_bytes() == &[0u8; 32] {
-            return Err(Error::Crypto {
-                message: "Sender public key is the zero point (low-order point on Curve25519)"
-                    .to_string(),
-            });
-        }
-
-        let shared_secret = self.long_term_secret.diffie_hellman(&sender_public_key);
-
-        if shared_secret.as_bytes() == &[0u8; 32] {
-            return Err(Error::Crypto {
-                message: "X25519 key exchange produced a zero shared secret (low-order point)"
-                    .to_string(),
-            });
-        }
-
-        let (ratchet, bob_public_key) = Ratchet::init_bob(*shared_secret.as_bytes());
-
-        let mut sessions = self.sessions.write().await;
-        sessions.insert(sender_did, ratchet);
-
-        Ok(bob_public_key)
-    }
-
-    /// Send a direct message
+    /// The session must be initialized first via `init_session_as_initiator` or
+    /// `init_session_if_needed`. The first encrypted message automatically carries
+    /// the Olm PreKey payload needed by the recipient to establish their session.
     pub async fn send_message(
         &self,
         recipient_did: String,
         content: MessageContent,
     ) -> Result<DirectMessage> {
-        // Get or create session
         let mut sessions = self.sessions.write().await;
-        let ratchet = sessions
+        let session = sessions
             .get_mut(&recipient_did)
             .ok_or_else(|| Error::DoubleRatchet {
                 message: format!("No session with {}", recipient_did),
             })?;
 
-        // Serialize content using protobuf
         let plaintext = prost::Message::encode_to_vec(&content);
+        let olm_message = session.encrypt(&plaintext);
 
-        // Encrypt with Double Ratchet (associated data is empty)
-        let (header, ciphertext, nonce) = ratchet.ratchet_encrypt(&plaintext, b"");
+        // Include our identity key on PreKey messages so the recipient can call
+        // create_inbound_session() without a separate key lookup.
+        let sender_identity_key = match &olm_message {
+            OlmMessage::PreKey(_) => Some(self.identity_key.to_vec()),
+            OlmMessage::Normal(_) => None,
+        };
 
-        // Generate ULID for message ID
+        let (olm_message_type, ciphertext) = olm_message.to_parts();
+
         let id = Ulid::new().to_string();
         let timestamp = chrono::Utc::now().timestamp_millis();
 
-        // Combine header and nonce for storage (since protobuf only has one nonce field)
-        let mut header_and_nonce = bincode::serialize(&header).map_err(|e| Error::Crypto {
-            message: format!("Header serialization failed: {}", e),
-        })?;
-        header_and_nonce.extend_from_slice(&nonce);
-
-        // Create message
         let mut message = DirectMessage {
             id: id.clone(),
             sender_did: self.local_did.clone(),
             recipient_did: recipient_did.clone(),
             ciphertext,
-            nonce: header_and_nonce,
+            olm_message_type: olm_message_type as u32,
             signature: vec![],
             timestamp,
             r#type: Self::infer_message_type(&content),
             reply_to: content.reply_to.clone(),
+            sender_identity_key,
         };
 
-        // Sign message
         message.signature = self.sign_message(&message)?;
-
-        // Store message
         self.storage.store_direct(&message).await?;
 
         Ok(message)
     }
 
-    /// Receive and decrypt a direct message
+    /// Receive and decrypt a direct message.
     ///
-    /// NOTE: Caller must verify message signature using verify_message_with_key()
-    /// before calling this, passing the sender's public key from their DID document.
+    /// If the message is an Olm PreKey message, the inbound session is created
+    /// automatically from the `sender_identity_key` field and the PreKey payload.
+    /// Subsequent Normal messages are decrypted using the existing session.
+    ///
+    /// NOTE: Callers should verify the message signature with `verify_message_with_key`
+    /// before calling this, using the sender's Ed25519 key from their DID document.
     pub async fn receive_message(&self, message: DirectMessage) -> Result<MessageContent> {
-        // Get or create session
-        let mut sessions = self.sessions.write().await;
-        let ratchet =
-            sessions
-                .get_mut(&message.sender_did)
-                .ok_or_else(|| Error::DoubleRatchet {
-                    message: format!("No session with {}", message.sender_did),
+        let olm_message =
+            OlmMessage::from_parts(message.olm_message_type as usize, &message.ciphertext)
+                .map_err(|e| Error::Crypto {
+                    message: format!("Failed to decode OlmMessage: {}", e),
                 })?;
 
-        // Split header and nonce from storage field
-        // Header size for double-ratchet-2 is variable, nonce is 12 bytes
-        if message.nonce.len() < 12 {
-            return Err(Error::InvalidFormat {
-                message: "Nonce field too short".to_string(),
-            });
-        }
+        let plaintext = match &olm_message {
+            OlmMessage::PreKey(pre_key_msg) => {
+                let sender_identity_key =
+                    message
+                        .sender_identity_key
+                        .as_ref()
+                        .ok_or_else(|| Error::Crypto {
+                            message: "PreKey message missing sender_identity_key".to_string(),
+                        })?;
 
-        let nonce_start = message.nonce.len() - 12;
-        let header_bytes = &message.nonce[..nonce_start];
-        let nonce_slice = &message.nonce[nonce_start..];
+                let key_array: [u8; 32] =
+                    sender_identity_key
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| Error::Crypto {
+                            message: "sender_identity_key must be exactly 32 bytes".to_string(),
+                        })?;
+                let identity_key = Curve25519PublicKey::from_bytes(key_array);
 
-        // Convert nonce slice to fixed-size array
-        let nonce: &[u8; 12] = nonce_slice.try_into().map_err(|_| Error::InvalidFormat {
-            message: "Invalid nonce size".to_string(),
-        })?;
+                let result = self
+                    .account
+                    .write()
+                    .await
+                    .create_inbound_session(identity_key, pre_key_msg)
+                    .map_err(|e| Error::Crypto {
+                        message: format!("Failed to create inbound Olm session: {}", e),
+                    })?;
 
-        let header = bincode::deserialize(header_bytes).map_err(|e| Error::Crypto {
-            message: format!("Header deserialization failed: {}", e),
-        })?;
+                self.sessions
+                    .write()
+                    .await
+                    .insert(message.sender_did.clone(), result.session);
 
-        // Decrypt with Double Ratchet (returns Vec<u8>, not Result)
-        let plaintext = ratchet.ratchet_decrypt(&header, &message.ciphertext, nonce, b"");
+                result.plaintext
+            }
+            OlmMessage::Normal(_) => {
+                let mut sessions = self.sessions.write().await;
+                let session =
+                    sessions
+                        .get_mut(&message.sender_did)
+                        .ok_or_else(|| Error::DoubleRatchet {
+                            message: format!("No session with {}", message.sender_did),
+                        })?;
 
-        // Deserialize content using protobuf
+                session.decrypt(&olm_message).map_err(|e| Error::Crypto {
+                    message: format!("Decryption failure: {}", e),
+                })?
+            }
+        };
+
         let content = MessageContent::decode(plaintext.as_slice())
             .map_err(|e| Error::Protocol { source: e })?;
 
-        // Store message
         self.storage.store_direct(&message).await?;
 
         Ok(content)
     }
 
-    /// Sign a message
+    /// Sign a message with the local Ed25519 signing key.
     fn sign_message(&self, message: &DirectMessage) -> Result<Vec<u8>> {
-        let mut data = Vec::new();
-        data.extend_from_slice(message.id.as_bytes());
-        data.extend_from_slice(message.sender_did.as_bytes());
-        data.extend_from_slice(message.recipient_did.as_bytes());
-        data.extend_from_slice(&message.ciphertext);
-        data.extend_from_slice(&message.nonce);
-        data.extend_from_slice(&message.timestamp.to_le_bytes());
-
+        let data = Self::signable_bytes(message);
         let signature = self.signing_key.sign(&data);
         Ok(signature.to_bytes().to_vec())
     }
 
-    /// Verify a message signature
+    /// Verify a message signature.
     ///
-    /// NOTE: This requires the sender's public key which must be fetched from their
-    /// DID document via the identity system. Currently verification is deferred to
-    /// the caller who must provide the sender's public key.
+    /// `sender_public_key` must be fetched from the sender's DID document.
     pub fn verify_message_with_key(
         &self,
         message: &DirectMessage,
         sender_public_key: &VerifyingKey,
     ) -> Result<()> {
-        let mut data = Vec::new();
-        data.extend_from_slice(message.id.as_bytes());
-        data.extend_from_slice(message.sender_did.as_bytes());
-        data.extend_from_slice(message.recipient_did.as_bytes());
-        data.extend_from_slice(&message.ciphertext);
-        data.extend_from_slice(&message.nonce);
-        data.extend_from_slice(&message.timestamp.to_le_bytes());
-
+        let data = Self::signable_bytes(message);
         let signature =
             Signature::from_bytes(message.signature.as_slice().try_into().map_err(|_| {
                 Error::InvalidSignature {
@@ -302,7 +284,18 @@ impl DirectMessageHandler {
         Ok(())
     }
 
-    /// Infer message type from content
+    /// Bytes that are signed/verified: id + sender_did + recipient_did + ciphertext + olm_message_type + timestamp
+    fn signable_bytes(message: &DirectMessage) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(message.id.as_bytes());
+        data.extend_from_slice(message.sender_did.as_bytes());
+        data.extend_from_slice(message.recipient_did.as_bytes());
+        data.extend_from_slice(&message.ciphertext);
+        data.extend_from_slice(&message.olm_message_type.to_le_bytes());
+        data.extend_from_slice(&message.timestamp.to_le_bytes());
+        data
+    }
+
     fn infer_message_type(content: &MessageContent) -> i32 {
         if !content.attachments.is_empty() {
             let first = &content.attachments[0];
@@ -335,47 +328,48 @@ impl DirectMessageHandler {
 mod tests {
     use super::*;
     use crate::storage::LocalMessageStorage;
+    use rand::rngs::OsRng;
     use tempfile::tempdir;
+
+    fn make_handler(did: &str, account: Account) -> (DirectMessageHandler, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
+        let signing_key = SigningKey::generate(&mut OsRng);
+        (
+            DirectMessageHandler::new(did.to_string(), signing_key, account, storage),
+            dir,
+        )
+    }
 
     #[tokio::test]
     async fn test_create_handler() {
-        let dir = tempdir().unwrap();
-        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
-
-        let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = DirectMessageHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            StaticSecret::random_from_rng(OsRng),
-            storage,
-        );
-
+        let (handler, _dir) = make_handler("did:variance:alice", Account::new());
         assert_eq!(handler.local_did, "did:variance:alice");
     }
 
     #[tokio::test]
-    async fn test_message_signing() {
-        let dir = tempdir().unwrap();
-        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
+    async fn test_identity_key_is_stable() {
+        let (handler, _dir) = make_handler("did:variance:alice", Account::new());
+        let key1 = handler.identity_key();
+        let key2 = handler.identity_key();
+        assert_eq!(key1, key2);
+    }
 
-        let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = DirectMessageHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            StaticSecret::random_from_rng(OsRng),
-            storage,
-        );
+    #[tokio::test]
+    async fn test_message_signing() {
+        let (handler, _dir) = make_handler("did:variance:alice", Account::new());
 
         let message = DirectMessage {
             id: Ulid::new().to_string(),
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![1, 2, 3],
-            nonce: vec![4, 5, 6],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: chrono::Utc::now().timestamp_millis(),
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         let signature = handler.sign_message(&message).unwrap();
@@ -398,16 +392,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_message_verification_success() {
-        let dir = tempdir().unwrap();
-        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
-
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let handler = DirectMessageHandler::new(
             "did:variance:alice".to_string(),
             signing_key,
-            StaticSecret::random_from_rng(OsRng),
+            Account::new(),
             storage,
         );
 
@@ -416,17 +409,15 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![1, 2, 3],
-            nonce: vec![4, 5, 6],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: chrono::Utc::now().timestamp_millis(),
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
-        // Sign message
         message.signature = handler.sign_message(&message).unwrap();
-
-        // Verify with correct key
         assert!(handler
             .verify_message_with_key(&message, &verifying_key)
             .is_ok());
@@ -434,16 +425,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_message_verification_failure() {
-        let dir = tempdir().unwrap();
-        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
-
         let signing_key = SigningKey::generate(&mut OsRng);
         let wrong_key = SigningKey::generate(&mut OsRng).verifying_key();
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let handler = DirectMessageHandler::new(
             "did:variance:alice".to_string(),
             signing_key,
-            StaticSecret::random_from_rng(OsRng),
+            Account::new(),
             storage,
         );
 
@@ -452,17 +442,15 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![1, 2, 3],
-            nonce: vec![4, 5, 6],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: chrono::Utc::now().timestamp_millis(),
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
-        // Sign message
         message.signature = handler.sign_message(&message).unwrap();
-
-        // Verify with wrong key should fail
         assert!(handler
             .verify_message_with_key(&message, &wrong_key)
             .is_err());
@@ -470,16 +458,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_message_verification_invalid_signature() {
-        let dir = tempdir().unwrap();
-        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
-
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let handler = DirectMessageHandler::new(
             "did:variance:alice".to_string(),
             signing_key,
-            StaticSecret::random_from_rng(OsRng),
+            Account::new(),
             storage,
         );
 
@@ -488,14 +475,14 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![1, 2, 3],
-            nonce: vec![4, 5, 6],
-            signature: vec![0; 64], // Invalid signature
+            olm_message_type: 0,
+            signature: vec![0; 64],
             timestamp: chrono::Utc::now().timestamp_millis(),
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
-        // Verify with invalid signature should fail
         let result = handler.verify_message_with_key(&message, &verifying_key);
         assert!(result.is_err());
         assert!(matches!(
@@ -505,104 +492,90 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rejects_zero_public_key_as_initiator() {
-        let dir = tempdir().unwrap();
-        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
-        let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = DirectMessageHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            StaticSecret::random_from_rng(OsRng),
-            storage,
-        );
-
-        let zero_key = PublicKey::from([0u8; 32]);
-        let result = handler
-            .init_session_as_initiator("did:variance:bob".to_string(), zero_key)
-            .await;
-
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::Crypto { .. }));
-    }
-
-    #[tokio::test]
-    async fn test_rejects_zero_public_key_as_responder() {
-        let dir = tempdir().unwrap();
-        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
-        let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = DirectMessageHandler::new(
-            "did:variance:bob".to_string(),
-            signing_key,
-            StaticSecret::random_from_rng(OsRng),
-            storage,
-        );
-
-        let zero_key = PublicKey::from([0u8; 32]);
-        let result = handler
-            .init_session_as_responder("did:variance:alice".to_string(), zero_key)
-            .await;
-
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::Crypto { .. }));
-    }
-
-    #[tokio::test]
-    async fn test_accepts_valid_public_key() {
-        let dir = tempdir().unwrap();
-        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
-        let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = DirectMessageHandler::new(
-            "did:variance:alice".to_string(),
-            signing_key,
-            StaticSecret::random_from_rng(OsRng),
-            storage,
-        );
-
-        // A real X25519 keypair produces a valid (non-zero) public key.
-        let recipient_secret = StaticSecret::random_from_rng(OsRng);
-        let recipient_public_key = PublicKey::from(&recipient_secret);
-
-        let result = handler
-            .init_session_as_initiator("did:variance:bob".to_string(), recipient_public_key)
-            .await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
     async fn test_init_session_if_needed_idempotent() {
+        let mut bob_account = Account::new();
+        bob_account.generate_one_time_keys(2);
+        let bob_identity = bob_account.curve25519_key();
+        let otk1 = *bob_account.one_time_keys().values().next().unwrap();
+
+        let (alice, _dir) = make_handler("did:variance:alice", Account::new());
+
+        alice
+            .init_session_if_needed("did:variance:bob", bob_identity, otk1)
+            .await
+            .unwrap();
+
+        // Second call with the same DID is a no-op even with a different OTK.
+        let otk2 = *bob_account.one_time_keys().values().nth(1).unwrap();
+        alice
+            .init_session_if_needed("did:variance:bob", bob_identity, otk2)
+            .await
+            .unwrap();
+
+        assert_eq!(alice.session_count().await, 1);
+    }
+
+    /// Full round-trip: Alice creates an outbound Olm session using Bob's identity key
+    /// and one-time key. Bob's Account auto-creates the inbound session from the first
+    /// (PreKey) message and decrypts it.
+    #[tokio::test]
+    async fn test_full_send_receive_round_trip() {
         let dir = tempdir().unwrap();
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
-        let signing_key = SigningKey::generate(&mut OsRng);
-        let handler = DirectMessageHandler::new(
+
+        let alice_signing = SigningKey::generate(&mut OsRng);
+        let bob_signing = SigningKey::generate(&mut OsRng);
+
+        // Bob generates a one-time key for Alice to use.
+        let mut bob_account = Account::new();
+        bob_account.generate_one_time_keys(1);
+        let bob_identity_key = bob_account.curve25519_key();
+        let bob_otk = *bob_account.one_time_keys().values().next().unwrap();
+
+        let alice = DirectMessageHandler::new(
             "did:variance:alice".to_string(),
-            signing_key,
-            StaticSecret::random_from_rng(OsRng),
+            alice_signing,
+            Account::new(),
+            storage.clone(),
+        );
+        let bob = DirectMessageHandler::new(
+            "did:variance:bob".to_string(),
+            bob_signing,
+            bob_account,
             storage,
         );
 
-        let recipient_secret = StaticSecret::random_from_rng(OsRng);
-        let recipient_public_key = PublicKey::from(&recipient_secret);
-
-        // First call initializes the session.
-        handler
-            .init_session_if_needed("did:variance:bob", recipient_public_key)
+        // Alice initializes an outbound session with Bob's identity key + OTK.
+        alice
+            .init_session_as_initiator("did:variance:bob".to_string(), bob_identity_key, bob_otk)
             .await
             .unwrap();
 
-        // Second call with a different key should be a no-op (session already exists).
-        let other_secret = StaticSecret::random_from_rng(OsRng);
-        let other_key = PublicKey::from(&other_secret);
-        handler
-            .init_session_if_needed("did:variance:bob", other_key)
+        let content = MessageContent {
+            text: "Hello Bob!".to_string(),
+            attachments: vec![],
+            mentions: vec![],
+            reply_to: None,
+            metadata: HashMap::new(),
+        };
+
+        let wire_message = alice
+            .send_message("did:variance:bob".to_string(), content)
             .await
             .unwrap();
 
-        // Second call must not have broken the session: send should succeed.
-        // (If init_session_if_needed overwrote the session instead of skipping,
-        // it would replace with `other_key`; we can't verify key identity here,
-        // but the session count staying at 1 is observable via a successful send.)
-        let sessions = handler.sessions.read().await;
-        assert_eq!(sessions.len(), 1);
+        // First message must be a PreKey message (type 0 in Olm) carrying Alice's identity key.
+        assert_eq!(
+            wire_message.olm_message_type, 0,
+            "Expected PreKey message type (0)"
+        );
+        assert!(
+            wire_message.sender_identity_key.is_some(),
+            "PreKey message must carry sender_identity_key"
+        );
+
+        // Bob receives the PreKey message, auto-creates his inbound session, and decrypts.
+        let decrypted = bob.receive_message(wire_message).await.unwrap();
+        assert_eq!(decrypted.text, "Hello Bob!");
     }
 }

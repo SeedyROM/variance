@@ -15,6 +15,7 @@ use tokio::select;
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 use variance_proto::identity_proto::IdentityResponse;
+use variance_proto::messaging_proto::{DirectMessageAck, GroupMessage};
 
 pub struct Node {
     swarm: Swarm<VarianceBehaviour>,
@@ -102,6 +103,7 @@ impl Node {
         let identity = crate::protocols::identity::create_identity_behaviour();
         let offline_messages = crate::protocols::messaging::create_offline_message_behaviour();
         let signaling = crate::protocols::media::create_signaling_behaviour();
+        let direct_messages = crate::protocols::messaging::create_direct_message_behaviour();
 
         // Combine into VarianceBehaviour
         let behaviour = VarianceBehaviour {
@@ -113,6 +115,7 @@ impl Node {
             identity,
             offline_messages,
             signaling,
+            direct_messages,
         };
 
         // Build Swarm
@@ -362,6 +365,26 @@ impl Node {
                 self.pending_provider_queries
                     .insert(query_id, (Vec::new(), response_tx));
             }
+            NodeCommand::SendDirectMessage {
+                peer_did,
+                message,
+                response_tx,
+            } => {
+                let did_to_peer = self.did_to_peer.read().await;
+                if let Some(peer) = did_to_peer.get(&peer_did) {
+                    debug!("Sending direct message to {} ({})", peer_did, peer);
+                    self.swarm
+                        .behaviour_mut()
+                        .direct_messages
+                        .send_request(peer, message);
+                    let _ = response_tx.send(Ok(()));
+                } else {
+                    warn!("Cannot send direct message: unknown peer DID {}", peer_did);
+                    let _ = response_tx.send(Err(Error::Protocol {
+                        message: format!("Unknown peer DID: {}", peer_did),
+                    }));
+                }
+            }
         }
     }
 
@@ -417,6 +440,17 @@ impl Node {
                             "Got message {} from {} on topic {:?}",
                             message_id, propagation_source, message.topic
                         );
+
+                        match GroupMessage::decode(message.data.as_slice()) {
+                            Ok(group_msg) => {
+                                self.events.send_group_message(
+                                    GroupMessageEvent::MessageReceived { message: group_msg },
+                                );
+                            }
+                            Err(e) => {
+                                warn!("Failed to decode GossipSub message as GroupMessage: {}", e);
+                            }
+                        }
                     }
                 }
                 crate::behaviour::VarianceBehaviourEvent::Mdns(mdns_event) => match mdns_event {
@@ -833,6 +867,73 @@ impl Node {
                                 "WebRTC signaling response {:?} sent to {}",
                                 request_id, peer
                             );
+                        }
+                    }
+                }
+                crate::behaviour::VarianceBehaviourEvent::DirectMessages(dm_event) => {
+                    use libp2p::request_response::{Event, Message};
+
+                    match dm_event {
+                        Event::Message { peer, message, .. } => match message {
+                            Message::Request {
+                                request, channel, ..
+                            } => {
+                                debug!("Received direct message {} from {}", request.id, peer);
+
+                                // Learn the sender's DID → PeerId mapping for future sends
+                                {
+                                    let mut did_to_peer = self.did_to_peer.write().await;
+                                    did_to_peer.insert(request.sender_did.clone(), peer);
+                                }
+
+                                // Emit event for the app layer to decrypt and deliver
+                                self.events.send_direct_message(
+                                    DirectMessageEvent::MessageReceived {
+                                        peer,
+                                        message: request.clone(),
+                                    },
+                                );
+
+                                // Send ACK
+                                let ack = DirectMessageAck {
+                                    message_id: request.id.clone(),
+                                };
+                                let _ = self
+                                    .swarm
+                                    .behaviour_mut()
+                                    .direct_messages
+                                    .send_response(channel, ack);
+                            }
+                            Message::Response { response, .. } => {
+                                debug!("Direct message ACK received: {}", response.message_id);
+                            }
+                        },
+                        Event::OutboundFailure {
+                            peer,
+                            request_id,
+                            error,
+                            ..
+                        } => {
+                            warn!(
+                                "Direct message {:?} to {} failed: {}",
+                                request_id, peer, error
+                            );
+                        }
+                        Event::InboundFailure {
+                            peer,
+                            request_id,
+                            error,
+                            ..
+                        } => {
+                            warn!(
+                                "Inbound direct message {:?} from {} failed: {}",
+                                request_id, peer, error
+                            );
+                        }
+                        Event::ResponseSent {
+                            peer, request_id, ..
+                        } => {
+                            debug!("Direct message ACK {:?} sent to {}", request_id, peer);
                         }
                     }
                 }

@@ -202,11 +202,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![1, 2, 3],
-            nonce: vec![4, 5, 6],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: chrono::Utc::now().timestamp_millis(),
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         let envelope = handler.create_envelope(
@@ -235,11 +236,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![1, 2, 3],
-            nonce: vec![4, 5, 6],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: chrono::Utc::now().timestamp_millis(),
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         let envelope = handler.create_envelope(
@@ -281,11 +283,12 @@ mod tests {
                 sender_did: format!("did:variance:sender{}", i),
                 recipient_did: "did:variance:bob".to_string(),
                 ciphertext: vec![i as u8],
-                nonce: vec![],
+                olm_message_type: 0,
                 signature: vec![],
                 timestamp: chrono::Utc::now().timestamp_millis() + i as i64,
                 r#type: MessageType::Text.into(),
                 reply_to: None,
+                sender_identity_key: None,
             };
 
             let envelope = handler.create_envelope(
@@ -331,11 +334,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![1],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: old_time,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         let envelope1 = handler.create_envelope(
@@ -351,11 +355,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![2],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: new_time,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         let envelope2 = handler.create_envelope(
@@ -401,11 +406,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![1, 2, 3],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: chrono::Utc::now().timestamp_millis(),
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         let message_id = direct_msg.id.clone();
@@ -451,11 +457,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![1, 2, 3],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: chrono::Utc::now().timestamp_millis(),
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         // Create envelope with TTL=0 (expires immediately)

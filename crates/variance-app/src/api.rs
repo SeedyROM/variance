@@ -13,7 +13,7 @@ use variance_messaging::storage::MessageStorage;
 use variance_p2p::events::{DirectMessageEvent, GroupMessageEvent};
 use variance_proto::media_proto::{CallControlType, CallType};
 use variance_proto::messaging_proto::{MessageContent, ReceiptStatus};
-use x25519_dalek::PublicKey as X25519PublicKey;
+use vodozemac::Curve25519PublicKey;
 
 /// Create the HTTP API router
 pub fn create_router(state: AppState) -> Router {
@@ -205,10 +205,12 @@ pub struct ConversationResponse {
 pub struct StartConversationRequest {
     pub recipient_did: String,
     pub text: String,
-    /// Hex-encoded X25519 public key of the recipient.
-    /// Required when starting a new conversation (no existing ratchet session).
-    /// Obtained from the recipient's DID document `keyAgreement` field.
-    pub recipient_x25519_key: Option<String>,
+    /// Hex-encoded Curve25519 identity key of the recipient (from their DID document).
+    /// Required when starting a new conversation (no existing Olm session).
+    pub recipient_identity_key: Option<String>,
+    /// Hex-encoded Curve25519 one-time pre-key of the recipient (from their DID document).
+    /// Required alongside `recipient_identity_key` for initial session establishment.
+    pub recipient_one_time_key: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -325,19 +327,31 @@ async fn start_conversation(
     State(state): State<AppState>,
     Json(req): Json<StartConversationRequest>,
 ) -> Result<Json<StartConversationResponse>> {
-    // Bootstrap the ratchet session when the caller provides the recipient's X25519 key.
-    // In normal flow this key comes from the recipient's DID document `keyAgreement` field.
-    if let Some(key_hex) = &req.recipient_x25519_key {
-        let key_bytes = hex::decode(key_hex).map_err(|_| Error::BadRequest {
-            message: "recipient_x25519_key must be hex-encoded".to_string(),
+    // Bootstrap the Olm session when the caller provides the recipient's Olm keys.
+    // In normal flow these come from the recipient's DID document.
+    if let (Some(identity_key_hex), Some(otk_hex)) =
+        (&req.recipient_identity_key, &req.recipient_one_time_key)
+    {
+        let identity_bytes = hex::decode(identity_key_hex).map_err(|_| Error::BadRequest {
+            message: "recipient_identity_key must be hex-encoded".to_string(),
         })?;
-        let key_array: [u8; 32] = key_bytes.try_into().map_err(|_| Error::BadRequest {
-            message: "recipient_x25519_key must be exactly 32 bytes".to_string(),
+        let identity_array: [u8; 32] =
+            identity_bytes.try_into().map_err(|_| Error::BadRequest {
+                message: "recipient_identity_key must be exactly 32 bytes".to_string(),
+            })?;
+        let identity_key = Curve25519PublicKey::from_bytes(identity_array);
+
+        let otk_bytes = hex::decode(otk_hex).map_err(|_| Error::BadRequest {
+            message: "recipient_one_time_key must be hex-encoded".to_string(),
         })?;
-        let public_key = X25519PublicKey::from(key_array);
+        let otk_array: [u8; 32] = otk_bytes.try_into().map_err(|_| Error::BadRequest {
+            message: "recipient_one_time_key must be exactly 32 bytes".to_string(),
+        })?;
+        let one_time_key = Curve25519PublicKey::from_bytes(otk_array);
+
         state
             .direct_messaging
-            .init_session_if_needed(&req.recipient_did, public_key)
+            .init_session_if_needed(&req.recipient_did, identity_key, one_time_key)
             .await
             .map_err(|e| Error::App {
                 message: format!("Failed to initialize session: {}", e),
@@ -359,7 +373,7 @@ async fn start_conversation(
         .map_err(|e| match &e {
             variance_messaging::Error::DoubleRatchet { .. } => Error::SessionRequired {
                 message: format!(
-                    "No ratchet session with peer. Provide recipient_x25519_key to start: {}",
+                    "No Olm session with peer. Provide recipient_identity_key + recipient_one_time_key to start: {}",
                     e
                 ),
             },
@@ -367,6 +381,18 @@ async fn start_conversation(
                 message: format!("Failed to send message: {}", e),
             },
         })?;
+
+    // Transmit over P2P (best-effort)
+    if let Err(e) = state
+        .node_handle
+        .send_direct_message(req.recipient_did.clone(), message.clone())
+        .await
+    {
+        tracing::debug!(
+            "P2P direct message delivery failed (will rely on offline relay): {}",
+            e
+        );
+    }
 
     if let Some(ref channels) = state.event_channels {
         channels.send_direct_message(variance_p2p::events::DirectMessageEvent::MessageSent {
@@ -429,6 +455,18 @@ async fn send_direct_message(
         .map_err(|e| Error::App {
             message: format!("Failed to send message: {}", e),
         })?;
+
+    // Transmit over P2P (best-effort: peer may be offline, message is stored locally regardless)
+    if let Err(e) = state
+        .node_handle
+        .send_direct_message(req.recipient_did.clone(), message.clone())
+        .await
+    {
+        tracing::debug!(
+            "P2P direct message delivery failed (will rely on offline relay): {}",
+            e
+        );
+    }
 
     // Emit event if event channels are available
     if let Some(ref channels) = state.event_channels {
@@ -1188,11 +1226,12 @@ mod tests {
             sender_did: "did:variance:test".to_string(),
             recipient_did: "did:variance:peer".to_string(),
             ciphertext: vec![],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: 9999,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
         state.storage.store_direct(&msg).await.unwrap();
 
@@ -1232,11 +1271,12 @@ mod tests {
             sender_did: "did:variance:test".to_string(),
             recipient_did: "did:variance:deleteme".to_string(),
             ciphertext: vec![],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: 5000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
         state.storage.store_direct(&msg).await.unwrap();
 
@@ -1260,15 +1300,24 @@ mod tests {
     async fn test_start_conversation() {
         let app = create_router(test_state());
 
-        // Simulate the recipient's X25519 key (in real usage, fetched from their DID document).
-        let recipient_secret = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
-        let recipient_public_key = x25519_dalek::PublicKey::from(&recipient_secret);
-        let key_hex = hex::encode(recipient_public_key.as_bytes());
+        // Simulate Bob's Olm keys (in real usage, fetched from his DID document).
+        let mut recipient_account = vodozemac::olm::Account::new();
+        recipient_account.generate_one_time_keys(1);
+        let identity_key_hex = hex::encode(recipient_account.curve25519_key().to_bytes());
+        let otk_hex = hex::encode(
+            recipient_account
+                .one_time_keys()
+                .values()
+                .next()
+                .unwrap()
+                .to_bytes(),
+        );
 
         let req_body = serde_json::json!({
             "recipient_did": "did:variance:bob",
             "text": "Hello!",
-            "recipient_x25519_key": key_hex,
+            "recipient_identity_key": identity_key_hex,
+            "recipient_one_time_key": otk_hex,
         });
 
         let response = app
@@ -1338,7 +1387,7 @@ mod tests {
     async fn test_start_conversation_without_key_fails() {
         let app = create_router(test_state());
 
-        // No recipient_x25519_key and no existing session: must reject with 422.
+        // No Olm keys and no existing session: must reject with 422.
         let req_body = serde_json::json!({
             "recipient_did": "did:variance:bob",
             "text": "Hello!",

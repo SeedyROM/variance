@@ -11,11 +11,14 @@ message DirectMessage {
   string sender_did = 2;
   string recipient_did = 3;
 
-  // Encrypted content (Double Ratchet)
+  // Serialized Olm message body (from OlmMessage::to_parts().1)
   bytes ciphertext = 4;
-  bytes nonce = 5;
 
-  // Ed25519 signature of (id + sender_did + recipient_did + ciphertext + nonce + timestamp)
+  // Olm message type (from OlmMessage::to_parts().0 as uint32)
+  // 0 = PreKey (first message), 1 = Normal
+  uint32 olm_message_type = 5;
+
+  // Ed25519 signature of (id + sender_did + recipient_did + ciphertext + olm_message_type + timestamp)
   bytes signature = 6;
 
   // Unix timestamp (milliseconds)
@@ -26,6 +29,10 @@ message DirectMessage {
 
   // Optional reply reference
   optional string reply_to = 9;
+
+  // Sender's Curve25519 identity key (32 bytes).
+  // Present on PreKey messages so the recipient can call create_inbound_session().
+  optional bytes sender_identity_key = 10;
 }
 
 message GroupMessage {
@@ -149,6 +156,11 @@ message GroupInvitation {
 
   int64 timestamp = 6;
   bytes signature = 7;
+}
+
+// ACK for direct message delivery confirmation
+message DirectMessageAck {
+  string message_id = 1;
 }
 
 // Offline message relay

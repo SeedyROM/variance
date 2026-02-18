@@ -179,7 +179,11 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
     tracing::info!("Identity loaded: {}", app_state.local_did);
 
     // Start event router to bridge P2P events to WebSocket clients
-    let event_router = EventRouter::new(app_state.ws_manager.clone());
+    let event_router = EventRouter::new(
+        app_state.ws_manager.clone(),
+        app_state.direct_messaging.clone(),
+        app_state.group_messaging.clone(),
+    );
     event_router.start((*event_channels).clone());
     tracing::debug!("EventRouter started");
 

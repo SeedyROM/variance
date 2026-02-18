@@ -16,7 +16,8 @@ pub struct IdentityFile {
     pub signing_key: String,
     pub verifying_key: String,
     pub signaling_key: String,
-    pub x25519_key: String,
+    /// JSON-serialized vodozemac `AccountPickle` for the Olm account.
+    pub olm_account_pickle: String,
     pub created_at: String,
 }
 
@@ -113,15 +114,11 @@ impl AppState {
                 .map_err(|_| anyhow::anyhow!("Invalid signaling key length"))?,
         );
 
-        // Parse x25519 key from hex
-        let x25519_key_bytes = hex::decode(&identity.x25519_key)
-            .map_err(|e| anyhow::anyhow!("Invalid x25519 key format: {}", e))?;
-
-        let x25519_key_array: [u8; 32] = x25519_key_bytes
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("Invalid x25519 key length"))?;
-
-        let x25519_secret = x25519_dalek::StaticSecret::from(x25519_key_array);
+        // Restore the Olm account from its persisted pickle.
+        let olm_pickle: vodozemac::olm::AccountPickle =
+            serde_json::from_str(&identity.olm_account_pickle)
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize Olm account: {}", e))?;
+        let olm_account = vodozemac::olm::Account::from_pickle(olm_pickle);
 
         let storage = Arc::new(LocalMessageStorage::new(db_path)?);
 
@@ -129,7 +126,7 @@ impl AppState {
             direct_messaging: Arc::new(DirectMessageHandler::new(
                 identity.did.clone(),
                 signing_key.clone(),
-                x25519_secret,
+                olm_account,
                 storage.clone(),
             )),
             group_messaging: Arc::new(GroupMessageHandler::new(
@@ -207,6 +204,9 @@ impl AppState {
                     variance_p2p::NodeCommand::FindUsernameProviders { response_tx, .. } => {
                         let _ = response_tx.send(Ok(vec![]));
                     }
+                    variance_p2p::NodeCommand::SendDirectMessage { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
                 }
             }
         });
@@ -225,7 +225,7 @@ impl AppState {
             direct_messaging: Arc::new(DirectMessageHandler::new(
                 local_did.clone(),
                 signing_key.clone(),
-                x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng),
+                vodozemac::olm::Account::new(),
                 storage.clone(),
             )),
             group_messaging: Arc::new(GroupMessageHandler::new(

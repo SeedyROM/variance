@@ -8,7 +8,7 @@ use libp2p::PeerId;
 use tokio::sync::oneshot;
 use variance_proto::identity_proto::{IdentityRequest, IdentityResponse};
 use variance_proto::media_proto::SignalingMessage;
-use variance_proto::messaging_proto::GroupMessage;
+use variance_proto::messaging_proto::{DirectMessage, GroupMessage};
 
 use crate::error::Result;
 
@@ -59,6 +59,13 @@ pub enum NodeCommand {
     FindUsernameProviders {
         key: libp2p::kad::RecordKey,
         response_tx: oneshot::Sender<Result<Vec<libp2p::PeerId>>>,
+    },
+
+    /// Send an encrypted direct message to a peer (by DID)
+    SendDirectMessage {
+        peer_did: String,
+        message: DirectMessage,
+        response_tx: oneshot::Sender<Result<()>>,
     },
 }
 
@@ -204,6 +211,36 @@ impl NodeHandle {
             .map_err(|_| crate::error::Error::Protocol {
                 message: "Failed to send command to node".to_string(),
             })?;
+        response_rx
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to receive response from node".to_string(),
+            })?
+    }
+
+    /// Send an encrypted direct message to a peer (by DID)
+    ///
+    /// The peer's DID must be known (i.e., a prior message was received from them,
+    /// or they were discovered via the identity protocol) so the DID→PeerId mapping
+    /// is populated in the node's routing table.
+    pub async fn send_direct_message(
+        &self,
+        peer_did: String,
+        message: DirectMessage,
+    ) -> Result<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(NodeCommand::SendDirectMessage {
+                peer_did,
+                message,
+                response_tx,
+            })
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to send command to node".to_string(),
+            })?;
+
         response_rx
             .await
             .map_err(|_| crate::error::Error::Protocol {

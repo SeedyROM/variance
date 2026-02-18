@@ -539,11 +539,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![1, 2, 3],
-            nonce: vec![4, 5, 6],
+            olm_message_type: 0,
             signature: vec![7, 8, 9],
             timestamp: 1000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         storage.store_direct(&message).await.unwrap();
@@ -567,11 +568,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![1, 2, 3],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: 1000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         storage.store_direct(&message).await.unwrap();
@@ -627,11 +629,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: 1000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         let envelope = OfflineMessageEnvelope {
@@ -667,11 +670,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: 1000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         let envelope = OfflineMessageEnvelope {
@@ -723,22 +727,24 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: 1000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
         let msg2 = DirectMessage {
             id: "01ARZ3NDEKTSV4RRFFQ69G5FA2".to_string(),
             sender_did: "did:variance:carol".to_string(),
             recipient_did: "did:variance:alice".to_string(),
             ciphertext: vec![],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: 2000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         storage.store_direct(&msg1).await.unwrap();
@@ -767,11 +773,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![1, 2, 3],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: 1000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         storage.store_direct(&message).await.unwrap();
@@ -810,11 +817,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: 1000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         let envelope1 = OfflineMessageEnvelope {
@@ -833,11 +841,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: 2000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         let envelope2 = OfflineMessageEnvelope {
