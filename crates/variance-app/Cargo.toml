@@ -42,6 +42,9 @@ hex = { workspace = true }
 bip39 = { workspace = true }
 vodozemac = "0.9"
 
+# Paths
+dirs = { workspace = true }
+
 # Time
 chrono = { workspace = true }
 

@@ -4945,6 +4945,7 @@ dependencies = [
  "bip39",
  "chrono",
  "dashmap",
+ "dirs 5.0.1",
  "ed25519-dalek",
  "futures",
  "hex",

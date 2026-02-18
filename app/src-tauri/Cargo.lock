@@ -7251,6 +7251,7 @@ dependencies = [
  "bip39",
  "chrono",
  "dashmap",
+ "dirs 5.0.1",
  "ed25519-dalek",
  "futures",
  "hex",
@@ -7279,6 +7280,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "dirs 5.0.1",
  "serde",
  "serde_json",
  "tauri",

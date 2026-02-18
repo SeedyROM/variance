@@ -1,5 +1,5 @@
 use tauri::State;
-use variance_app::{identity_gen, start_node as node_start, AppConfig};
+use variance_app::{identity_gen, start_node as node_start, AppConfig, StorageConfig};
 
 use crate::state::NodeState;
 
@@ -77,12 +77,18 @@ pub async fn recover_identity(mnemonic: String, output_path: String) -> Result<S
     Ok(identity.did)
 }
 
-/// Return the default identity file path: `$HOME/.variance/identity.json`.
+/// Return the default identity file path inside the platform data directory.
+///
+/// macOS: `~/Library/Application Support/variance/identity.json`
+/// Linux: `~/.local/share/variance/identity.json`
 #[tauri::command]
 pub fn default_identity_path() -> String {
-    std::env::var("HOME")
-        .map(|home| format!("{}/.variance/identity.json", home))
-        .unwrap_or_else(|_| ".variance/identity.json".to_string())
+    dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("variance")
+        .join("identity.json")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Start the Variance P2P node and HTTP API server.
@@ -91,17 +97,53 @@ pub fn default_identity_path() -> String {
 /// Returns the assigned port number.
 #[tauri::command]
 pub async fn start_node(state: State<'_, NodeState>, identity_path: String) -> Result<u16, String> {
-    // Don't start twice
-    {
-        let port = state.server_port.read().await;
-        if port.is_some() {
-            return port.ok_or_else(|| "Already started".to_string());
-        }
+    // Hold the start lock for the entire startup sequence. This prevents the
+    // race caused by React StrictMode mounting effects twice in dev, which
+    // would otherwise let two concurrent calls both pass the "already running"
+    // check before either call finishes and sets the port.
+    let _start_guard = state
+        .start_lock
+        .try_lock()
+        .map_err(|_| "Node is already starting".to_string())?;
+
+    // If already running, return the existing port.
+    if let Some(port) = *state.server_port.read().await {
+        return Ok(port);
     }
 
-    let config = AppConfig::default();
+    // Resolve data directory via XDG / platform conventions (same as P2P config):
+    // macOS → ~/Library/Application Support/variance
+    // Linux → ~/.local/share/variance
+    let base_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("variance");
+
+    // Ensure the data directory exists before sled or the identity loader touch it.
+    std::fs::create_dir_all(&base_dir)
+        .map_err(|e| format!("Failed to create data directory: {}", e))?;
+
+    // AppConfig::default() already uses the same dirs::data_local_dir() path,
+    // so we only need to override the storage block to keep everything consistent.
+    let config = AppConfig {
+        storage: StorageConfig {
+            identity_path: base_dir.join("identity.json"),
+            identity_cache_dir: base_dir.join("identity_cache"),
+            message_db_path: base_dir.join("messages.db"),
+            base_dir,
+        },
+        ..AppConfig::default()
+    };
 
     let identity_file_path = std::path::Path::new(&identity_path);
+
+    // Verify the identity file exists before handing off to node startup,
+    // so we can return a clear error rather than an opaque IO error.
+    if !identity_file_path.exists() {
+        return Err(format!(
+            "Identity file not found at {}. Please regenerate your identity.",
+            identity_file_path.display()
+        ));
+    }
 
     // Start the variance node (P2P + AppState + EventRouter + Router)
     let node = node_start(&config, identity_file_path)

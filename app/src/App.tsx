@@ -117,13 +117,23 @@ export function App() {
       setNodeStatus("starting");
       try {
         const path = identityPath ?? (await invoke<string>("default_identity_path"));
-        const port = await invoke<number>("start_node", {
-          identityPath: path,
-        });
+
+        // If the identity file is gone (e.g. user deleted the data directory),
+        // reset to onboarding rather than showing an opaque error.
+        const exists = await invoke<boolean>("has_identity", { identityPath: path });
+        if (!exists) {
+          useIdentityStore.getState().reset();
+          setNodeStatus("idle");
+          return;
+        }
+
+        const port = await invoke<number>("start_node", { identityPath: path });
         setApiPort(port);
         resetApiBase();
         setNodeStatus("running");
       } catch (e) {
+        // Swallow the "already starting" race from React StrictMode's double-mount.
+        if (typeof e === "string" && e.includes("already starting")) return;
         setNodeStatus("error");
         console.error("Failed to start node:", e);
       }
