@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+fn variance_data_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("variance")
+}
+
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -101,10 +107,10 @@ impl Default for AppConfig {
                 turn_servers: vec![],
             },
             storage: StorageConfig {
-                base_dir: PathBuf::from(".variance"),
-                identity_path: PathBuf::from(".variance/identity.json"),
-                identity_cache_dir: PathBuf::from(".variance/identity_cache"),
-                message_db_path: PathBuf::from(".variance/messages.db"),
+                base_dir: variance_data_dir(),
+                identity_path: variance_data_dir().join("identity.json"),
+                identity_cache_dir: variance_data_dir().join("identity_cache"),
+                message_db_path: variance_data_dir().join("messages.db"),
             },
         }
     }

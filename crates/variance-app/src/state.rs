@@ -16,6 +16,12 @@ pub struct IdentityFile {
     pub signing_key: String,
     pub verifying_key: String,
     pub signaling_key: String,
+    /// JSON-serialized vodozemac `AccountPickle` for the Olm account.
+    ///
+    /// Added in the vodozemac migration. Absent in old files; `load_identity`
+    /// auto-migrates by generating a fresh account and rewriting the file.
+    #[serde(default)]
+    pub olm_account_pickle: String,
     pub created_at: String,
 }
 
@@ -55,6 +61,12 @@ pub struct AppState {
     /// Local DID
     pub local_did: String,
 
+    /// Hex-encoded verifying key for this identity
+    pub verifying_key: String,
+
+    /// RFC3339 timestamp when this identity was created
+    pub created_at: String,
+
     /// P2P node handle for sending messages over the network
     pub node_handle: variance_p2p::NodeHandle,
 
@@ -66,13 +78,31 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Load identity from file
+    /// Load identity from file, migrating old formats in-place if needed.
     pub fn load_identity(identity_path: &Path) -> anyhow::Result<IdentityFile> {
         let contents = std::fs::read_to_string(identity_path)
             .map_err(|e| anyhow::anyhow!("Failed to read identity file: {}", e))?;
 
-        let identity: IdentityFile = serde_json::from_str(&contents)
+        let mut identity: IdentityFile = serde_json::from_str(&contents)
             .map_err(|e| anyhow::anyhow!("Failed to parse identity file: {}", e))?;
+
+        // Migrate pre-vodozemac identity files that lack an Olm account pickle.
+        // The Olm account is not derived from the mnemonic, so we generate a fresh
+        // one. The user's DID is preserved (it comes from the signing key).
+        if identity.olm_account_pickle.is_empty() {
+            tracing::warn!(
+                "Identity file is missing olm_account_pickle (pre-vodozemac format); \
+                 generating a fresh Olm account and migrating the file"
+            );
+            let account = vodozemac::olm::Account::new();
+            identity.olm_account_pickle = serde_json::to_string(&account.pickle())
+                .map_err(|e| anyhow::anyhow!("Failed to serialize Olm account: {}", e))?;
+
+            let migrated = serde_json::to_string_pretty(&identity)
+                .map_err(|e| anyhow::anyhow!("Failed to serialize migrated identity: {}", e))?;
+            std::fs::write(identity_path, migrated)
+                .map_err(|e| anyhow::anyhow!("Failed to write migrated identity file: {}", e))?;
+        }
 
         Ok(identity)
     }
@@ -106,12 +136,19 @@ impl AppState {
                 .map_err(|_| anyhow::anyhow!("Invalid signaling key length"))?,
         );
 
+        // Restore the Olm account from its persisted pickle.
+        let olm_pickle: vodozemac::olm::AccountPickle =
+            serde_json::from_str(&identity.olm_account_pickle)
+                .map_err(|e| anyhow::anyhow!("Failed to deserialize Olm account: {}", e))?;
+        let olm_account = vodozemac::olm::Account::from_pickle(olm_pickle);
+
         let storage = Arc::new(LocalMessageStorage::new(db_path)?);
 
         Ok(Self {
             direct_messaging: Arc::new(DirectMessageHandler::new(
                 identity.did.clone(),
                 signing_key.clone(),
+                olm_account,
                 storage.clone(),
             )),
             group_messaging: Arc::new(GroupMessageHandler::new(
@@ -139,6 +176,8 @@ impl AppState {
             signaling: Arc::new(SignalingHandler::new(identity.did.clone(), signaling_key)),
             storage,
             local_did: identity.did,
+            verifying_key: identity.verifying_key,
+            created_at: identity.created_at,
             node_handle,
             ws_manager: WebSocketManager::new(),
             event_channels,
@@ -181,6 +220,15 @@ impl AppState {
                     variance_p2p::NodeCommand::UnsubscribeFromTopic { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
+                    variance_p2p::NodeCommand::ProvideUsername { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    variance_p2p::NodeCommand::FindUsernameProviders { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(vec![]));
+                    }
+                    variance_p2p::NodeCommand::SendDirectMessage { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
                 }
             }
         });
@@ -199,6 +247,7 @@ impl AppState {
             direct_messaging: Arc::new(DirectMessageHandler::new(
                 local_did.clone(),
                 signing_key.clone(),
+                vodozemac::olm::Account::new(),
                 storage.clone(),
             )),
             group_messaging: Arc::new(GroupMessageHandler::new(
@@ -223,6 +272,8 @@ impl AppState {
             signaling: Arc::new(SignalingHandler::new(local_did.clone(), signaling_key)),
             storage,
             local_did,
+            verifying_key: "".to_string(),
+            created_at: "".to_string(),
             node_handle: Self::test_node_handle(),
             ws_manager: WebSocketManager::new(),
             event_channels: None,

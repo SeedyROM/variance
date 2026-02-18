@@ -13,7 +13,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 use variance_proto::media_proto::SignalingMessage;
-use variance_proto::messaging_proto::{DirectMessage, GroupMessage};
 
 use crate::state::AppState;
 
@@ -82,13 +81,16 @@ pub enum WsMessage {
     // Message events
     DirectMessageReceived {
         from: String,
-        #[serde(skip)]
-        message: DirectMessage,
+        message_id: String,
+        text: String,
+        timestamp: i64,
+        reply_to: Option<String>,
     },
     GroupMessageReceived {
         group_id: String,
-        #[serde(skip)]
-        message: GroupMessage,
+        from: String,
+        message_id: String,
+        timestamp: i64,
     },
     OfflineMessagesReceived {
         count: usize,
@@ -268,20 +270,24 @@ async fn handle_client_message(client_id: &str, msg: ClientMessage, state: &AppS
                 Ok(message) => {
                     debug!("Message sent: {}", message.id);
 
+                    // Transmit over P2P (best-effort)
+                    if let Err(e) = state
+                        .node_handle
+                        .send_direct_message(recipient_did.clone(), message.clone())
+                        .await
+                    {
+                        debug!(
+                            "P2P direct message delivery failed (will rely on offline relay): {}",
+                            e
+                        );
+                    }
+
                     // Emit event if channels available
                     if let Some(ref channels) = state.event_channels {
                         use variance_p2p::events::DirectMessageEvent;
                         channels.send_direct_message(DirectMessageEvent::MessageSent {
                             message_id: message.id.clone(),
                             recipient: recipient_did,
-                        });
-                    }
-
-                    // Send success confirmation to client
-                    if let Some(client) = state.ws_manager.clients.get(client_id) {
-                        let _ = client.tx.send(WsMessage::DirectMessageReceived {
-                            from: state.local_did.clone(),
-                            message,
                         });
                     }
                 }
@@ -323,11 +329,14 @@ async fn handle_client_message(client_id: &str, msg: ClientMessage, state: &AppS
                         });
                     }
 
-                    // Send success confirmation to client
+                    // Echo the sent message back to the sender so the UI updates immediately.
                     if let Some(client) = state.ws_manager.clients.get(client_id) {
-                        let _ = client
-                            .tx
-                            .send(WsMessage::GroupMessageReceived { group_id, message });
+                        let _ = client.tx.send(WsMessage::GroupMessageReceived {
+                            group_id,
+                            from: state.local_did.clone(),
+                            message_id: message.id.clone(),
+                            timestamp: message.timestamp,
+                        });
                     }
                 }
                 Err(e) => {

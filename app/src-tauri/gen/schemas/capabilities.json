@@ -1,0 +1,9 @@
+{
+  "default": {
+    "identifier": "default",
+    "description": "Default capabilities for Variance desktop",
+    "local": true,
+    "windows": ["main"],
+    "permissions": ["core:default", "fs:default", "dialog:default"]
+  }
+}

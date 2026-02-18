@@ -15,6 +15,9 @@ use tokio::select;
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 use variance_proto::identity_proto::IdentityResponse;
+use variance_proto::messaging_proto::{DirectMessageAck, GroupMessage};
+
+type ProviderQueryResult = (Vec<PeerId>, oneshot::Sender<Result<Vec<PeerId>>>);
 
 pub struct Node {
     swarm: Swarm<VarianceBehaviour>,
@@ -29,6 +32,8 @@ pub struct Node {
         libp2p::request_response::OutboundRequestId,
         oneshot::Sender<Result<IdentityResponse>>,
     >,
+    /// Pending get_providers queries: query_id → (accumulated peers, response sender)
+    pending_provider_queries: HashMap<kad::QueryId, ProviderQueryResult>,
     /// DID to PeerId mapping for routing signaling messages
     did_to_peer: Arc<tokio::sync::RwLock<HashMap<String, PeerId>>>,
 }
@@ -97,6 +102,7 @@ impl Node {
         let identity = crate::protocols::identity::create_identity_behaviour();
         let offline_messages = crate::protocols::messaging::create_offline_message_behaviour();
         let signaling = crate::protocols::media::create_signaling_behaviour();
+        let direct_messages = crate::protocols::messaging::create_direct_message_behaviour();
 
         // Combine into VarianceBehaviour
         let behaviour = VarianceBehaviour {
@@ -108,6 +114,7 @@ impl Node {
             identity,
             offline_messages,
             signaling,
+            direct_messages,
         };
 
         // Build Swarm
@@ -154,6 +161,7 @@ impl Node {
             events,
             command_rx,
             pending_identity_requests: HashMap::new(),
+            pending_provider_queries: std::collections::HashMap::new(),
             did_to_peer: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         };
 
@@ -339,6 +347,43 @@ impl Node {
                     }));
                 }
             }
+            NodeCommand::ProvideUsername { key, response_tx } => {
+                match self.swarm.behaviour_mut().kad.start_providing(key) {
+                    Ok(_) => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    Err(e) => {
+                        let _ = response_tx.send(Err(Error::Kad {
+                            message: format!("start_providing failed: {:?}", e),
+                        }));
+                    }
+                }
+            }
+            NodeCommand::FindUsernameProviders { key, response_tx } => {
+                let query_id = self.swarm.behaviour_mut().kad.get_providers(key);
+                self.pending_provider_queries
+                    .insert(query_id, (Vec::new(), response_tx));
+            }
+            NodeCommand::SendDirectMessage {
+                peer_did,
+                message,
+                response_tx,
+            } => {
+                let did_to_peer = self.did_to_peer.read().await;
+                if let Some(peer) = did_to_peer.get(&peer_did) {
+                    debug!("Sending direct message to {} ({})", peer_did, peer);
+                    self.swarm
+                        .behaviour_mut()
+                        .direct_messages
+                        .send_request(peer, message);
+                    let _ = response_tx.send(Ok(()));
+                } else {
+                    warn!("Cannot send direct message: unknown peer DID {}", peer_did);
+                    let _ = response_tx.send(Err(Error::Protocol {
+                        message: format!("Unknown peer DID: {}", peer_did),
+                    }));
+                }
+            }
         }
     }
 
@@ -357,6 +402,30 @@ impl Node {
                     kad::Event::InboundRequest { request } => {
                         debug!("Inbound DHT request: {:?}", request);
                     }
+                    kad::Event::OutboundQueryProgressed { id, result, .. } => match result {
+                        kad::QueryResult::GetProviders(Ok(
+                            kad::GetProvidersOk::FoundProviders { providers, .. },
+                        )) => {
+                            if let Some((peers, _)) = self.pending_provider_queries.get_mut(&id) {
+                                peers.extend(providers);
+                            }
+                        }
+                        kad::QueryResult::GetProviders(Ok(
+                            kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. },
+                        )) => {
+                            if let Some((peers, tx)) = self.pending_provider_queries.remove(&id) {
+                                let _ = tx.send(Ok(peers));
+                            }
+                        }
+                        kad::QueryResult::GetProviders(Err(e)) => {
+                            if let Some((_, tx)) = self.pending_provider_queries.remove(&id) {
+                                let _ = tx.send(Err(Error::Kad {
+                                    message: format!("get_providers failed: {:?}", e),
+                                }));
+                            }
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 },
                 crate::behaviour::VarianceBehaviourEvent::Gossipsub(gossipsub_event) => {
@@ -370,6 +439,17 @@ impl Node {
                             "Got message {} from {} on topic {:?}",
                             message_id, propagation_source, message.topic
                         );
+
+                        match GroupMessage::decode(message.data.as_slice()) {
+                            Ok(group_msg) => {
+                                self.events.send_group_message(
+                                    GroupMessageEvent::MessageReceived { message: group_msg },
+                                );
+                            }
+                            Err(e) => {
+                                warn!("Failed to decode GossipSub message as GroupMessage: {}", e);
+                            }
+                        }
                     }
                 }
                 crate::behaviour::VarianceBehaviourEvent::Mdns(mdns_event) => match mdns_event {
@@ -786,6 +866,73 @@ impl Node {
                                 "WebRTC signaling response {:?} sent to {}",
                                 request_id, peer
                             );
+                        }
+                    }
+                }
+                crate::behaviour::VarianceBehaviourEvent::DirectMessages(dm_event) => {
+                    use libp2p::request_response::{Event, Message};
+
+                    match dm_event {
+                        Event::Message { peer, message, .. } => match message {
+                            Message::Request {
+                                request, channel, ..
+                            } => {
+                                debug!("Received direct message {} from {}", request.id, peer);
+
+                                // Learn the sender's DID → PeerId mapping for future sends
+                                {
+                                    let mut did_to_peer = self.did_to_peer.write().await;
+                                    did_to_peer.insert(request.sender_did.clone(), peer);
+                                }
+
+                                // Emit event for the app layer to decrypt and deliver
+                                self.events.send_direct_message(
+                                    DirectMessageEvent::MessageReceived {
+                                        peer,
+                                        message: request.clone(),
+                                    },
+                                );
+
+                                // Send ACK
+                                let ack = DirectMessageAck {
+                                    message_id: request.id.clone(),
+                                };
+                                let _ = self
+                                    .swarm
+                                    .behaviour_mut()
+                                    .direct_messages
+                                    .send_response(channel, ack);
+                            }
+                            Message::Response { response, .. } => {
+                                debug!("Direct message ACK received: {}", response.message_id);
+                            }
+                        },
+                        Event::OutboundFailure {
+                            peer,
+                            request_id,
+                            error,
+                            ..
+                        } => {
+                            warn!(
+                                "Direct message {:?} to {} failed: {}",
+                                request_id, peer, error
+                            );
+                        }
+                        Event::InboundFailure {
+                            peer,
+                            request_id,
+                            error,
+                            ..
+                        } => {
+                            warn!(
+                                "Inbound direct message {:?} from {} failed: {}",
+                                request_id, peer, error
+                            );
+                        }
+                        Event::ResponseSent {
+                            peer, request_id, ..
+                        } => {
+                            debug!("Direct message ACK {:?} sent to {}", request_id, peer);
                         }
                     }
                 }

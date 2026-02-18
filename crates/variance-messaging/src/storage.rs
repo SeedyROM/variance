@@ -71,6 +71,14 @@ pub trait MessageStorage: Send + Sync {
         message_id: &str,
         reader_did: &str,
     ) -> Result<Option<ReadReceipt>>;
+
+    /// List all direct conversations for a local DID.
+    ///
+    /// Returns `(peer_did, latest_timestamp)` pairs sorted by timestamp descending.
+    async fn list_direct_conversations(&self, local_did: &str) -> Result<Vec<(String, i64)>>;
+
+    /// Delete all messages in a direct conversation.
+    async fn delete_direct_conversation(&self, did1: &str, did2: &str) -> Result<()>;
 }
 
 /// Local storage implementation using sled
@@ -139,6 +147,34 @@ impl LocalMessageStorage {
     /// Generate offline message key: recipient:timestamp:message_id
     fn offline_key(recipient: &str, timestamp: i64, id: &str) -> String {
         format!("{recipient}:{timestamp:020}:{id}")
+    }
+
+    /// Parse a direct message key to extract `(conv_id, timestamp)`.
+    ///
+    /// Key format: `{conv_id}:{timestamp:020}:{msg_id}`.
+    /// Since neither the 20-digit timestamp nor the ULID message ID contain
+    /// colons, we can reliably split from the right.
+    fn parse_direct_key(key: &str) -> Option<(&str, i64)> {
+        let last = key.rfind(':')?;
+        let before_id = &key[..last];
+        let ts_start = before_id.rfind(':')?;
+        let conv_id = &before_id[..ts_start];
+        let timestamp = before_id[ts_start + 1..].parse::<i64>().ok()?;
+        Some((conv_id, timestamp))
+    }
+
+    /// Extract the peer DID from a conversation ID given the local DID.
+    ///
+    /// `conv_id` = `sorted_did_a:sorted_did_b`. Returns the other DID if
+    /// `local_did` is one of the two participants, otherwise `None`.
+    fn peer_did_from_conv_id(conv_id: &str, local_did: &str) -> Option<String> {
+        if let Some(rest) = conv_id.strip_prefix(&format!("{local_did}:")) {
+            Some(rest.to_string())
+        } else {
+            conv_id
+                .strip_suffix(&format!(":{local_did}"))
+                .map(|rest| rest.to_string())
+        }
     }
 }
 
@@ -436,6 +472,48 @@ impl MessageStorage for LocalMessageStorage {
 
         Ok(latest)
     }
+
+    async fn list_direct_conversations(&self, local_did: &str) -> Result<Vec<(String, i64)>> {
+        let tree = self.direct_tree()?;
+        let mut conversations: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+
+        for entry in tree.iter() {
+            let (key, _) = entry.map_err(|e| Error::Storage { source: e })?;
+            let key_str = String::from_utf8_lossy(&key);
+
+            if let Some((conv_id, timestamp)) = Self::parse_direct_key(&key_str) {
+                if let Some(peer_did) = Self::peer_did_from_conv_id(conv_id, local_did) {
+                    let entry = conversations.entry(peer_did).or_insert(i64::MIN);
+                    if timestamp > *entry {
+                        *entry = timestamp;
+                    }
+                }
+            }
+        }
+
+        let mut result: Vec<(String, i64)> = conversations.into_iter().collect();
+        result.sort_by(|a, b| b.1.cmp(&a.1));
+        Ok(result)
+    }
+
+    async fn delete_direct_conversation(&self, did1: &str, did2: &str) -> Result<()> {
+        let tree = self.direct_tree()?;
+        let conv_id = Self::conversation_id(did1, did2);
+        let prefix = format!("{conv_id}:");
+
+        let keys_to_delete: Vec<sled::IVec> = tree
+            .scan_prefix(prefix.as_bytes())
+            .keys()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| Error::Storage { source: e })?;
+
+        for key in keys_to_delete {
+            tree.remove(key).map_err(|e| Error::Storage { source: e })?;
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -461,11 +539,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![1, 2, 3],
-            nonce: vec![4, 5, 6],
+            olm_message_type: 0,
             signature: vec![7, 8, 9],
             timestamp: 1000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         storage.store_direct(&message).await.unwrap();
@@ -489,11 +568,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![1, 2, 3],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: 1000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         storage.store_direct(&message).await.unwrap();
@@ -549,11 +629,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: 1000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         let envelope = OfflineMessageEnvelope {
@@ -589,11 +670,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: 1000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         let envelope = OfflineMessageEnvelope {
@@ -623,6 +705,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_list_direct_conversations_empty() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let convs = storage
+            .list_direct_conversations("did:variance:alice")
+            .await
+            .unwrap();
+
+        assert!(convs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_direct_conversations_with_messages() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let msg1 = DirectMessage {
+            id: "01ARZ3NDEKTSV4RRFFQ69G5FA1".to_string(),
+            sender_did: "did:variance:alice".to_string(),
+            recipient_did: "did:variance:bob".to_string(),
+            ciphertext: vec![],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: 1000,
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+        let msg2 = DirectMessage {
+            id: "01ARZ3NDEKTSV4RRFFQ69G5FA2".to_string(),
+            sender_did: "did:variance:carol".to_string(),
+            recipient_did: "did:variance:alice".to_string(),
+            ciphertext: vec![],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: 2000,
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+
+        storage.store_direct(&msg1).await.unwrap();
+        storage.store_direct(&msg2).await.unwrap();
+
+        let convs = storage
+            .list_direct_conversations("did:variance:alice")
+            .await
+            .unwrap();
+
+        assert_eq!(convs.len(), 2);
+        // Sorted desc by timestamp: carol first (2000), bob second (1000)
+        assert_eq!(convs[0].0, "did:variance:carol");
+        assert_eq!(convs[0].1, 2000);
+        assert_eq!(convs[1].0, "did:variance:bob");
+        assert_eq!(convs[1].1, 1000);
+    }
+
+    #[tokio::test]
+    async fn test_delete_direct_conversation() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let message = DirectMessage {
+            id: "01ARZ3NDEKTSV4RRFFQ69G5FA3".to_string(),
+            sender_did: "did:variance:alice".to_string(),
+            recipient_did: "did:variance:bob".to_string(),
+            ciphertext: vec![1, 2, 3],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: 1000,
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+
+        storage.store_direct(&message).await.unwrap();
+
+        // Verify message exists
+        let msgs = storage
+            .fetch_direct("did:variance:alice", "did:variance:bob", 10, None)
+            .await
+            .unwrap();
+        assert_eq!(msgs.len(), 1);
+
+        // Delete conversation
+        storage
+            .delete_direct_conversation("did:variance:alice", "did:variance:bob")
+            .await
+            .unwrap();
+
+        // Verify deleted
+        let msgs = storage
+            .fetch_direct("did:variance:alice", "did:variance:bob", 10, None)
+            .await
+            .unwrap();
+        assert!(msgs.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_cleanup_expired() {
         let dir = tempdir().unwrap();
         let storage = LocalMessageStorage::new(dir.path()).unwrap();
@@ -635,11 +817,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: 1000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         let envelope1 = OfflineMessageEnvelope {
@@ -658,11 +841,12 @@ mod tests {
             sender_did: "did:variance:alice".to_string(),
             recipient_did: "did:variance:bob".to_string(),
             ciphertext: vec![],
-            nonce: vec![],
+            olm_message_type: 0,
             signature: vec![],
             timestamp: 2000,
             r#type: MessageType::Text.into(),
             reply_to: None,
+            sender_identity_key: None,
         };
 
         let envelope2 = OfflineMessageEnvelope {

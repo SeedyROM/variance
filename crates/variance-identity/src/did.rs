@@ -4,7 +4,25 @@ use ed25519_dalek::SigningKey;
 use libp2p::PeerId;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use variance_proto::identity_proto;
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
+
+/// Wrapper to allow `X25519Secret` in a `#[derive(Debug)]` struct.
+/// The secret bytes are intentionally omitted from debug output.
+pub struct X25519SecretWrap(Arc<X25519Secret>);
+
+impl std::fmt::Debug for X25519SecretWrap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<x25519 secret>")
+    }
+}
+
+impl Clone for X25519SecretWrap {
+    fn clone(&self) -> Self {
+        X25519SecretWrap(Arc::clone(&self.0))
+    }
+}
 
 /// W3C Decentralized Identifier
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,6 +31,10 @@ pub struct Did {
     pub document: DidDocument,
     #[serde(skip)]
     pub signing_key: Option<SigningKey>,
+    /// Long-term X25519 secret; wrapped in Arc because StaticSecret is not Clone.
+    /// None when the DID is loaded from the network (only the owner holds the secret).
+    #[serde(skip)]
+    pub x25519_secret: Option<X25519SecretWrap>,
 }
 
 /// DID Document following W3C spec
@@ -66,6 +88,9 @@ impl Did {
 
         let now = Utc::now().timestamp();
 
+        let x25519_secret = X25519Secret::random_from_rng(OsRng);
+        let x25519_public = X25519PublicKey::from(&x25519_secret);
+
         let auth_method = VerificationMethod {
             id: format!("{}#key-1", did_id),
             key_type: "Ed25519VerificationKey2020".to_string(),
@@ -77,7 +102,7 @@ impl Did {
             id: format!("{}#key-2", did_id),
             key_type: "X25519KeyAgreementKey2020".to_string(),
             controller: did_id.clone(),
-            public_key_multibase: vec![], // Derived from ed25519 key
+            public_key_multibase: x25519_public.as_bytes().to_vec(),
         };
 
         let service = Service {
@@ -103,6 +128,7 @@ impl Did {
             id: did_id,
             document,
             signing_key: Some(signing_key),
+            x25519_secret: Some(X25519SecretWrap(Arc::new(x25519_secret))),
         })
     }
 
@@ -154,6 +180,31 @@ impl Did {
         ed25519_dalek::VerifyingKey::from_bytes(pub_key_bytes).map_err(|e| Error::InvalidDid {
             did: format!("{}: Invalid Ed25519 public key: {}", self.id, e),
         })
+    }
+
+    /// Extract X25519 public key from DID document's key agreement method
+    pub fn get_x25519_public_key(&self) -> Result<X25519PublicKey> {
+        let ka_method = self
+            .document
+            .key_agreement
+            .first()
+            .ok_or_else(|| Error::InvalidDid {
+                did: format!("{}: No key agreement method in DID document", self.id),
+            })?;
+
+        let key_bytes: &[u8; 32] = ka_method
+            .public_key_multibase
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::InvalidDid {
+                did: format!(
+                    "{}: X25519 key must be 32 bytes, got {}",
+                    self.id,
+                    ka_method.public_key_multibase.len()
+                ),
+            })?;
+
+        Ok(X25519PublicKey::from(*key_bytes))
     }
 
     /// Convert to protobuf DIDDocument
@@ -246,6 +297,7 @@ impl Did {
             id: proto.id,
             document,
             signing_key: None,
+            x25519_secret: None,
         })
     }
 }
@@ -262,6 +314,23 @@ mod tests {
         assert_eq!(did.document.authentication.len(), 1);
         assert_eq!(did.document.key_agreement.len(), 1);
         assert_eq!(did.document.service.len(), 1);
+        assert_eq!(did.document.key_agreement[0].public_key_multibase.len(), 32);
+    }
+
+    #[test]
+    fn test_get_x25519_public_key() {
+        let peer_id = PeerId::random();
+        let did = Did::new(&peer_id).unwrap();
+
+        let public_key = did.get_x25519_public_key().unwrap();
+
+        // The extracted public key should match what was stored in the DID document
+        assert_eq!(
+            public_key.as_bytes(),
+            did.document.key_agreement[0]
+                .public_key_multibase
+                .as_slice()
+        );
     }
 
     #[test]

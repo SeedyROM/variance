@@ -35,10 +35,15 @@ tracing-subscriber = { workspace = true }
 # Config
 toml = "0.8"
 
-# Crypto (for testing)
+# Crypto
 ed25519-dalek = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
+bip39 = { workspace = true }
+vodozemac = "0.9"
+
+# Paths
+dirs = { workspace = true }
 
 # Time
 chrono = { workspace = true }

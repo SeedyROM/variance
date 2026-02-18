@@ -1,0 +1,31 @@
+[package]
+name = "variance-desktop"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0"
+
+[lib]
+name = "variance_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[workspace]
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+dirs = "5.0"
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["macros", "ws"] }
+tracing = "0.1"
+variance-app = { path = "../../crates/variance-app" }
+variance-p2p = { path = "../../crates/variance-p2p" }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tempfile = "3.15"

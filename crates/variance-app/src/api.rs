@@ -7,19 +7,37 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
+use tower_http::cors::{Any, CorsLayer};
 use variance_media::Call;
 use variance_messaging::storage::MessageStorage;
 use variance_p2p::events::{DirectMessageEvent, GroupMessageEvent};
 use variance_proto::media_proto::{CallControlType, CallType};
 use variance_proto::messaging_proto::{MessageContent, ReceiptStatus};
+use vodozemac::Curve25519PublicKey;
 
 /// Create the HTTP API router
 pub fn create_router(state: AppState) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     Router::new()
         // Health check
         .route("/health", get(health_check))
         // WebSocket endpoint
         .route("/ws", get(crate::websocket::websocket_handler))
+        // Identity endpoints
+        .route("/identity", get(get_identity))
+        .route("/identity/resolve/{did}", get(resolve_identity))
+        .route("/identity/username", post(register_username))
+        // Conversation endpoints
+        .route("/conversations", get(list_conversations))
+        .route("/conversations", post(start_conversation))
+        .route(
+            "/conversations/{peer_did}",
+            axum::routing::delete(delete_conversation),
+        )
         // Message endpoints
         .route("/messages/direct", post(send_direct_message))
         .route("/messages/direct/{did}", get(get_direct_messages))
@@ -44,6 +62,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/typing/start", post(start_typing))
         .route("/typing/stop", post(stop_typing))
         .route("/typing/{recipient}", get(get_typing_users))
+        .layer(cors)
         .with_state(state)
 }
 
@@ -168,6 +187,43 @@ pub struct GroupMessageResponse {
     pub reply_to: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct IdentityStatusResponse {
+    pub did: String,
+    pub verifying_key: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConversationResponse {
+    pub id: String,
+    pub peer_did: String,
+    pub last_message_timestamp: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StartConversationRequest {
+    pub recipient_did: String,
+    pub text: String,
+    /// Hex-encoded Curve25519 identity key of the recipient (from their DID document).
+    /// Required when starting a new conversation (no existing Olm session).
+    pub recipient_identity_key: Option<String>,
+    /// Hex-encoded Curve25519 one-time pre-key of the recipient (from their DID document).
+    /// Required alongside `recipient_identity_key` for initial session establishment.
+    pub recipient_one_time_key: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StartConversationResponse {
+    pub conversation_id: String,
+    pub message_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RegisterUsernameRequest {
+    pub username: String,
+}
+
 // ===== Health Check =====
 
 async fn health_check() -> Json<serde_json::Value> {
@@ -175,6 +231,205 @@ async fn health_check() -> Json<serde_json::Value> {
         "status": "ok",
         "service": "variance-app"
     }))
+}
+
+// ===== Identity Handlers =====
+
+async fn get_identity(State(state): State<AppState>) -> Json<IdentityStatusResponse> {
+    Json(IdentityStatusResponse {
+        did: state.local_did.clone(),
+        verifying_key: state.verifying_key.clone(),
+        created_at: state.created_at.clone(),
+    })
+}
+
+/// Resolve a DID to its identity document.
+///
+/// Full resolution requires the peer to be reachable via P2P. Currently returns
+/// the DID as-is since DHT-to-PeerId lookup is not yet wired to the API layer.
+async fn resolve_identity(
+    State(state): State<AppState>,
+    Path(did): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    // Self-resolution: return our own identity without network round-trip
+    if did == state.local_did {
+        return Ok(Json(serde_json::json!({
+            "did": did,
+            "verifying_key": state.verifying_key,
+            "created_at": state.created_at,
+            "resolved": true,
+        })));
+    }
+
+    // Remote resolution requires mapping DID → PeerId which needs DHT integration.
+    // Return the DID with a flag indicating it is not yet resolved.
+    Ok(Json(serde_json::json!({
+        "did": did,
+        "resolved": false,
+    })))
+}
+
+async fn register_username(
+    State(state): State<AppState>,
+    Json(req): Json<RegisterUsernameRequest>,
+) -> Result<Json<serde_json::Value>> {
+    variance_identity::username::UsernameRegistry::validate_username(&req.username).map_err(
+        |e| Error::BadRequest {
+            message: format!("Invalid username: {}", e),
+        },
+    )?;
+
+    state
+        .node_handle
+        .provide_username(&req.username)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to publish username to DHT: {}", e),
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "username": req.username,
+        "did": state.local_did,
+    })))
+}
+
+// ===== Conversation Handlers =====
+
+async fn list_conversations(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ConversationResponse>>> {
+    use variance_messaging::storage::MessageStorage;
+
+    let conversations = state
+        .storage
+        .list_direct_conversations(&state.local_did)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to list conversations: {}", e),
+        })?;
+
+    let responses = conversations
+        .into_iter()
+        .map(|(peer_did, last_message_timestamp)| {
+            let id = conversation_id(&state.local_did, &peer_did);
+            ConversationResponse {
+                id,
+                peer_did,
+                last_message_timestamp,
+            }
+        })
+        .collect();
+
+    Ok(Json(responses))
+}
+
+async fn start_conversation(
+    State(state): State<AppState>,
+    Json(req): Json<StartConversationRequest>,
+) -> Result<Json<StartConversationResponse>> {
+    // Bootstrap the Olm session when the caller provides the recipient's Olm keys.
+    // In normal flow these come from the recipient's DID document.
+    if let (Some(identity_key_hex), Some(otk_hex)) =
+        (&req.recipient_identity_key, &req.recipient_one_time_key)
+    {
+        let identity_bytes = hex::decode(identity_key_hex).map_err(|_| Error::BadRequest {
+            message: "recipient_identity_key must be hex-encoded".to_string(),
+        })?;
+        let identity_array: [u8; 32] =
+            identity_bytes.try_into().map_err(|_| Error::BadRequest {
+                message: "recipient_identity_key must be exactly 32 bytes".to_string(),
+            })?;
+        let identity_key = Curve25519PublicKey::from_bytes(identity_array);
+
+        let otk_bytes = hex::decode(otk_hex).map_err(|_| Error::BadRequest {
+            message: "recipient_one_time_key must be hex-encoded".to_string(),
+        })?;
+        let otk_array: [u8; 32] = otk_bytes.try_into().map_err(|_| Error::BadRequest {
+            message: "recipient_one_time_key must be exactly 32 bytes".to_string(),
+        })?;
+        let one_time_key = Curve25519PublicKey::from_bytes(otk_array);
+
+        state
+            .direct_messaging
+            .init_session_if_needed(&req.recipient_did, identity_key, one_time_key)
+            .await
+            .map_err(|e| Error::App {
+                message: format!("Failed to initialize session: {}", e),
+            })?;
+    }
+
+    let content = variance_proto::messaging_proto::MessageContent {
+        text: req.text,
+        attachments: vec![],
+        mentions: vec![],
+        reply_to: None,
+        metadata: Default::default(),
+    };
+
+    let message = state
+        .direct_messaging
+        .send_message(req.recipient_did.clone(), content)
+        .await
+        .map_err(|e| match &e {
+            variance_messaging::Error::DoubleRatchet { .. } => Error::SessionRequired {
+                message: format!(
+                    "No Olm session with peer. Provide recipient_identity_key + recipient_one_time_key to start: {}",
+                    e
+                ),
+            },
+            _ => Error::App {
+                message: format!("Failed to send message: {}", e),
+            },
+        })?;
+
+    // Transmit over P2P (best-effort)
+    if let Err(e) = state
+        .node_handle
+        .send_direct_message(req.recipient_did.clone(), message.clone())
+        .await
+    {
+        tracing::debug!(
+            "P2P direct message delivery failed (will rely on offline relay): {}",
+            e
+        );
+    }
+
+    if let Some(ref channels) = state.event_channels {
+        channels.send_direct_message(variance_p2p::events::DirectMessageEvent::MessageSent {
+            message_id: message.id.clone(),
+            recipient: req.recipient_did.clone(),
+        });
+    }
+
+    let conversation_id = conversation_id(&state.local_did, &req.recipient_did);
+
+    Ok(Json(StartConversationResponse {
+        conversation_id,
+        message_id: message.id,
+    }))
+}
+
+async fn delete_conversation(
+    State(state): State<AppState>,
+    Path(peer_did): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    use variance_messaging::storage::MessageStorage;
+
+    state
+        .storage
+        .delete_direct_conversation(&state.local_did, &peer_did)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to delete conversation: {}", e),
+        })?;
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+fn conversation_id(did1: &str, did2: &str) -> String {
+    let mut dids = [did1, did2];
+    dids.sort();
+    format!("{}:{}", dids[0], dids[1])
 }
 
 // ===== Message Handlers =====
@@ -200,6 +455,18 @@ async fn send_direct_message(
         .map_err(|e| Error::App {
             message: format!("Failed to send message: {}", e),
         })?;
+
+    // Transmit over P2P (best-effort: peer may be offline, message is stored locally regardless)
+    if let Err(e) = state
+        .node_handle
+        .send_direct_message(req.recipient_did.clone(), message.clone())
+        .await
+    {
+        tracing::debug!(
+            "P2P direct message delivery failed (will rely on offline relay): {}",
+            e
+        );
+    }
 
     // Emit event if event channels are available
     if let Some(ref channels) = state.event_channels {
@@ -325,8 +592,11 @@ async fn create_call(
         "video" => CallType::Video,
         "screen" => CallType::ScreenShare,
         _ => {
-            return Err(Error::App {
-                message: format!("Invalid call type: {}", req.call_type),
+            return Err(Error::BadRequest {
+                message: format!(
+                    "Invalid call type '{}'. Expected: audio, video, screen",
+                    req.call_type
+                ),
             })
         }
     };
@@ -393,8 +663,11 @@ async fn send_offer(
         "video" => CallType::Video,
         "screen" => CallType::ScreenShare,
         _ => {
-            return Err(Error::App {
-                message: format!("Invalid call type: {}", req.call_type),
+            return Err(Error::BadRequest {
+                message: format!(
+                    "Invalid call type '{}'. Expected: audio, video, screen",
+                    req.call_type
+                ),
             })
         }
     };
@@ -694,7 +967,10 @@ fn receipt_status_to_string(status: i32) -> String {
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            Error::App { message } => (StatusCode::BAD_REQUEST, message),
+            Error::BadRequest { message } => (StatusCode::BAD_REQUEST, message),
+            Error::NotFound { message } => (StatusCode::NOT_FOUND, message),
+            Error::SessionRequired { message } => (StatusCode::UNPROCESSABLE_ENTITY, message),
+            Error::App { message } => (StatusCode::INTERNAL_SERVER_ERROR, message),
         };
 
         let body = Json(serde_json::json!({
@@ -889,5 +1165,246 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_get_identity() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/identity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["did"], "did:variance:test");
+    }
+
+    #[tokio::test]
+    async fn test_list_conversations_empty() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/conversations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_conversations_with_messages() {
+        use variance_messaging::storage::MessageStorage;
+        use variance_proto::messaging_proto::{DirectMessage, MessageType};
+
+        let state = test_state();
+
+        // Store a message directly in storage
+        let msg = DirectMessage {
+            id: "test-msg-001".to_string(),
+            sender_did: "did:variance:test".to_string(),
+            recipient_did: "did:variance:peer".to_string(),
+            ciphertext: vec![],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: 9999,
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+        state.storage.store_direct(&msg).await.unwrap();
+
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/conversations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["peer_did"], "did:variance:peer");
+        assert_eq!(arr[0]["last_message_timestamp"], 9999);
+    }
+
+    #[tokio::test]
+    async fn test_delete_conversation() {
+        use variance_messaging::storage::MessageStorage;
+        use variance_proto::messaging_proto::{DirectMessage, MessageType};
+
+        let state = test_state();
+
+        let msg = DirectMessage {
+            id: "test-msg-002".to_string(),
+            sender_did: "did:variance:test".to_string(),
+            recipient_did: "did:variance:deleteme".to_string(),
+            ciphertext: vec![],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: 5000,
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+        state.storage.store_direct(&msg).await.unwrap();
+
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/conversations/did:variance:deleteme")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_start_conversation() {
+        let app = create_router(test_state());
+
+        // Simulate Bob's Olm keys (in real usage, fetched from his DID document).
+        let mut recipient_account = vodozemac::olm::Account::new();
+        recipient_account.generate_one_time_keys(1);
+        let identity_key_hex = hex::encode(recipient_account.curve25519_key().to_bytes());
+        let otk_hex = hex::encode(
+            recipient_account
+                .one_time_keys()
+                .values()
+                .next()
+                .unwrap()
+                .to_bytes(),
+        );
+
+        let req_body = serde_json::json!({
+            "recipient_did": "did:variance:bob",
+            "text": "Hello!",
+            "recipient_identity_key": identity_key_hex,
+            "recipient_one_time_key": otk_hex,
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/conversations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["conversation_id"].as_str().is_some());
+        assert!(json["message_id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_register_username() {
+        let app = create_router(test_state());
+        let req_body = serde_json::json!({ "username": "alice" });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/identity/username")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["username"], "alice");
+    }
+
+    #[tokio::test]
+    async fn test_register_invalid_username() {
+        let app = create_router(test_state());
+        let req_body = serde_json::json!({ "username": "alice@bad" });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/identity/username")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_start_conversation_without_key_fails() {
+        let app = create_router(test_state());
+
+        // No Olm keys and no existing session: must reject with 422.
+        let req_body = serde_json::json!({
+            "recipient_did": "did:variance:bob",
+            "text": "Hello!",
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/conversations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

@@ -27,4 +27,8 @@ pub struct VarianceBehaviour {
 
     /// Custom protocol: WebRTC signaling
     pub signaling: request_response::Behaviour<crate::protocols::media::SignalingCodec>,
+
+    /// Custom protocol: Direct messages (Double Ratchet encrypted)
+    pub direct_messages:
+        request_response::Behaviour<crate::protocols::messaging::DirectMessageCodec>,
 }

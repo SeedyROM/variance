@@ -42,7 +42,7 @@ rand = { workspace = true }
 sled = { workspace = true }
 
 # Utils
-dirs = "5.0"
+dirs = { workspace = true }
 
 # Time
 chrono = { workspace = true }

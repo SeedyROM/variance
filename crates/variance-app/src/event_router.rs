@@ -4,17 +4,29 @@
 //! WebSocket clients via the WebSocketManager.
 
 use crate::websocket::{WebSocketManager, WsMessage};
+use std::sync::Arc;
 use tracing::{debug, warn};
+use variance_messaging::{direct::DirectMessageHandler, group::GroupMessageHandler};
 use variance_p2p::{EventChannels, IdentityEvent, OfflineMessageEvent, SignalingEvent};
 
 /// Bridges P2P events to WebSocket clients
 pub struct EventRouter {
     ws_manager: WebSocketManager,
+    direct_messaging: Arc<DirectMessageHandler>,
+    group_messaging: Arc<GroupMessageHandler>,
 }
 
 impl EventRouter {
-    pub fn new(ws_manager: WebSocketManager) -> Self {
-        Self { ws_manager }
+    pub fn new(
+        ws_manager: WebSocketManager,
+        direct_messaging: Arc<DirectMessageHandler>,
+        group_messaging: Arc<GroupMessageHandler>,
+    ) -> Self {
+        Self {
+            ws_manager,
+            direct_messaging,
+            group_messaging,
+        }
     }
 
     /// Start listening to P2P events and forwarding to WebSocket clients
@@ -102,7 +114,9 @@ impl EventRouter {
         });
 
         // Spawn task for direct message events
+        // Decrypts incoming messages using the Double Ratchet handler before broadcasting.
         let ws_manager = self.ws_manager.clone();
+        let direct_messaging = self.direct_messaging.clone();
         let events_clone = events.clone();
         tokio::spawn(async move {
             use variance_p2p::events::DirectMessageEvent;
@@ -112,12 +126,30 @@ impl EventRouter {
             while let Ok(event) = rx.recv().await {
                 debug!("EventRouter: Received direct message event: {:?}", event);
 
-                if let DirectMessageEvent::MessageReceived { peer, message } = event {
-                    let msg = WsMessage::DirectMessageReceived {
-                        from: format!("{}", peer),
-                        message,
-                    };
-                    ws_manager.broadcast(msg);
+                if let DirectMessageEvent::MessageReceived { peer: _, message } = event {
+                    let from = message.sender_did.clone();
+                    let message_id = message.id.clone();
+                    let timestamp = message.timestamp;
+                    let reply_to = message.reply_to.clone();
+
+                    match direct_messaging.receive_message(message).await {
+                        Ok(content) => {
+                            let msg = WsMessage::DirectMessageReceived {
+                                from,
+                                message_id,
+                                text: content.text,
+                                timestamp,
+                                reply_to,
+                            };
+                            ws_manager.broadcast(msg);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "EventRouter: Failed to decrypt direct message {}: {}",
+                                message_id, e
+                            );
+                        }
+                    }
                 }
             }
 
@@ -126,6 +158,7 @@ impl EventRouter {
 
         // Spawn task for group message events
         let ws_manager = self.ws_manager.clone();
+        let group_messaging = self.group_messaging.clone();
         let events_clone = events.clone();
         tokio::spawn(async move {
             use variance_p2p::events::GroupMessageEvent;
@@ -136,11 +169,28 @@ impl EventRouter {
                 debug!("EventRouter: Received group message event: {:?}", event);
 
                 if let GroupMessageEvent::MessageReceived { message } = event {
-                    let msg = WsMessage::GroupMessageReceived {
-                        group_id: message.group_id.clone(),
-                        message,
-                    };
-                    ws_manager.broadcast(msg);
+                    let group_id = message.group_id.clone();
+                    let from = message.sender_did.clone();
+                    let message_id = message.id.clone();
+                    let timestamp = message.timestamp;
+
+                    match group_messaging.receive_message(message).await {
+                        Ok(_content) => {
+                            let msg = WsMessage::GroupMessageReceived {
+                                group_id,
+                                from,
+                                message_id,
+                                timestamp,
+                            };
+                            ws_manager.broadcast(msg);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "EventRouter: Failed to decrypt group message {}: {}",
+                                message_id, e
+                            );
+                        }
+                    }
                 }
             }
 
@@ -172,19 +222,30 @@ impl EventRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::AppState;
+    use tempfile::tempdir;
     use variance_p2p::EventChannels;
+
+    fn make_router() -> EventRouter {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let state =
+            AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
+        EventRouter::new(
+            state.ws_manager.clone(),
+            state.direct_messaging.clone(),
+            state.group_messaging.clone(),
+        )
+    }
 
     #[tokio::test]
     async fn test_event_router_creation() {
-        let ws_manager = WebSocketManager::new();
-        let _router = EventRouter::new(ws_manager);
-        // Just test that we can create it
+        let _router = make_router();
     }
 
     #[tokio::test]
     async fn test_event_router_start() {
-        let ws_manager = WebSocketManager::new();
-        let router = EventRouter::new(ws_manager);
+        let router = make_router();
         let events = EventChannels::default();
 
         // Start the router (spawns background tasks)
@@ -200,7 +261,11 @@ mod tests {
     async fn test_signaling_event_routing() {
         use tokio::sync::mpsc;
 
-        let ws_manager = WebSocketManager::new();
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let state =
+            AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
+        let ws_manager = state.ws_manager.clone();
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         // Register a test client
@@ -213,7 +278,11 @@ mod tests {
             },
         );
 
-        let router = EventRouter::new(ws_manager.clone());
+        let router = EventRouter::new(
+            ws_manager.clone(),
+            state.direct_messaging.clone(),
+            state.group_messaging.clone(),
+        );
         let events = EventChannels::default();
 
         // Start router
