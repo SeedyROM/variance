@@ -8,6 +8,8 @@ members = [
     "crates/variance-media",
     "crates/variance-app",
     "crates/variance-cli",
+
+    "app/src-tauri",
 ]
 
 [workspace.package]
