@@ -343,9 +343,12 @@ async fn start_conversation(
     State(state): State<AppState>,
     Json(req): Json<StartConversationRequest>,
 ) -> Result<Json<StartConversationResponse>> {
+    // Skip Olm session setup for self-messaging (messages to yourself are unencrypted)
+    let is_self_message = req.recipient_did == state.local_did;
+
     // Establish an Olm session with the recipient if we don't already have one.
     // Priority: caller-supplied keys (manual/test) → P2P auto-resolve → error.
-    if !state.direct_messaging.has_session(&req.recipient_did).await {
+    if !is_self_message && !state.direct_messaging.has_session(&req.recipient_did).await {
         let (identity_key, one_time_key) =
             if let (Some(ik_hex), Some(otk_hex)) =
                 (&req.recipient_identity_key, &req.recipient_one_time_key)
@@ -591,19 +594,26 @@ async fn get_direct_messages(
             message: format!("Failed to get messages: {}", e),
         })?;
 
-    // Convert to response format
-    // Note: We can't decrypt here without the session, so just return metadata
-    let responses = messages
-        .iter()
-        .map(|m| DirectMessageResponse {
+    // Decrypt each message (uses cache for sent messages, decrypts received messages)
+    let mut responses = Vec::new();
+    for m in messages {
+        let text = match state.direct_messaging.get_message_content(&m).await {
+            Ok(content) => content.text,
+            Err(e) => {
+                tracing::warn!("Failed to get message content for {}: {}", m.id, e);
+                "[decryption failed]".to_string()
+            }
+        };
+
+        responses.push(DirectMessageResponse {
             id: m.id.clone(),
             sender_did: m.sender_did.clone(),
             recipient_did: m.recipient_did.clone(),
-            text: "[encrypted]".to_string(), // Would need decryption
+            text,
             timestamp: m.timestamp,
             reply_to: m.reply_to.clone(),
-        })
-        .collect();
+        });
+    }
 
     Ok(Json(responses))
 }
@@ -622,18 +632,26 @@ async fn get_group_messages(
             message: format!("Failed to get messages: {}", e),
         })?;
 
-    // Convert to response format
-    let responses = messages
-        .iter()
-        .map(|m| GroupMessageResponse {
+    // Decrypt each message
+    let mut responses = Vec::new();
+    for m in messages {
+        let text = match state.group_messaging.receive_message(m.clone()).await {
+            Ok(content) => content.text,
+            Err(e) => {
+                tracing::warn!("Failed to decrypt group message {}: {}", m.id, e);
+                "[decryption failed]".to_string()
+            }
+        };
+
+        responses.push(GroupMessageResponse {
             id: m.id.clone(),
             sender_did: m.sender_did.clone(),
             group_id: m.group_id.clone(),
-            text: "[encrypted]".to_string(), // Would need decryption
+            text,
             timestamp: m.timestamp,
             reply_to: m.reply_to.clone(),
-        })
-        .collect();
+        });
+    }
 
     Ok(Json(responses))
 }

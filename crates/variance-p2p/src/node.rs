@@ -26,6 +26,8 @@ type BroadcastResolve = (usize, oneshot::Sender<Result<IdentityFound>>);
 pub struct Node {
     swarm: Swarm<VarianceBehaviour>,
     peer_id: PeerId,
+    /// Local DID, set via SetLocalIdentity command after node initialization
+    local_did: Arc<tokio::sync::RwLock<Option<String>>>,
     identity_handler: Arc<handlers::identity::IdentityHandler>,
     offline_handler: Arc<handlers::offline::OfflineMessageHandler>,
     signaling_handler: Arc<handlers::signaling::SignalingHandler>,
@@ -164,6 +166,7 @@ impl Node {
         let node = Node {
             swarm,
             peer_id,
+            local_did: Arc::new(tokio::sync::RwLock::new(None)),
             identity_handler,
             offline_handler,
             signaling_handler,
@@ -380,6 +383,9 @@ impl Node {
                 olm_identity_key,
                 one_time_keys,
             } => {
+                // Store local DID for self-messaging support
+                *self.local_did.write().await = Some(did.clone());
+
                 let handler = self.identity_handler.clone();
                 tokio::spawn(async move {
                     handler
@@ -419,6 +425,25 @@ impl Node {
                 message,
                 response_tx,
             } => {
+                // Check for self-messaging: if sending to our own DID, emit locally
+                let local_did = self.local_did.read().await;
+                if let Some(ref our_did) = *local_did {
+                    if peer_did == *our_did {
+                        debug!("Self-messaging detected: emitting message locally");
+
+                        // Emit the message as received locally without network transmission
+                        self.events
+                            .send_direct_message(DirectMessageEvent::MessageReceived {
+                                peer: self.peer_id,
+                                message: message.clone(),
+                            });
+
+                        let _ = response_tx.send(Ok(()));
+                        return;
+                    }
+                }
+                drop(local_did);
+
                 let did_to_peer = self.did_to_peer.read().await;
                 if let Some(peer) = did_to_peer.get(&peer_did) {
                     debug!("Sending direct message to {} ({})", peer_did, peer);

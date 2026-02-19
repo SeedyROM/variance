@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { OnboardingShell } from "./components/onboarding/OnboardingShell";
 import { ConversationList } from "./components/conversations/ConversationList";
@@ -54,36 +54,23 @@ function MainShell() {
   // Wire up WebSocket
   useWebSocket();
 
-  // Find the peer DID for the active conversation
-  const [activePeerDid, setActivePeerDid] = useState<string | null>(null);
-  useEffect(() => {
-    if (!activeId) {
-      setActivePeerDid(null);
-      return;
-    }
-    // conversation_id is "sorted_did1:sorted_did2", peer is the non-local half
-    // We re-query conversations to resolve, but simplify: use the stored conversations
-    setActivePeerDid(null); // resolved below via the conversations query
-  }, [activeId]);
-
-  useQuery({
+  // Fetch conversations
+  const { data: conversations = [] } = useQuery({
     queryKey: ["conversations"],
     queryFn: async () => {
       const { conversationsApi } = await import("./api/client");
       return conversationsApi.list();
     },
     enabled: true,
-    select: (convs) => {
-      if (activeId) {
-        const active = convs.find((c) => c.id === activeId);
-        if (active) setActivePeerDid(active.peer_did);
-      }
-      return convs;
-    },
   });
 
+  // Derive the peer DID from active conversation ID
+  const activePeerDid = activeId
+    ? (conversations.find((c) => c.id === activeId)?.peer_did ?? null)
+    : null;
+
   return (
-    <div className="flex h-screen bg-surface-100 dark:bg-surface-950 overscroll-none">
+    <div className="flex h-screen bg-surface-100 dark:bg-surface-950 overscroll-none select-none">
       <ConversationList />
       <main className="flex-1 overflow-hidden">
         {activePeerDid ? (

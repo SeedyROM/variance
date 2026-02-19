@@ -10,6 +10,10 @@ use variance_proto::messaging_proto::{DirectMessage, MessageContent, MessageType
 use vodozemac::olm::{Account, OlmMessage, Session, SessionConfig};
 use vodozemac::Curve25519PublicKey;
 
+/// Special olm_message_type value indicating unencrypted self-message
+/// (avoids Olm session conflicts when messaging yourself)
+const OLM_MESSAGE_TYPE_SELF: u32 = 999;
+
 /// Direct message handler
 ///
 /// Manages 1-on-1 encrypted conversations using the Olm Double Ratchet protocol
@@ -33,6 +37,10 @@ pub struct DirectMessageHandler {
 
     /// Message storage backend
     storage: Arc<dyn MessageStorage>,
+
+    /// Plaintext cache for sent messages (message_id → MessageContent)
+    /// Required because Olm doesn't allow decrypting your own sent messages
+    sent_message_cache: Arc<RwLock<HashMap<String, MessageContent>>>,
 }
 
 impl DirectMessageHandler {
@@ -51,6 +59,7 @@ impl DirectMessageHandler {
             identity_key,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             storage,
+            sent_message_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -138,11 +147,20 @@ impl DirectMessageHandler {
     /// The session must be initialized first via `init_session_as_initiator` or
     /// `init_session_if_needed`. The first encrypted message automatically carries
     /// the Olm PreKey payload needed by the recipient to establish their session.
+    ///
+    /// **Self-messaging:** If `recipient_did` equals `local_did`, the message is
+    /// stored unencrypted (no Olm session needed) to avoid session conflicts.
     pub async fn send_message(
         &self,
         recipient_did: String,
         content: MessageContent,
     ) -> Result<DirectMessage> {
+        // Self-messaging: bypass Olm encryption to avoid session conflicts
+        // (you can't maintain separate inbound/outbound sessions with yourself)
+        if recipient_did == self.local_did {
+            return self.send_self_message(content).await;
+        }
+
         let mut sessions = self.sessions.write().await;
         let session = sessions
             .get_mut(&recipient_did)
@@ -181,6 +199,47 @@ impl DirectMessageHandler {
         message.signature = self.sign_message(&message)?;
         self.storage.store_direct(&message).await?;
 
+        // Cache plaintext for sent messages (Olm doesn't allow decrypting your own messages)
+        self.sent_message_cache
+            .write()
+            .await
+            .insert(id.clone(), content);
+
+        Ok(message)
+    }
+
+    /// Send an unencrypted message to yourself.
+    ///
+    /// Self-messages are stored with `olm_message_type = OLM_MESSAGE_TYPE_SELF`
+    /// and the `ciphertext` field contains the unencrypted MessageContent protobuf.
+    async fn send_self_message(&self, content: MessageContent) -> Result<DirectMessage> {
+        let plaintext = prost::Message::encode_to_vec(&content);
+
+        let id = Ulid::new().to_string();
+        let timestamp = chrono::Utc::now().timestamp_millis();
+
+        let mut message = DirectMessage {
+            id: id.clone(),
+            sender_did: self.local_did.clone(),
+            recipient_did: self.local_did.clone(),
+            ciphertext: plaintext, // Unencrypted MessageContent bytes
+            olm_message_type: OLM_MESSAGE_TYPE_SELF,
+            signature: vec![],
+            timestamp,
+            r#type: Self::infer_message_type(&content),
+            reply_to: content.reply_to.clone(),
+            sender_identity_key: None,
+        };
+
+        message.signature = self.sign_message(&message)?;
+        self.storage.store_direct(&message).await?;
+
+        // Cache plaintext for sent self-messages
+        self.sent_message_cache
+            .write()
+            .await
+            .insert(id.clone(), content);
+
         Ok(message)
     }
 
@@ -190,9 +249,20 @@ impl DirectMessageHandler {
     /// automatically from the `sender_identity_key` field and the PreKey payload.
     /// Subsequent Normal messages are decrypted using the existing session.
     ///
+    /// **Self-messages:** Unencrypted (marked with `olm_message_type = OLM_MESSAGE_TYPE_SELF`)
+    /// are decoded directly without Olm decryption.
+    ///
     /// NOTE: Callers should verify the message signature with `verify_message_with_key`
     /// before calling this, using the sender's Ed25519 key from their DID document.
     pub async fn receive_message(&self, message: DirectMessage) -> Result<MessageContent> {
+        // Self-messages are unencrypted
+        if message.olm_message_type == OLM_MESSAGE_TYPE_SELF {
+            let content = MessageContent::decode(message.ciphertext.as_slice())
+                .map_err(|e| Error::Protocol { source: e })?;
+            self.storage.store_direct(&message).await?;
+            return Ok(content);
+        }
+
         let olm_message =
             OlmMessage::from_parts(message.olm_message_type as usize, &message.ciphertext)
                 .map_err(|e| Error::Crypto {
@@ -255,6 +325,23 @@ impl DirectMessageHandler {
         self.storage.store_direct(&message).await?;
 
         Ok(content)
+    }
+
+    /// Get message content (from cache if sent by us, otherwise decrypt)
+    ///
+    /// This is the preferred method for retrieving message content when displaying
+    /// a conversation, as it handles both sent and received messages correctly.
+    pub async fn get_message_content(&self, message: &DirectMessage) -> Result<MessageContent> {
+        // Check cache first for messages we sent
+        if message.sender_did == self.local_did {
+            let cache = self.sent_message_cache.read().await;
+            if let Some(content) = cache.get(&message.id) {
+                return Ok(content.clone());
+            }
+        }
+
+        // For received messages or cache misses, decrypt normally
+        self.receive_message(message.clone()).await
     }
 
     /// Sign a message with the local Ed25519 signing key.

@@ -58,7 +58,7 @@ export function MessageInput({ peerDid }: MessageInputProps) {
 
   return (
     <div className="border-t border-surface-200 bg-surface-50 px-4 py-3 dark:border-surface-800 dark:bg-surface-900">
-      <div className="flex items-end gap-2 rounded-xl border border-surface-300 bg-white px-3 py-2 focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500/20 dark:border-surface-700 dark:bg-surface-950">
+      <div className="flex items-center gap-2 rounded-xl border border-surface-300 bg-white px-3 py-2 focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500/20 dark:border-surface-700 dark:bg-surface-950">
         <textarea
           ref={textareaRef}
           value={text}
@@ -73,7 +73,7 @@ export function MessageInput({ peerDid }: MessageInputProps) {
         <button
           onClick={handleSend}
           disabled={!text.trim() || sendMutation.isPending}
-          className="mb-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary-500 text-white transition-colors hover:bg-primary-600 disabled:opacity-40"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary-500 text-white transition-colors hover:bg-primary-600 disabled:opacity-40"
         >
           <Send className="h-3.5 w-3.5" />
         </button>

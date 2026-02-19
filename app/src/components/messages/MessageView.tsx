@@ -30,6 +30,9 @@ export function MessageView({ peerDid }: MessageViewProps) {
     refetchInterval: 2000,
   });
 
+  // Sort messages by timestamp (oldest first)
+  const sortedMessages = [...messages].sort((a, b) => a.timestamp - b.timestamp);
+
   // Scroll to bottom when new messages arrive
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -40,7 +43,7 @@ export function MessageView({ peerDid }: MessageViewProps) {
       {/* Header */}
       <div className="flex items-center gap-3 border-b border-surface-200 px-4 py-3 dark:border-surface-800">
         <Avatar did={peerDid} size="md" />
-        <div>
+        <div className="cursor-default">
           <p className="text-sm font-semibold text-surface-900 dark:text-surface-50">
             {peerDid.slice(-16)}
           </p>
@@ -50,15 +53,15 @@ export function MessageView({ peerDid }: MessageViewProps) {
 
       {/* Messages */}
       <ScrollArea className="flex-1 px-4 py-4">
-        {messages.length === 0 ? (
+        {sortedMessages.length === 0 ? (
           <div className="flex h-40 items-center justify-center">
             <p className="text-sm text-surface-400">No messages yet. Say hello!</p>
           </div>
         ) : (
           <div className="flex flex-col gap-1.5">
-            {messages.map((msg, i) => {
+            {sortedMessages.map((msg, i) => {
               const showDivider =
-                i === 0 || isDifferentDay(messages[i - 1].timestamp, msg.timestamp);
+                i === 0 || isDifferentDay(sortedMessages[i - 1].timestamp, msg.timestamp);
               return (
                 <div key={msg.id}>
                   {showDivider && <DateDivider timestamp={msg.timestamp} />}

@@ -208,7 +208,7 @@ impl MessageStorage for LocalMessageStorage {
         let prefix = format!("{conv_id}:");
 
         let mut messages = Vec::new();
-        let iter = tree.scan_prefix(prefix.as_bytes()).rev();
+        let iter = tree.scan_prefix(prefix.as_bytes());
 
         for entry in iter {
             let (key, value) = entry.map_err(|e| Error::Storage { source: e })?;
@@ -255,7 +255,7 @@ impl MessageStorage for LocalMessageStorage {
         let prefix = format!("{group_id}:");
 
         let mut messages = Vec::new();
-        let iter = tree.scan_prefix(prefix.as_bytes()).rev();
+        let iter = tree.scan_prefix(prefix.as_bytes());
 
         for entry in iter {
             let (key, value) = entry.map_err(|e| Error::Storage { source: e })?;

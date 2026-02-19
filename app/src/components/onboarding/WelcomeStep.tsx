@@ -8,7 +8,7 @@ interface WelcomeStepProps {
 
 export function WelcomeStep({ onGenerate, onRecover }: WelcomeStepProps) {
   return (
-    <div className="rounded-2xl bg-surface-50 p-8 shadow-lg dark:bg-surface-900">
+    <div className="rounded-2xl bg-surface-50 p-8 shadow-lg dark:bg-surface-900 cursor-default">
       <div className="mb-8 text-center">
         <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary-500">
           <Shield className="h-8 w-8 text-white" />
