@@ -14,11 +14,9 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 ALICE_DIR="${VARIANCE_ALICE_DIR:-/tmp/variance-alice}"
 BOB_DIR="${VARIANCE_BOB_DIR:-/tmp/variance-bob}"
-BINARY="$SCRIPT_DIR/../src-tauri/target/release/bundle/macos/Variance.app/Contents/MacOS/variance-desktop"
+BINARY="/Users/zack/Workspace/rust/2026/variance/target/release/bundle/macos/Variance.app/Contents/MacOS/variance-desktop"
 
 # ── build ─────────────────────────────────────────────────────────────────────
 

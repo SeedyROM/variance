@@ -52,7 +52,7 @@ export function MessageBubble({ message, isOwn }: MessageBubbleProps) {
             : "rounded-bl-sm bg-surface-200 text-surface-900 dark:bg-surface-800 dark:text-surface-50"
         )}
       >
-        <p className="whitespace-pre-wrap break-words select-text">{message.text}</p>
+        <p className="whitespace-pre-wrap wrap-break-words select-text">{message.text}</p>
       </div>
 
       {/* Timestamp on right for received messages */}
