@@ -229,6 +229,20 @@ impl AppState {
                     variance_p2p::NodeCommand::SendDirectMessage { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
+                    variance_p2p::NodeCommand::SetLocalIdentity { .. } => {
+                        // No response channel, nothing to do
+                    }
+                    variance_p2p::NodeCommand::ResolveIdentityByDid { response_tx, .. } => {
+                        let _ =
+                            response_tx.send(Ok(variance_proto::identity_proto::IdentityFound {
+                                did_document: None,
+                                ipns_key: None,
+                                multiaddrs: vec![],
+                                discriminator: None,
+                                olm_identity_key: vec![],
+                                one_time_keys: vec![],
+                            }));
+                    }
                 }
             }
         });
