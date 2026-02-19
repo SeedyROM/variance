@@ -103,8 +103,6 @@ export function App() {
   const nodeStatus = useAppStore((s) => s.nodeStatus);
   const setNodeStatus = useAppStore((s) => s.setNodeStatus);
   const setApiPort = useAppStore((s) => s.setApiPort);
-  const identityPath = useIdentityStore((s) => s.identityPath);
-
   // Poll for node readiness when starting
   useNodeReady();
 
@@ -116,7 +114,9 @@ export function App() {
     const startNode = async () => {
       setNodeStatus("starting");
       try {
-        const path = identityPath ?? (await invoke<string>("default_identity_path"));
+        // Always ask the backend for the identity path so VARIANCE_DATA_DIR is respected
+        // when running a second instance with a different data directory.
+        const path = await invoke<string>("default_identity_path");
 
         // If the identity file is gone (e.g. user deleted the data directory),
         // reset to onboarding rather than showing an opaque error.

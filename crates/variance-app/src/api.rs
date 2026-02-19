@@ -190,8 +190,13 @@ pub struct GroupMessageResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IdentityStatusResponse {
     pub did: String,
+    /// Hex-encoded Ed25519 verifying key (for message signature verification)
     pub verifying_key: String,
     pub created_at: String,
+    /// Hex-encoded Curve25519 Olm identity key (pass as recipient_identity_key when starting a conversation)
+    pub olm_identity_key: String,
+    /// Hex-encoded one-time pre-keys available for Olm session establishment (pick one as recipient_one_time_key)
+    pub one_time_keys: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -236,10 +241,21 @@ async fn health_check() -> Json<serde_json::Value> {
 // ===== Identity Handlers =====
 
 async fn get_identity(State(state): State<AppState>) -> Json<IdentityStatusResponse> {
+    let olm_identity_key = hex::encode(state.direct_messaging.identity_key().to_bytes());
+    let one_time_keys = state
+        .direct_messaging
+        .one_time_keys()
+        .await
+        .values()
+        .map(|k| hex::encode(k.to_bytes()))
+        .collect();
+
     Json(IdentityStatusResponse {
         did: state.local_did.clone(),
         verifying_key: state.verifying_key.clone(),
         created_at: state.created_at.clone(),
+        olm_identity_key,
+        one_time_keys,
     })
 }
 
@@ -1188,6 +1204,9 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["did"], "did:variance:test");
+        // Olm keys must be present so peers can establish sessions
+        assert!(json["olm_identity_key"].as_str().is_some());
+        assert!(json["one_time_keys"].as_array().is_some());
     }
 
     #[tokio::test]

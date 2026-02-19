@@ -178,6 +178,10 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
 
     tracing::info!("Identity loaded: {}", app_state.local_did);
 
+    // Generate initial batch of one-time pre-keys so peers can establish Olm sessions.
+    // These remain in the Account's pool until consumed by an inbound PreKey message.
+    app_state.direct_messaging.generate_one_time_keys(50).await;
+
     // Start event router to bridge P2P events to WebSocket clients
     let event_router = EventRouter::new(
         app_state.ws_manager.clone(),
