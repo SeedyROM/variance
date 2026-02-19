@@ -6,7 +6,7 @@
 
 use libp2p::PeerId;
 use tokio::sync::oneshot;
-use variance_proto::identity_proto::{IdentityRequest, IdentityResponse};
+use variance_proto::identity_proto::{IdentityFound, IdentityRequest, IdentityResponse};
 use variance_proto::media_proto::SignalingMessage;
 use variance_proto::messaging_proto::{DirectMessage, GroupMessage};
 
@@ -66,6 +66,25 @@ pub enum NodeCommand {
         peer_did: String,
         message: DirectMessage,
         response_tx: oneshot::Sender<Result<()>>,
+    },
+
+    /// Register this node's own DID and Olm keys in the identity handler.
+    ///
+    /// Must be called after the Olm account is initialized so the handler can
+    /// respond to inbound identity requests about our own DID with Olm keys.
+    SetLocalIdentity {
+        did: String,
+        olm_identity_key: Vec<u8>,
+        one_time_keys: Vec<Vec<u8>>,
+    },
+
+    /// Resolve a peer's DID by broadcasting an identity request to all connected peers.
+    ///
+    /// Returns the first `IdentityFound` response received, carrying the peer's
+    /// Olm identity key and one-time pre-keys needed to establish a session.
+    ResolveIdentityByDid {
+        did: String,
+        response_tx: oneshot::Sender<Result<IdentityFound>>,
     },
 }
 
@@ -236,6 +255,50 @@ impl NodeHandle {
                 message,
                 response_tx,
             })
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to send command to node".to_string(),
+            })?;
+
+        response_rx
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to receive response from node".to_string(),
+            })?
+    }
+
+    /// Register this node's own DID and Olm keys with the P2P identity handler.
+    ///
+    /// After this call, inbound identity requests for our own DID will be answered
+    /// with our Olm keys so peers can establish sessions with us.
+    pub async fn set_local_identity(
+        &self,
+        did: String,
+        olm_identity_key: Vec<u8>,
+        one_time_keys: Vec<Vec<u8>>,
+    ) -> Result<()> {
+        self.command_tx
+            .send(NodeCommand::SetLocalIdentity {
+                did,
+                olm_identity_key,
+                one_time_keys,
+            })
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to send command to node".to_string(),
+            })
+    }
+
+    /// Resolve a peer's DID via the P2P identity protocol.
+    ///
+    /// Broadcasts an identity request to all currently connected peers and returns
+    /// the first `IdentityFound` response. Fails if no peers are connected or if
+    /// none of the connected peers know about the requested DID.
+    pub async fn resolve_identity_by_did(&self, did: String) -> Result<IdentityFound> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(NodeCommand::ResolveIdentityByDid { did, response_tx })
             .await
             .map_err(|_| crate::error::Error::Protocol {
                 message: "Failed to send command to node".to_string(),

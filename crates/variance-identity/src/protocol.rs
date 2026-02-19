@@ -136,6 +136,8 @@ pub fn create_success_response(did: &Did) -> identity_proto::IdentityResponse {
                 ipns_key: None,
                 multiaddrs: vec![],
                 discriminator: None,
+                olm_identity_key: vec![],
+                one_time_keys: vec![],
             },
         )),
         timestamp: Utc::now().timestamp(),

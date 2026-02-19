@@ -14,10 +14,14 @@ use std::time::Duration;
 use tokio::select;
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
-use variance_proto::identity_proto::IdentityResponse;
+use variance_proto::identity_proto::{IdentityFound, IdentityResponse};
 use variance_proto::messaging_proto::{DirectMessageAck, GroupMessage};
 
 type ProviderQueryResult = (Vec<PeerId>, oneshot::Sender<Result<Vec<PeerId>>>);
+
+/// Tracks a broadcast DID resolve: how many individual requests are still pending
+/// and the oneshot channel to fire when the first Found response arrives.
+type BroadcastResolve = (usize, oneshot::Sender<Result<IdentityFound>>);
 
 pub struct Node {
     swarm: Swarm<VarianceBehaviour>,
@@ -36,6 +40,11 @@ pub struct Node {
     pending_provider_queries: HashMap<kad::QueryId, ProviderQueryResult>,
     /// DID to PeerId mapping for routing signaling messages
     did_to_peer: Arc<tokio::sync::RwLock<HashMap<String, PeerId>>>,
+    /// Broadcast DID resolution: DID → (remaining request count, response sender).
+    /// Fires on the first Found response; if all requests fail, fires an error.
+    pending_did_broadcasts: HashMap<String, BroadcastResolve>,
+    /// Maps individual identity request_id → DID being resolved (for broadcast lookups).
+    pending_resolve_requests: HashMap<libp2p::request_response::OutboundRequestId, String>,
 }
 
 impl Node {
@@ -163,6 +172,8 @@ impl Node {
             pending_identity_requests: HashMap::new(),
             pending_provider_queries: std::collections::HashMap::new(),
             did_to_peer: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            pending_did_broadcasts: HashMap::new(),
+            pending_resolve_requests: HashMap::new(),
         };
 
         let handle = NodeHandle::new(command_tx);
@@ -364,6 +375,45 @@ impl Node {
                 self.pending_provider_queries
                     .insert(query_id, (Vec::new(), response_tx));
             }
+            NodeCommand::SetLocalIdentity {
+                did,
+                olm_identity_key,
+                one_time_keys,
+            } => {
+                let handler = self.identity_handler.clone();
+                tokio::spawn(async move {
+                    handler
+                        .set_local_identity(did, olm_identity_key, one_time_keys)
+                        .await;
+                });
+            }
+            NodeCommand::ResolveIdentityByDid { did, response_tx } => {
+                // Collect currently connected peers
+                let peers: Vec<PeerId> = self.swarm.connected_peers().cloned().collect();
+
+                if peers.is_empty() {
+                    let _ = response_tx.send(Err(Error::Protocol {
+                        message: format!("Cannot resolve {}: no peers connected", did),
+                    }));
+                    return;
+                }
+
+                let peer_count = peers.len();
+                self.pending_did_broadcasts
+                    .insert(did.clone(), (peer_count, response_tx));
+
+                let request = variance_identity::protocol::create_did_request(&did, None);
+                for peer in peers {
+                    debug!("Broadcasting DID resolve request for {} to {}", did, peer);
+                    let request_id = self
+                        .swarm
+                        .behaviour_mut()
+                        .identity
+                        .send_request(&peer, request.clone());
+                    self.pending_resolve_requests
+                        .insert(request_id, did.clone());
+                }
+            }
             NodeCommand::SendDirectMessage {
                 peer_did,
                 message,
@@ -537,10 +587,39 @@ impl Node {
                                     request_id, peer, response
                                 );
 
-                                // Complete pending request if exists
+                                // Complete point-to-point pending request if exists
                                 if let Some(tx) = self.pending_identity_requests.remove(&request_id)
                                 {
                                     let _ = tx.send(Ok(response.clone()));
+                                }
+
+                                // Handle broadcast DID resolution if this request was part of one
+                                if let Some(did) = self.pending_resolve_requests.remove(&request_id)
+                                {
+                                    match &response.result {
+                                        Some(variance_proto::identity_proto::identity_response::Result::Found(found)) => {
+                                            // Got a match — fire the broadcast sender and remove the broadcast entry
+                                            if let Some((_, tx)) = self.pending_did_broadcasts.remove(&did) {
+                                                let _ = tx.send(Ok(found.clone()));
+                                            }
+                                            // Remove any remaining resolve requests for this DID
+                                            self.pending_resolve_requests.retain(|_, v| v != &did);
+                                        }
+                                        _ => {
+                                            // Not found or error from this peer — decrement counter
+                                            if let Some((remaining, _)) = self.pending_did_broadcasts.get_mut(&did) {
+                                                *remaining -= 1;
+                                                if *remaining == 0 {
+                                                    // All peers responded without a Found — report failure
+                                                    if let Some((_, tx)) = self.pending_did_broadcasts.remove(&did) {
+                                                        let _ = tx.send(Err(Error::Protocol {
+                                                            message: format!("DID not found on any connected peer: {}", did),
+                                                        }));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
 
                                 // Send event
@@ -584,6 +663,26 @@ impl Node {
                                 "Identity request {:?} to {} failed: {}",
                                 request_id, peer, error
                             );
+                            // Decrement broadcast counter on outbound failure
+                            if let Some(did) = self.pending_resolve_requests.remove(&request_id) {
+                                if let Some((remaining, _)) =
+                                    self.pending_did_broadcasts.get_mut(&did)
+                                {
+                                    *remaining -= 1;
+                                    if *remaining == 0 {
+                                        if let Some((_, tx)) =
+                                            self.pending_did_broadcasts.remove(&did)
+                                        {
+                                            let _ = tx.send(Err(Error::Protocol {
+                                                message: format!(
+                                                    "DID not found on any connected peer: {}",
+                                                    did
+                                                ),
+                                            }));
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Event::InboundFailure {
                             peer,

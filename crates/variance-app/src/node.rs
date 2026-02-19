@@ -182,6 +182,28 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
     // These remain in the Account's pool until consumed by an inbound PreKey message.
     app_state.direct_messaging.generate_one_time_keys(50).await;
 
+    // Register our own identity with the P2P identity handler so we can respond to
+    // inbound DID queries with our Olm keys. Peers need these to open outbound sessions.
+    let olm_identity_key = app_state
+        .direct_messaging
+        .identity_key()
+        .to_bytes()
+        .to_vec();
+    let one_time_keys = app_state
+        .direct_messaging
+        .one_time_keys()
+        .await
+        .values()
+        .map(|k| k.to_bytes().to_vec())
+        .collect::<Vec<_>>();
+    if let Err(e) = app_state
+        .node_handle
+        .set_local_identity(app_state.local_did.clone(), olm_identity_key, one_time_keys)
+        .await
+    {
+        tracing::warn!("Failed to register local identity with P2P handler: {}", e);
+    }
+
     // Start event router to bridge P2P events to WebSocket clients
     let event_router = EventRouter::new(
         app_state.ws_manager.clone(),

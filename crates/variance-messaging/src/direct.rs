@@ -99,6 +99,11 @@ impl DirectMessageHandler {
         Ok(())
     }
 
+    /// Return true if an Olm session already exists for the given peer DID.
+    pub async fn has_session(&self, peer_did: &str) -> bool {
+        self.sessions.read().await.contains_key(peer_did)
+    }
+
     /// Initialize a session as initiator only if one doesn't already exist for this peer.
     ///
     /// Idempotent — safe to call before every outbound message.

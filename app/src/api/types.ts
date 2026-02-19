@@ -4,6 +4,8 @@ export interface IdentityStatus {
   did: string;
   verifying_key: string;
   created_at: string;
+  olm_identity_key: string;
+  one_time_keys: string[];
 }
 
 export interface ResolvedIdentity {
@@ -24,6 +26,8 @@ export interface Conversation {
 export interface StartConversationRequest {
   recipient_did: string;
   text: string;
+  recipient_identity_key?: string;
+  recipient_one_time_key?: string;
 }
 
 export interface StartConversationResponse {

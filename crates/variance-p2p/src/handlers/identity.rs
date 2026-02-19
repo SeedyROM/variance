@@ -1,4 +1,5 @@
 use crate::error::*;
+use chrono::Utc;
 use libp2p::PeerId;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -7,14 +8,22 @@ use variance_identity::did::Did;
 use variance_identity::protocol::{
     create_error_response, create_not_found_response, create_success_response,
 };
-use variance_proto::identity_proto::{IdentityRequest, IdentityResponse};
+use variance_proto::identity_proto::{IdentityFound, IdentityRequest, IdentityResponse};
+
+/// Local identity data needed to respond to identity requests about ourselves.
+struct LocalIdentity {
+    did: String,
+    olm_identity_key: Vec<u8>,
+    one_time_keys: Vec<Vec<u8>>,
+}
 
 /// Identity resolution handler
 ///
 /// Handles identity protocol requests by resolving DIDs from:
-/// 1. Local cache (memory)
-/// 2. IPFS/IPNS lookup (TODO: requires IPFS integration)
-/// 3. DHT provider records (for discovery)
+/// 1. Local identity (self-response with Olm keys)
+/// 2. Local cache (memory, for previously resolved peers)
+/// 3. IPFS/IPNS lookup (TODO: requires IPFS integration)
+/// 4. DHT provider records (for discovery)
 pub struct IdentityHandler {
     /// Local peer ID
     peer_id: PeerId,
@@ -22,6 +31,9 @@ pub struct IdentityHandler {
     /// Local DID cache (in-memory for now)
     /// Key: DID or username, Value: DID document
     cache: Arc<RwLock<std::collections::HashMap<String, Did>>>,
+
+    /// Own identity + Olm keys, set via set_local_identity() after node startup.
+    local_identity: Arc<RwLock<Option<LocalIdentity>>>,
 }
 
 impl IdentityHandler {
@@ -30,7 +42,26 @@ impl IdentityHandler {
         Self {
             peer_id,
             cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            local_identity: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Register this node's own identity so we can respond to requests about ourselves.
+    ///
+    /// Called after the Olm account is initialized and OTKs are generated.
+    /// `one_time_keys` should be all available unpublished keys; the full list is
+    /// returned in every response so the requester can pick one.
+    pub async fn set_local_identity(
+        &self,
+        did: String,
+        olm_identity_key: Vec<u8>,
+        one_time_keys: Vec<Vec<u8>>,
+    ) {
+        *self.local_identity.write().await = Some(LocalIdentity {
+            did,
+            olm_identity_key,
+            one_time_keys,
+        });
     }
 
     /// Handle an identity request
@@ -60,7 +91,29 @@ impl IdentityHandler {
     async fn resolve_did(&self, did: &str) -> Result<IdentityResponse> {
         debug!("Resolving DID: {}", did);
 
-        // Check cache first
+        // Self-resolution: if the query is for our own DID, respond with our Olm keys.
+        // This is how peers learn our Curve25519 key + OTKs to establish an Olm session.
+        let local = self.local_identity.read().await;
+        if let Some(ref local_id) = *local {
+            if local_id.did == did {
+                debug!("Responding to self-DID query with Olm keys");
+                let found = IdentityFound {
+                    did_document: None, // Full DID document is stored in IPFS (not yet implemented)
+                    olm_identity_key: local_id.olm_identity_key.clone(),
+                    one_time_keys: local_id.one_time_keys.clone(),
+                    ..Default::default()
+                };
+                return Ok(IdentityResponse {
+                    result: Some(
+                        variance_proto::identity_proto::identity_response::Result::Found(found),
+                    ),
+                    timestamp: Utc::now().timestamp(),
+                });
+            }
+        }
+        drop(local);
+
+        // Check cache for previously resolved peer DIDs
         let cache = self.cache.read().await;
         if let Some(did_doc) = cache.get(did) {
             debug!("DID found in cache: {}", did);
@@ -73,8 +126,6 @@ impl IdentityHandler {
         // - Resolve IPNS name to latest DID document version
         // - Cache result for future lookups
         // - Handle IPFS timeout/unavailability gracefully
-        // If not in cache, we need IPFS/IPNS resolution
-        // For now, return not found with a message about IPFS integration
         Ok(create_not_found_response(
             did,
             "DID not found in cache. IPFS/IPNS resolution not yet implemented.",

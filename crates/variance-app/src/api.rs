@@ -343,34 +343,75 @@ async fn start_conversation(
     State(state): State<AppState>,
     Json(req): Json<StartConversationRequest>,
 ) -> Result<Json<StartConversationResponse>> {
-    // Bootstrap the Olm session when the caller provides the recipient's Olm keys.
-    // In normal flow these come from the recipient's DID document.
-    if let (Some(identity_key_hex), Some(otk_hex)) =
-        (&req.recipient_identity_key, &req.recipient_one_time_key)
-    {
-        let identity_bytes = hex::decode(identity_key_hex).map_err(|_| Error::BadRequest {
-            message: "recipient_identity_key must be hex-encoded".to_string(),
-        })?;
-        let identity_array: [u8; 32] =
-            identity_bytes.try_into().map_err(|_| Error::BadRequest {
-                message: "recipient_identity_key must be exactly 32 bytes".to_string(),
-            })?;
-        let identity_key = Curve25519PublicKey::from_bytes(identity_array);
+    // Establish an Olm session with the recipient if we don't already have one.
+    // Priority: caller-supplied keys (manual/test) → P2P auto-resolve → error.
+    if !state.direct_messaging.has_session(&req.recipient_did).await {
+        let (identity_key, one_time_key) =
+            if let (Some(ik_hex), Some(otk_hex)) =
+                (&req.recipient_identity_key, &req.recipient_one_time_key)
+            {
+                // Keys supplied explicitly by the caller (e.g. during testing).
+                let ik_bytes: [u8; 32] = hex::decode(ik_hex)
+                    .map_err(|_| Error::BadRequest {
+                        message: "recipient_identity_key must be hex-encoded".to_string(),
+                    })?
+                    .try_into()
+                    .map_err(|_| Error::BadRequest {
+                        message: "recipient_identity_key must be exactly 32 bytes".to_string(),
+                    })?;
+                let otk_bytes: [u8; 32] = hex::decode(otk_hex)
+                    .map_err(|_| Error::BadRequest {
+                        message: "recipient_one_time_key must be hex-encoded".to_string(),
+                    })?
+                    .try_into()
+                    .map_err(|_| Error::BadRequest {
+                        message: "recipient_one_time_key must be exactly 32 bytes".to_string(),
+                    })?;
+                (
+                    Curve25519PublicKey::from_bytes(ik_bytes),
+                    Curve25519PublicKey::from_bytes(otk_bytes),
+                )
+            } else {
+                // Auto-resolve via P2P: ask connected peers for the recipient's Olm keys.
+                let found = state
+                    .node_handle
+                    .resolve_identity_by_did(req.recipient_did.clone())
+                    .await
+                    .map_err(|e| Error::SessionRequired {
+                        message: format!(
+                            "Cannot start conversation: peer not reachable via P2P. \
+                         Make sure both nodes are running and try again. ({})",
+                            e
+                        ),
+                    })?;
 
-        let otk_bytes = hex::decode(otk_hex).map_err(|_| Error::BadRequest {
-            message: "recipient_one_time_key must be hex-encoded".to_string(),
-        })?;
-        let otk_array: [u8; 32] = otk_bytes.try_into().map_err(|_| Error::BadRequest {
-            message: "recipient_one_time_key must be exactly 32 bytes".to_string(),
-        })?;
-        let one_time_key = Curve25519PublicKey::from_bytes(otk_array);
+                let ik_bytes: [u8; 32] =
+                    found
+                        .olm_identity_key
+                        .try_into()
+                        .map_err(|_| Error::SessionRequired {
+                            message: "Peer did not provide a valid Olm identity key".to_string(),
+                        })?;
+                let otk = found.one_time_keys.into_iter().next().ok_or_else(|| {
+                    Error::SessionRequired {
+                        message: "Peer has no one-time pre-keys available".to_string(),
+                    }
+                })?;
+                let otk_bytes: [u8; 32] = otk.try_into().map_err(|_| Error::SessionRequired {
+                    message: "Peer provided an invalid one-time pre-key".to_string(),
+                })?;
+                (
+                    Curve25519PublicKey::from_bytes(ik_bytes),
+                    Curve25519PublicKey::from_bytes(otk_bytes),
+                )
+            };
 
         state
             .direct_messaging
             .init_session_if_needed(&req.recipient_did, identity_key, one_time_key)
             .await
             .map_err(|e| Error::App {
-                message: format!("Failed to initialize session: {}", e),
+                message: format!("Failed to initialize Olm session: {}", e),
             })?;
     }
 
@@ -389,7 +430,7 @@ async fn start_conversation(
         .map_err(|e| match &e {
             variance_messaging::Error::DoubleRatchet { .. } => Error::SessionRequired {
                 message: format!(
-                    "No Olm session with peer. Provide recipient_identity_key + recipient_one_time_key to start: {}",
+                    "No Olm session with peer. Ensure both nodes are running and retry: {}",
                     e
                 ),
             },
