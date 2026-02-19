@@ -76,7 +76,18 @@ impl IdentityHandler {
                 username_query,
             )) => self.resolve_username(&username_query.username).await,
             Some(variance_proto::identity_proto::identity_request::Query::PeerId(peer_id)) => {
-                // Resolve DID by peer ID (convert peer_id to DID format)
+                // Check if query is for our own peer ID - if so, respond with our DID
+                if peer_id == self.peer_id.to_string() {
+                    let local = self.local_identity.read().await;
+                    if let Some(ref local_id) = *local {
+                        let did_str = local_id.did.clone();
+                        drop(local);
+                        return self.resolve_did(&did_str).await;
+                    }
+                    drop(local);
+                }
+
+                // Otherwise try to resolve via did:peer format
                 let did = format!("did:peer:{}", peer_id);
                 self.resolve_did(&did).await
             }
@@ -97,8 +108,22 @@ impl IdentityHandler {
         if let Some(ref local_id) = *local {
             if local_id.did == did {
                 debug!("Responding to self-DID query with Olm keys");
+
+                // Create minimal DID document with just the DID identifier
+                let did_doc = variance_proto::identity_proto::DidDocument {
+                    id: local_id.did.clone(),
+                    authentication: vec![],
+                    key_agreement: vec![],
+                    service: vec![],
+                    created_at: 0,
+                    updated_at: 0,
+                    display_name: None,
+                    avatar_cid: None,
+                    bio: None,
+                };
+
                 let found = IdentityFound {
-                    did_document: None, // Full DID document is stored in IPFS (not yet implemented)
+                    did_document: Some(did_doc),
                     olm_identity_key: local_id.olm_identity_key.clone(),
                     one_time_keys: local_id.one_time_keys.clone(),
                     ..Default::default()

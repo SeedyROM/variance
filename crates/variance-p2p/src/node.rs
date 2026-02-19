@@ -47,6 +47,8 @@ pub struct Node {
     pending_did_broadcasts: HashMap<String, BroadcastResolve>,
     /// Maps individual identity request_id → DID being resolved (for broadcast lookups).
     pending_resolve_requests: HashMap<libp2p::request_response::OutboundRequestId, String>,
+    /// Auto-discovery requests sent when peers connect: request_id → peer_id
+    pending_auto_discovery: HashMap<libp2p::request_response::OutboundRequestId, libp2p::PeerId>,
 }
 
 impl Node {
@@ -177,6 +179,7 @@ impl Node {
             did_to_peer: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             pending_did_broadcasts: HashMap::new(),
             pending_resolve_requests: HashMap::new(),
+            pending_auto_discovery: HashMap::new(),
         };
 
         let handle = NodeHandle::new(command_tx);
@@ -616,6 +619,20 @@ impl Node {
                                 if let Some(tx) = self.pending_identity_requests.remove(&request_id)
                                 {
                                     let _ = tx.send(Ok(response.clone()));
+                                }
+
+                                // Handle auto-discovery cleanup
+                                let is_auto_discovery =
+                                    self.pending_auto_discovery.remove(&request_id).is_some();
+                                if is_auto_discovery {
+                                    match &response.result {
+                                        Some(variance_proto::identity_proto::identity_response::Result::Found(_)) => {
+                                            debug!("Auto-discovery succeeded for peer {}", peer);
+                                        }
+                                        _ => {
+                                            debug!("Auto-discovery failed for peer {}: no identity found", peer);
+                                        }
+                                    }
                                 }
 
                                 // Handle broadcast DID resolution if this request was part of one
@@ -1069,6 +1086,21 @@ impl Node {
                     peer_id,
                     endpoint.get_remote_address()
                 );
+
+                // Automatically query the peer for their identity to build DID → PeerId mapping.
+                // This allows us to send messages to their DID without manual discovery.
+                // We query by their peer_id, which will cause them to respond with their actual DID.
+                debug!("Querying {} for their identity", peer_id);
+                let request =
+                    variance_identity::protocol::create_peer_id_request(&peer_id.to_string(), None);
+                let request_id = self
+                    .swarm
+                    .behaviour_mut()
+                    .identity
+                    .send_request(&peer_id, request);
+
+                // Track this as an auto-discovery request (we don't need to respond to anyone)
+                self.pending_auto_discovery.insert(request_id, peer_id);
             }
             SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
                 debug!("Connection to {} closed: {:?}", peer_id, cause);
