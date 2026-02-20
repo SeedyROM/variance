@@ -204,6 +204,11 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         .mark_one_time_keys_as_published()
         .await;
 
+    // Restore any previously established Olm sessions from disk
+    if let Err(e) = app_state.direct_messaging.restore_sessions().await {
+        tracing::warn!("Failed to restore Olm sessions: {} (starting fresh)", e);
+    }
+
     if let Err(e) = app_state
         .node_handle
         .set_local_identity(app_state.local_did.clone(), olm_identity_key, one_time_keys)
@@ -217,6 +222,7 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         app_state.ws_manager.clone(),
         app_state.direct_messaging.clone(),
         app_state.group_messaging.clone(),
+        app_state.node_handle.clone(),
     );
     event_router.start((*event_channels).clone());
     tracing::debug!("EventRouter started");

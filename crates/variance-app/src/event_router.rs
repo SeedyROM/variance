@@ -7,13 +7,14 @@ use crate::websocket::{WebSocketManager, WsMessage};
 use std::sync::Arc;
 use tracing::{debug, warn};
 use variance_messaging::{direct::DirectMessageHandler, group::GroupMessageHandler};
-use variance_p2p::{EventChannels, IdentityEvent, OfflineMessageEvent, SignalingEvent};
+use variance_p2p::{EventChannels, IdentityEvent, NodeHandle, OfflineMessageEvent, SignalingEvent};
 
 /// Bridges P2P events to WebSocket clients
 pub struct EventRouter {
     ws_manager: WebSocketManager,
     direct_messaging: Arc<DirectMessageHandler>,
     group_messaging: Arc<GroupMessageHandler>,
+    node_handle: NodeHandle,
 }
 
 impl EventRouter {
@@ -21,11 +22,13 @@ impl EventRouter {
         ws_manager: WebSocketManager,
         direct_messaging: Arc<DirectMessageHandler>,
         group_messaging: Arc<GroupMessageHandler>,
+        node_handle: NodeHandle,
     ) -> Self {
         Self {
             ws_manager,
             direct_messaging,
             group_messaging,
+            node_handle,
         }
     }
 
@@ -117,6 +120,7 @@ impl EventRouter {
         // Decrypts incoming messages using the Double Ratchet handler before broadcasting.
         let ws_manager = self.ws_manager.clone();
         let direct_messaging = self.direct_messaging.clone();
+        let node_handle = self.node_handle.clone();
         let events_clone = events.clone();
         tokio::spawn(async move {
             use variance_p2p::events::DirectMessageEvent;
@@ -131,6 +135,7 @@ impl EventRouter {
                     let message_id = message.id.clone();
                     let timestamp = message.timestamp;
                     let reply_to = message.reply_to.clone();
+                    let was_prekey = message.olm_message_type == 0;
 
                     match direct_messaging.receive_message(message).await {
                         Ok(content) => {
@@ -142,6 +147,27 @@ impl EventRouter {
                                 reply_to,
                             };
                             ws_manager.broadcast(msg);
+
+                            // If this was a PreKey message, it consumed an OTK.
+                            // Refresh the P2P handler's OTK list so other peers don't
+                            // try to use the consumed key.
+                            if was_prekey {
+                                debug!(
+                                    "PreKey message consumed an OTK, refreshing advertised keys"
+                                );
+                                let one_time_keys = direct_messaging
+                                    .one_time_keys()
+                                    .await
+                                    .values()
+                                    .map(|k| k.to_bytes().to_vec())
+                                    .collect();
+
+                                if let Err(e) =
+                                    node_handle.update_one_time_keys(one_time_keys).await
+                                {
+                                    warn!("Failed to update OTK list in P2P handler: {}", e);
+                                }
+                            }
                         }
                         Err(e) => {
                             warn!(
@@ -235,6 +261,7 @@ mod tests {
             state.ws_manager.clone(),
             state.direct_messaging.clone(),
             state.group_messaging.clone(),
+            state.node_handle.clone(),
         )
     }
 
@@ -282,6 +309,7 @@ mod tests {
             ws_manager.clone(),
             state.direct_messaging.clone(),
             state.group_messaging.clone(),
+            state.node_handle.clone(),
         );
         let events = EventChannels::default();
 

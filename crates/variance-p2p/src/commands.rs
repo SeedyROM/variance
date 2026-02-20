@@ -78,6 +78,12 @@ pub enum NodeCommand {
         one_time_keys: Vec<Vec<u8>>,
     },
 
+    /// Update the one-time keys list in the identity handler.
+    ///
+    /// Call this after receiving a PreKey message (which consumes an OTK) to ensure
+    /// we don't advertise already-used keys to other peers.
+    UpdateOneTimeKeys { one_time_keys: Vec<Vec<u8>> },
+
     /// Resolve a peer's DID by broadcasting an identity request to all connected peers.
     ///
     /// Returns the first `IdentityFound` response received, carrying the peer's
@@ -283,6 +289,19 @@ impl NodeHandle {
                 olm_identity_key,
                 one_time_keys,
             })
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to send command to node".to_string(),
+            })
+    }
+
+    /// Update the one-time keys advertised to peers (call after OTK consumption).
+    ///
+    /// When a PreKey message consumes an OTK, call this to refresh the advertised
+    /// list so other peers don't try to use already-consumed keys.
+    pub async fn update_one_time_keys(&self, one_time_keys: Vec<Vec<u8>>) -> Result<()> {
+        self.command_tx
+            .send(NodeCommand::UpdateOneTimeKeys { one_time_keys })
             .await
             .map_err(|_| crate::error::Error::Protocol {
                 message: "Failed to send command to node".to_string(),

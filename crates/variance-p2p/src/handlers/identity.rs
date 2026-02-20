@@ -64,6 +64,16 @@ impl IdentityHandler {
         });
     }
 
+    /// Update just the one-time keys list (called after OTK consumption).
+    ///
+    /// When a PreKey message consumes an OTK, call this to refresh the advertised
+    /// list so other peers don't try to use already-consumed keys.
+    pub async fn update_one_time_keys(&self, one_time_keys: Vec<Vec<u8>>) {
+        if let Some(ref mut local_id) = *self.local_identity.write().await {
+            local_id.one_time_keys = one_time_keys;
+        }
+    }
+
     /// Handle an identity request
     pub async fn handle_request(&self, request: IdentityRequest) -> Result<IdentityResponse> {
         debug!("Handling identity request: {:?}", request);

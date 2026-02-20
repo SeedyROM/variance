@@ -89,6 +89,18 @@ pub trait MessageStorage: Send + Sync {
     /// Retrieve previously stored encrypted plaintext for a message, or `None`
     /// if the message has not been decrypted in this or a prior session.
     async fn fetch_plaintext(&self, message_id: &str) -> Result<Option<Vec<u8>>>;
+
+    /// Store a pickled Olm session for a peer DID.
+    ///
+    /// Sessions must be persisted to survive restarts. vodozemac `Session::pickle()`
+    /// produces JSON that can be restored via `Session::from_pickle()`.
+    async fn store_session_pickle(&self, peer_did: &str, pickle_json: &str) -> Result<()>;
+
+    /// Fetch a pickled Olm session for a peer DID.
+    async fn fetch_session_pickle(&self, peer_did: &str) -> Result<Option<String>>;
+
+    /// Load all stored session pickles (for restoring sessions on startup).
+    async fn load_all_session_pickles(&self) -> Result<Vec<(String, String)>>;
 }
 
 /// Local storage implementation using sled
@@ -140,6 +152,13 @@ impl LocalMessageStorage {
     fn plaintext_tree(&self) -> Result<sled::Tree> {
         self.db
             .open_tree("plaintext_cache")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
+    /// Olm session pickles tree (peer_did → JSON pickle)
+    fn session_pickles_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("session_pickles")
             .map_err(|e| Error::Storage { source: e })
     }
 
@@ -545,6 +564,35 @@ impl MessageStorage for LocalMessageStorage {
         }
 
         Ok(())
+    }
+
+    async fn store_session_pickle(&self, peer_did: &str, pickle_json: &str) -> Result<()> {
+        let tree = self.session_pickles_tree()?;
+        tree.insert(peer_did.as_bytes(), pickle_json.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    async fn fetch_session_pickle(&self, peer_did: &str) -> Result<Option<String>> {
+        let tree = self.session_pickles_tree()?;
+        Ok(tree
+            .get(peer_did.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?
+            .map(|v| String::from_utf8_lossy(&v).to_string()))
+    }
+
+    async fn load_all_session_pickles(&self) -> Result<Vec<(String, String)>> {
+        let tree = self.session_pickles_tree()?;
+        let mut sessions = Vec::new();
+
+        for item in tree.iter() {
+            let (key, value) = item.map_err(|e| Error::Storage { source: e })?;
+            let peer_did = String::from_utf8_lossy(&key).to_string();
+            let pickle_json = String::from_utf8_lossy(&value).to_string();
+            sessions.push((peer_did, pickle_json));
+        }
+
+        Ok(sessions)
     }
 }
 

@@ -232,6 +232,9 @@ impl AppState {
                     variance_p2p::NodeCommand::SetLocalIdentity { .. } => {
                         // No response channel, nothing to do
                     }
+                    variance_p2p::NodeCommand::UpdateOneTimeKeys { .. } => {
+                        // No response channel, nothing to do
+                    }
                     variance_p2p::NodeCommand::ResolveIdentityByDid { response_tx, .. } => {
                         let _ =
                             response_tx.send(Ok(variance_proto::identity_proto::IdentityFound {

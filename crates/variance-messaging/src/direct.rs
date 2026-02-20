@@ -180,13 +180,61 @@ impl DirectMessageHandler {
             recipient_one_time_key,
         );
 
-        self.sessions.write().await.insert(recipient_did, session);
+        self.sessions
+            .write()
+            .await
+            .insert(recipient_did.clone(), session);
+        self.persist_session(&recipient_did).await?;
         Ok(())
     }
 
-    /// Return true if an Olm session already exists for the given peer DID.
+    /// Check if an Olm session already exists for the given peer DID.
     pub async fn has_session(&self, peer_did: &str) -> bool {
         self.sessions.read().await.contains_key(peer_did)
+    }
+
+    /// Restore all sessions from disk (called on startup).
+    ///
+    /// Loads pickled sessions from storage and deserializes them. Should be called
+    /// immediately after creating the DirectMessageHandler to restore session state.
+    pub async fn restore_sessions(&self) -> Result<()> {
+        let session_pickles = self.storage.load_all_session_pickles().await?;
+        let mut sessions = self.sessions.write().await;
+
+        for (peer_did, pickle_json) in session_pickles {
+            match serde_json::from_str::<vodozemac::olm::SessionPickle>(&pickle_json) {
+                Ok(pickle) => {
+                    let session = vodozemac::olm::Session::from_pickle(pickle);
+                    sessions.insert(peer_did.clone(), session);
+                    tracing::debug!("Restored Olm session for {}", peer_did);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to restore session for {}: {} (pickle may be corrupted)",
+                        peer_did,
+                        e
+                    );
+                }
+            }
+        }
+
+        tracing::info!("Restored {} Olm sessions from storage", sessions.len());
+        Ok(())
+    }
+
+    /// Persist a session to disk after creation or modification.
+    async fn persist_session(&self, peer_did: &str) -> Result<()> {
+        let sessions = self.sessions.read().await;
+        if let Some(session) = sessions.get(peer_did) {
+            let pickle = session.pickle();
+            let pickle_json = serde_json::to_string(&pickle).map_err(|e| Error::Crypto {
+                message: format!("Failed to serialize session pickle: {}", e),
+            })?;
+            self.storage
+                .store_session_pickle(peer_did, &pickle_json)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Initialize a session as initiator only if one doesn't already exist for this peer.
@@ -368,6 +416,15 @@ impl DirectMessageHandler {
                     .write()
                     .await
                     .insert(message.sender_did.clone(), result.session);
+
+                // Persist the newly created inbound session
+                if let Err(e) = self.persist_session(&message.sender_did).await {
+                    tracing::warn!(
+                        "Failed to persist inbound session for {}: {}",
+                        message.sender_did,
+                        e
+                    );
+                }
 
                 result.plaintext
             }

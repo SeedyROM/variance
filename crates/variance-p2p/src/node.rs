@@ -134,7 +134,7 @@ impl Node {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
-                tcp::Config::default(),
+                tcp::Config::default().nodelay(true),
                 noise::Config::new,
                 yamux::Config::default,
             )
@@ -146,7 +146,15 @@ impl Node {
             .map_err(|e| Error::Transport {
                 source: Box::new(e),
             })?
-            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+            .with_swarm_config(|c| {
+                c.with_idle_connection_timeout(Duration::from_secs(60))
+                    // Limit concurrent dials to prevent connection storms
+                    .with_dial_concurrency_factor(
+                        std::num::NonZeroU8::new(8).expect("8 is non-zero"),
+                    )
+                    // Only keep one connection per peer
+                    .with_max_negotiating_inbound_streams(128)
+            })
             .build();
 
         // Initialize protocol handlers
@@ -394,6 +402,12 @@ impl Node {
                     handler
                         .set_local_identity(did, olm_identity_key, one_time_keys)
                         .await;
+                });
+            }
+            NodeCommand::UpdateOneTimeKeys { one_time_keys } => {
+                let handler = self.identity_handler.clone();
+                tokio::spawn(async move {
+                    handler.update_one_time_keys(one_time_keys).await;
                 });
             }
             NodeCommand::ResolveIdentityByDid { did, response_tx } => {
@@ -1109,10 +1123,28 @@ impl Node {
                 debug!("Incoming connection from {}", send_back_addr);
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                if let Some(peer) = peer_id {
-                    warn!("Outgoing connection to {} failed: {}", peer, error);
+                // Common transient errors (handshake failures, simultaneous dials, etc.) are debug level
+                let error_str = error.to_string();
+                let is_transient = error_str.contains("Handshake failed")
+                    || error_str.contains("Address already in use")
+                    || error_str.contains("Connection refused")
+                    || error_str.contains("Transport error");
+
+                if is_transient {
+                    if let Some(peer) = peer_id {
+                        debug!(
+                            "Outgoing connection to {} failed (transient): {}",
+                            peer, error
+                        );
+                    } else {
+                        debug!("Outgoing connection failed (transient): {}", error);
+                    }
                 } else {
-                    warn!("Outgoing connection failed: {}", error);
+                    if let Some(peer) = peer_id {
+                        warn!("Outgoing connection to {} failed: {}", peer, error);
+                    } else {
+                        warn!("Outgoing connection failed: {}", error);
+                    }
                 }
             }
             SwarmEvent::IncomingConnectionError {
@@ -1120,7 +1152,8 @@ impl Node {
                 error,
                 ..
             } => {
-                warn!(
+                // Most incoming connection errors are transient (failed handshakes, etc.)
+                debug!(
                     "Incoming connection from {} failed: {}",
                     send_back_addr, error
                 );
