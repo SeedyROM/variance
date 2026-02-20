@@ -11,18 +11,6 @@ Variance is a multi-crate workspace implementing a decentralized communication p
 - **Decentralized identity** using W3C DIDs and IPFS/IPNS
 - **No central servers** (optional relay/TURN infrastructure)
 
-### Key Design Decisions
-
-This Rust implementation **corrects critical architectural flaws** from the original Go design:
-
-1. **DHT is NOT a database**: We use Kademlia DHT for peer discovery only, not data storage
-2. **IPFS/IPNS for identity**: DID documents stored in IPFS, mutable pointers via IPNS
-3. **Custom libp2p protocols**: Direct peer queries instead of expensive DHT lookups
-4. **Protobuf everywhere**: Type-safe schemas for all P2P communication
-5. **Multi-layer caching**: 80%+ cache hit rate for identity lookups
-
-See [docs/ARCHITECTURE-CORRECTIONS.md](docs/ARCHITECTURE-CORRECTIONS.md) for details.
-
 ## Workspace Structure
 
 ```
@@ -247,11 +235,22 @@ RUST_LOG=variance=debug cargo run --bin variance -- start
 RUST_LOG=variance=trace,libp2p=debug cargo run --bin variance -- start
 ```
 
+## Key Design Decisions
+
+This Rust implementation **corrects critical architectural flaws** from the [original Go implementation](https://github.com/SeedyROM/variance-go):
+
+1. **DHT is NOT a database**: We use Kademlia DHT for peer discovery only, not data storage
+2. **IPFS/IPNS for identity**: DID documents stored in IPFS, mutable pointers via IPNS
+3. **Custom libp2p protocols**: Direct peer queries instead of expensive DHT lookups
+4. **Protobuf everywhere**: Type-safe schemas for all P2P communication
+
+See [docs/ARCHITECTURE-CORRECTIONS.md](docs/ARCHITECTURE-CORRECTIONS.md) for the full breakdown.
+
 ## Documentation
 
 ### Architecture
 - [ARCHITECTURE-CORRECTIONS.md](docs/ARCHITECTURE-CORRECTIONS.md) - **Read this first!** Explains why the Go design was wrong and how we fix it
-- [variance-go](https://github.com/SeedyROM/variance-go) - Original architecture docs (for reference, contains flaws)
+- [variance-go](https://github.com/SeedyROM/variance-go) - Original broken implementation (for reference)
 
 ### Usage
 - [CLI-USAGE.md](docs/CLI-USAGE.md) - Complete command-line interface reference
