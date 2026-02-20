@@ -260,7 +260,14 @@ RUST_LOG=variance=trace,libp2p=debug cargo run --bin variance -- start
 
 **Phase**: Core Protocol Implementation
 
-**Recently Completed (2026-02-17):**
+**Recently Completed (2026-02-20):**
+- ✅ Real-time message delivery fixed — WebSocket inbound tick + `IntersectionObserver`-based infinite scroll
+- ✅ Cursor-based message pagination — reverse storage scan (newest-first), `?before=<ts>` API param, scroll-to-top loads older pages
+- ✅ TOCTOU session init race fixed — `session_init_lock: Mutex<()>` in `DirectMessageHandler` serializes concurrent session creation
+- ✅ Conversation switching — `key={activePeerDid}` forces component remount; `refetchOnMount: "always"` ensures fresh fetch
+- ✅ Large enum variants boxed — `Box<IdentityRequest>`, `Box<IdentityResponse>`, `Box<DirectMessage>` in P2P event types
+
+**Previously Completed (2026-02-17):**
 - ✅ vodozemac 0.9 migration (replaces unmaintained double-ratchet-2)
 - ✅ Complete messaging stack: receipts, typing indicators, message storage
 - ✅ Full HTTP REST API (identity, messages, calls, signaling, receipts, typing)
@@ -305,10 +312,13 @@ RUST_LOG=variance=trace,libp2p=debug cargo run --bin variance -- start
 **Application Layer:**
 - [x] HTTP API framework (axum)
 - [x] Complete REST API endpoints (identity, messages, calls, signaling, receipts, typing)
+- [x] Cursor-based message pagination (`?before=<ts>`, newest-first storage scan)
 - [x] WebSocket event delivery for Tauri frontend
+- [x] Real-time message delivery (inbound tick → component `refetch()`)
 - [x] Event subscription system
 - [x] CLI with identity management
 - [x] Tauri desktop app (onboarding, identity generation/recovery, conversations, messages UI)
+- [x] Infinite scroll (scroll-to-top loads older message pages via `IntersectionObserver`)
 
 **Testing & Documentation:**
 - [x] Unit tests for all handlers
@@ -318,11 +328,11 @@ RUST_LOG=variance=trace,libp2p=debug cargo run --bin variance -- start
 
 ### Next Priorities
 
-1. **IPFS/IPNS Integration** - DID documents are currently in-memory only; need persistent storage via IPFS with IPNS mutable pointers for key rotation and profile updates
-2. **WebRTC Peer Connection** - Signaling protocol is complete; wire up actual media stream negotiation and STUN/TURN server configuration
-3. **DHT Provider Records** - Username discovery framework in place but not wired to the DHT; needed for `@user#1234` lookups across the network
-4. **Relay Node Selection** - Infrastructure for discovery and failover between relay nodes
-5. **Call UI** - Tauri frontend has message/conversation UI; call screens and media controls not yet wired
+1. **IPFS/IPNS Integration** — DID documents are currently in-memory only; need persistent storage via IPFS with IPNS mutable pointers for key rotation and profile updates
+2. **WebRTC Peer Connection** — Signaling protocol is complete; wire up actual media stream negotiation and STUN/TURN server configuration
+3. **DHT Provider Records** — Username discovery framework in place but not wired to the DHT; needed for `@user#1234` lookups across the network
+4. **Relay Node Selection** — Infrastructure for discovery and failover between relay nodes
+5. **Call UI** — Tauri frontend has message/conversation UI; call screens and media controls not yet wired
 
 ## License
 

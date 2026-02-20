@@ -11,7 +11,14 @@ This Rust implementation corrects critical architectural flaws from the Go desig
 - ✅ Protobuf for all P2P communication
 - ✅ Multi-layer caching (L1→L2→L3 disk implemented; L4 network pending IPFS)
 
-**Recent Progress (2026-02-17):**
+**Recent Progress (2026-02-20):**
+- ✅ Real-time message delivery — WebSocket inbound tick drives component `refetch()`; no DID string matching
+- ✅ Cursor-based pagination — `?before=<timestamp_ms>`, newest-first sled scan, scroll-to-top `IntersectionObserver`
+- ✅ TOCTOU race fix — `session_init_lock: Mutex<()>` in `DirectMessageHandler` prevents concurrent session overwrites
+- ✅ Conversation switching — `key={activePeerDid}` + `refetchOnMount: "always"` eliminates stale message cache
+- ✅ Large enum boxing — `Box<IdentityRequest>`, `Box<IdentityResponse>`, `Box<DirectMessage>` in P2P event variants
+
+**Previously (2026-02-17):**
 - ✅ vodozemac 0.9 (replaces double-ratchet-2) — Olm Double Ratchet for DMs
 - ✅ Complete messaging: receipts, typing indicators, sled storage
 - ✅ Full HTTP REST API — all endpoints implemented

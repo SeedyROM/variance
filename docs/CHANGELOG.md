@@ -1,5 +1,77 @@
 # Variance Changelog
 
+## 2026-02-20 - Real-Time Messaging, Pagination & Bug Fixes
+
+### ✅ Completed: End-to-End Message Delivery & UX Polish
+
+#### 1. Real-Time Message Delivery (Frontend)
+
+**Problem:** Messages received by the backend never appeared in the UI until the recipient sent a reply (one-message lag). Root cause: WebSocket handler used `invalidateQueries(["messages", event.from])` but `event.from` didn't exactly match the React Query key `["messages", peerDid]` used by `MessageView`.
+
+**Fix:**
+- Added `inboundMessageTick: number` + `tickInboundMessage()` to `messagingStore` (Zustand)
+- WebSocket `DirectMessageReceived` handler bumps the tick instead of calling `invalidateQueries`
+- `MessageView` watches the tick via `useEffect` and calls its own `refetch()` — using the `peerDid` already scoped into the query, avoiding any string-matching dependency
+- Set `staleTime: Infinity` + `refetchOnWindowFocus: false` to eliminate background refetch races
+
+#### 2. Conversation Switching Stale Cache (Frontend)
+
+**Problem:** Switching to a previously-opened conversation showed the cached (old) message list because `staleTime: Infinity` prevented React Query from refetching.
+
+**Fix:**
+- Added `key={activePeerDid}` to `<MessageView>` in `App.tsx` — forces full unmount/remount on conversation switch
+- Added `refetchOnMount: "always"` to the messages query — always fetches on mount regardless of stale time
+
+#### 3. TOCTOU Session Initialization Race (Backend)
+
+**Problem:** Sending multiple messages rapidly to a new peer caused the app to stop decrypting messages. Two concurrent HTTP requests both called `has_session()` → both saw `false` → both called `init_session_as_initiator()` → second overwrote the first session in the map, wasting the OTK. The recipient could only process one PreKey message with that OTK.
+
+**Fix:** Added `session_init_lock: Mutex<()>` to `DirectMessageHandler`. `init_session_if_needed` now acquires the lock before the check-and-create, then re-checks under the lock so a concurrent winner short-circuits:
+
+```rust
+pub async fn init_session_if_needed(&self, ...) -> Result<()> {
+    let _guard = self.session_init_lock.lock().await;
+    if self.sessions.read().await.contains_key(recipient_did) {
+        return Ok(());  // concurrent caller beat us to it
+    }
+    self.init_session_as_initiator(...).await
+}
+```
+
+#### 4. Cursor-Based Message Pagination
+
+**Problem:** `fetch_direct` scanned oldest-first and hard-capped at 50 messages, so long conversations were truncated and the first 50 (not the most recent 50) were shown.
+
+**Changes:**
+
+*Storage (`storage.rs`):*
+- `before: Option<String>` → `before: Option<i64>` (millisecond timestamp)
+- Implementation now reverse-scans (`scan_prefix().rev()`) to get newest-first, filters by `msg.timestamp < before` for the cursor, takes `limit`, then reverses to restore chronological order
+
+*API (`api.rs`):*
+- `GET /messages/direct/{did}` now accepts `?before=<timestamp_ms>&limit=<n>`
+- Default limit: 1024 (was 50, hardcoded)
+
+*Frontend (`client.ts`, `MessageView.tsx`):*
+- `messagesApi.getDirect(peerDid, before?)` passes `?before=<ts>` when provided
+- `MessageView` uses `IntersectionObserver` on a sentinel `<div>` at the top of the scroll container (root: the `<ScrollArea>` ref) to trigger `loadOlder()` when the user scrolls to the top
+- `loadOlder` captures `scrollHeight` before prepending, restores scroll position via `requestAnimationFrame` after the DOM update so the view doesn't jump
+- `hasMore` tracks exhaustion: a page with fewer than 1024 messages means no more history
+
+#### 5. Large Enum Variant Boxing (P2P Events)
+
+Removed two `#[allow(clippy::large_enum_variant)]` suppressions by boxing the large fields:
+
+| Enum | Variant | Before | After |
+|------|---------|--------|-------|
+| `IdentityEvent` | `RequestReceived` | `request: IdentityRequest` | `request: Box<IdentityRequest>` |
+| `IdentityEvent` | `ResponseReceived` | `response: IdentityResponse` | `response: Box<IdentityResponse>` |
+| `DirectMessageEvent` | `MessageReceived` | `message: DirectMessage` | `message: Box<DirectMessage>` |
+
+Construction sites in `node.rs` updated to `Box::new(...)`. The match site in `event_router.rs` that moves the message into `receive_message()` updated to `*message`.
+
+---
+
 ## 2026-02-17 - vodozemac Migration, Complete Messaging Stack & Tauri Desktop App
 
 ### ✅ Completed: Full Application Layer
@@ -155,6 +227,8 @@ pub struct EventChannels {
     pub identity: tokio::sync::broadcast::Sender<IdentityEvent>,
     pub offline_messages: tokio::sync::broadcast::Sender<OfflineMessageEvent>,
     pub signaling: tokio::sync::broadcast::Sender<SignalingEvent>,
+    pub direct_messages: tokio::sync::broadcast::Sender<DirectMessageEvent>,
+    pub group_messages: tokio::sync::broadcast::Sender<GroupMessageEvent>,
 }
 ```
 
@@ -165,9 +239,11 @@ pub struct EventChannels {
 - Events emitted automatically when protocols receive messages
 
 **Event Types:**
-- `IdentityEvent`: RequestReceived, ResponseReceived, DidCached
-- `OfflineMessageEvent`: FetchRequested, MessagesReceived, MessageStored
-- `SignalingEvent`: OfferReceived, AnswerReceived, IceCandidateReceived, ControlReceived, CallEnded
+- `IdentityEvent`: `RequestReceived { request: Box<IdentityRequest> }`, `ResponseReceived { response: Box<IdentityResponse> }`, `DidCached`
+- `OfflineMessageEvent`: `FetchRequested`, `MessagesReceived`, `MessageStored`
+- `SignalingEvent`: `OfferReceived`, `AnswerReceived`, `IceCandidateReceived`, `ControlReceived`, `CallEnded`
+- `DirectMessageEvent`: `MessageReceived { message: Box<DirectMessage> }`, `MessageSent`
+- `GroupMessageEvent`: `MessageReceived { message: GroupMessage }`, `MessageSent`
 
 #### 3. Node Integration
 

@@ -188,8 +188,9 @@ tokio::spawn(async move {
             IdentityEvent::DidCached { did } => {
                 println!("Cached DID: {}", did);
             }
+            // response is Box<IdentityResponse>; field access auto-derefs through the Box
             IdentityEvent::ResponseReceived { peer, response } => {
-                println!("Got identity response from {}", peer);
+                println!("Got identity response from {}: {:?}", peer, response.result);
             }
             _ => {}
         }
