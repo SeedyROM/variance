@@ -46,8 +46,8 @@ export function MessageView({ peerDid }: MessageViewProps) {
     if (inboundTick > 0) {
       void refetch();
     }
-  // refetch is a stable function reference from React Query; omit from deps intentionally.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // refetch is a stable function reference from React Query; omit from deps intentionally.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inboundTick]);
 
   const { data: typingData } = useQuery({
@@ -97,8 +97,8 @@ export function MessageView({ peerDid }: MessageViewProps) {
     } finally {
       setLoadingOlder(false);
     }
-  // sortedMessages changes every render; use the length + first id as stable deps.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // sortedMessages changes every render; use the length + first id as stable deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadingOlder, hasMore, sortedMessages[0]?.timestamp, peerDid]);
 
   // Fire loadOlder when the top sentinel scrolls into the scroll container's viewport.

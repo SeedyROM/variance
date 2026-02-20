@@ -280,7 +280,7 @@ impl MessageStorage for LocalMessageStorage {
             .scan_prefix(prefix.as_bytes())
             .rev()
             .filter_map(|entry| DirectMessage::decode(entry.ok()?.1.as_ref()).ok())
-            .filter(|msg| before.map_or(true, |ts| msg.timestamp < ts))
+            .filter(|msg| before.is_none_or(|ts| msg.timestamp < ts))
             .take(limit)
             .collect();
 
