@@ -20,10 +20,25 @@ export function useWebSocket() {
     const off = variantWs.on((event: WsEvent) => {
       switch (event.type) {
         case "DirectMessageReceived":
-          void queryClient.invalidateQueries({
+          // Immediately refetch messages from this sender
+          void queryClient.refetchQueries({
             queryKey: ["messages", event.from],
+            type: "active",
           });
-          void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+          void queryClient.invalidateQueries({
+            queryKey: ["conversations"],
+          });
+          break;
+
+        case "DirectMessageSent":
+          // Immediately refetch messages to this recipient
+          void queryClient.refetchQueries({
+            queryKey: ["messages", event.recipient],
+            type: "active",
+          });
+          void queryClient.invalidateQueries({
+            queryKey: ["conversations"],
+          });
           break;
 
         case "GroupMessageReceived":

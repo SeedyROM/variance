@@ -130,51 +130,67 @@ impl EventRouter {
             while let Ok(event) = rx.recv().await {
                 debug!("EventRouter: Received direct message event: {:?}", event);
 
-                if let DirectMessageEvent::MessageReceived { peer: _, message } = event {
-                    let from = message.sender_did.clone();
-                    let message_id = message.id.clone();
-                    let timestamp = message.timestamp;
-                    let reply_to = message.reply_to.clone();
-                    let was_prekey = message.olm_message_type == 0;
+                match event {
+                    DirectMessageEvent::MessageReceived { peer: _, message } => {
+                        let from = message.sender_did.clone();
+                        let message_id = message.id.clone();
+                        let timestamp = message.timestamp;
+                        let reply_to = message.reply_to.clone();
+                        let was_prekey = message.olm_message_type == 0;
 
-                    match direct_messaging.receive_message(message).await {
-                        Ok(content) => {
-                            let msg = WsMessage::DirectMessageReceived {
-                                from,
-                                message_id,
-                                text: content.text,
-                                timestamp,
-                                reply_to,
-                            };
-                            ws_manager.broadcast(msg);
+                        match direct_messaging.receive_message(message).await {
+                            Ok(content) => {
+                                let msg = WsMessage::DirectMessageReceived {
+                                    from,
+                                    message_id,
+                                    text: content.text,
+                                    timestamp,
+                                    reply_to,
+                                };
+                                ws_manager.broadcast(msg);
 
-                            // If this was a PreKey message, it consumed an OTK.
-                            // Refresh the P2P handler's OTK list so other peers don't
-                            // try to use the consumed key.
-                            if was_prekey {
-                                debug!(
+                                // If this was a PreKey message, it consumed an OTK.
+                                // Refresh the P2P handler's OTK list so other peers don't
+                                // try to use the consumed key.
+                                if was_prekey {
+                                    debug!(
                                     "PreKey message consumed an OTK, refreshing advertised keys"
                                 );
-                                let one_time_keys = direct_messaging
-                                    .one_time_keys()
-                                    .await
-                                    .values()
-                                    .map(|k| k.to_bytes().to_vec())
-                                    .collect();
+                                    let one_time_keys = direct_messaging
+                                        .one_time_keys()
+                                        .await
+                                        .values()
+                                        .map(|k| k.to_bytes().to_vec())
+                                        .collect();
 
-                                if let Err(e) =
-                                    node_handle.update_one_time_keys(one_time_keys).await
-                                {
-                                    warn!("Failed to update OTK list in P2P handler: {}", e);
+                                    if let Err(e) =
+                                        node_handle.update_one_time_keys(one_time_keys).await
+                                    {
+                                        warn!("Failed to update OTK list in P2P handler: {}", e);
+                                    }
                                 }
                             }
+                            Err(e) => {
+                                warn!(
+                                    "EventRouter: Failed to decrypt direct message {}: {}",
+                                    message_id, e
+                                );
+                            }
                         }
-                        Err(e) => {
-                            warn!(
-                                "EventRouter: Failed to decrypt direct message {}: {}",
-                                message_id, e
-                            );
-                        }
+                    }
+                    DirectMessageEvent::MessageSent {
+                        message_id,
+                        recipient,
+                    } => {
+                        debug!(
+                            "Broadcasting DirectMessageSent event: {} to {}",
+                            message_id, recipient
+                        );
+                        let msg = WsMessage::DirectMessageSent {
+                            recipient: recipient.clone(),
+                            message_id: message_id.clone(),
+                        };
+                        ws_manager.broadcast(msg);
                     }
                 }
             }

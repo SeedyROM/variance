@@ -90,6 +90,7 @@ export interface HealthResponse {
 
 export type WsEvent =
   | { type: "DirectMessageReceived"; from: string; message_id: string }
+  | { type: "DirectMessageSent"; recipient: string; message_id: string }
   | { type: "GroupMessageReceived"; group_id: string; message_id: string }
   | { type: "TypingStarted"; from: string; recipient: string }
   | { type: "TypingStopped"; from: string; recipient: string }
