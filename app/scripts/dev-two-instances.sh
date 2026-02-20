@@ -14,6 +14,7 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALICE_DIR="${VARIANCE_ALICE_DIR:-/tmp/variance-alice}"
 BOB_DIR="${VARIANCE_BOB_DIR:-/tmp/variance-bob}"
 BINARY="/Users/zack/Workspace/rust/2026/variance/target/release/bundle/macos/Variance.app/Contents/MacOS/variance-desktop"
@@ -45,13 +46,13 @@ trap cleanup EXIT INT TERM
 mkdir -p "$ALICE_DIR" "$BOB_DIR"
 
 echo "Launching Alice → $ALICE_DIR"
-VARIANCE_DATA_DIR="$ALICE_DIR" "$BINARY" >/tmp/variance-alice.log 2>&1 &
+RUST_LOG=debug VARIANCE_DATA_DIR="$ALICE_DIR" "$BINARY" >/tmp/variance-alice.log 2>&1 &
 ALICE_PID=$!
 
 sleep 0.5
 
 echo "Launching Bob   → $BOB_DIR"
-VARIANCE_DATA_DIR="$BOB_DIR" "$BINARY" >/tmp/variance-bob.log 2>&1 &
+RUST_LOG=debug VARIANCE_DATA_DIR="$BOB_DIR" "$BINARY" >/tmp/variance-bob.log 2>&1 &
 BOB_PID=$!
 
 echo ""

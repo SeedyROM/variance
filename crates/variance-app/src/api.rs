@@ -673,10 +673,10 @@ async fn send_direct_message(
 
     // Create message content
     let content = MessageContent {
-        text: req.text,
+        text: req.text.clone(),
         attachments: vec![],
         mentions: vec![],
-        reply_to: req.reply_to,
+        reply_to: req.reply_to.clone(),
         metadata: Default::default(),
     };
 
@@ -731,9 +731,20 @@ async fn send_direct_message(
     if let Some(ref channels) = state.event_channels {
         channels.send_direct_message(DirectMessageEvent::MessageSent {
             message_id: message.id.clone(),
-            recipient: req.recipient_did,
+            recipient: req.recipient_did.clone(),
         });
     }
+
+    // Broadcast the sent message via WebSocket with full content (we already have the plaintext)
+    state
+        .ws_manager
+        .broadcast(crate::websocket::WsMessage::DirectMessageSent {
+            recipient: req.recipient_did.clone(),
+            message_id: message.id.clone(),
+            text: req.text.clone(),
+            timestamp: message.timestamp,
+            reply_to: req.reply_to.clone(),
+        });
 
     Ok(Json(MessageResponse {
         message_id: message.id.clone(),

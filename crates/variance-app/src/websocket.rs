@@ -89,6 +89,9 @@ pub enum WsMessage {
     DirectMessageSent {
         recipient: String,
         message_id: String,
+        text: String,
+        timestamp: i64,
+        reply_to: Option<String>,
     },
     GroupMessageReceived {
         group_id: String,

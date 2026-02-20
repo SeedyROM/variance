@@ -179,18 +179,11 @@ impl EventRouter {
                         }
                     }
                     DirectMessageEvent::MessageSent {
-                        message_id,
-                        recipient,
+                        message_id: _,
+                        recipient: _,
                     } => {
-                        debug!(
-                            "Broadcasting DirectMessageSent event: {} to {}",
-                            message_id, recipient
-                        );
-                        let msg = WsMessage::DirectMessageSent {
-                            recipient: recipient.clone(),
-                            message_id: message_id.clone(),
-                        };
-                        ws_manager.broadcast(msg);
+                        // DirectMessageSent is now broadcast directly from the API layer
+                        // with full message content, so we don't handle it here
                     }
                 }
             }
