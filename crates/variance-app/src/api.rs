@@ -798,7 +798,7 @@ async fn get_direct_messages(
     let messages = state
         .storage
         .as_ref()
-        .fetch_direct(&state.local_did, &did, 50, None)
+        .fetch_direct(&state.local_did, &did, usize::MAX, None)
         .await
         .map_err(|e| Error::App {
             message: format!("Failed to get messages: {}", e),

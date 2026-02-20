@@ -11,7 +11,7 @@ use rand::RngCore;
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use ulid::Ulid;
 use variance_proto::messaging_proto::{DirectMessage, MessageContent, MessageType};
 use vodozemac::olm::{Account, OlmMessage, Session, SessionConfig};
@@ -44,6 +44,13 @@ pub struct DirectMessageHandler {
 
     /// Message storage backend
     storage: Arc<dyn MessageStorage>,
+
+    /// Serializes session initialization to prevent TOCTOU races.
+    ///
+    /// Two concurrent sends to the same peer with no existing session would
+    /// otherwise both see no session, both create one, and the second would
+    /// overwrite the first — wasting the OTK and corrupting send ordering.
+    session_init_lock: Mutex<()>,
 
     /// AES-256-GCM key for at-rest encryption of decrypted message plaintext.
     ///
@@ -80,6 +87,7 @@ impl DirectMessageHandler {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             storage,
             storage_key,
+            session_init_lock: Mutex::new(()),
         }
     }
 
@@ -239,19 +247,22 @@ impl DirectMessageHandler {
 
     /// Initialize a session as initiator only if one doesn't already exist for this peer.
     ///
-    /// Idempotent — safe to call before every outbound message.
+    /// Idempotent — safe to call before every outbound message. The mutex ensures
+    /// that concurrent calls for the same peer are serialized: the second caller
+    /// re-checks under the lock and bails out if the first already created it.
     pub async fn init_session_if_needed(
         &self,
         recipient_did: &str,
         recipient_identity_key: Curve25519PublicKey,
         recipient_one_time_key: Curve25519PublicKey,
     ) -> Result<()> {
-        {
-            let sessions = self.sessions.read().await;
-            if sessions.contains_key(recipient_did) {
-                return Ok(());
-            }
+        let _guard = self.session_init_lock.lock().await;
+
+        // Re-check under the lock: a concurrent caller may have created it.
+        if self.sessions.read().await.contains_key(recipient_did) {
+            return Ok(());
         }
+
         self.init_session_as_initiator(
             recipient_did.to_string(),
             recipient_identity_key,

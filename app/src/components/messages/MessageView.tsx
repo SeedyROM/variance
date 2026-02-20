@@ -8,6 +8,7 @@ import { TypingIndicator } from "./TypingIndicator";
 import { DateDivider } from "./DateDivider";
 import { messagesApi, typingApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
+import { useMessagingStore } from "../../stores/messagingStore";
 import { isDifferentDay } from "../../utils/time";
 
 interface MessageViewProps {
@@ -18,14 +19,25 @@ export function MessageView({ peerDid }: MessageViewProps) {
   const localDid = useIdentityStore((s) => s.did);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const { data: messages = [] } = useQuery({
+  const { data: messages = [], refetch } = useQuery({
     queryKey: ["messages", peerDid],
     queryFn: () => messagesApi.getDirect(peerDid),
-    staleTime: 0, // Always consider stale
-    refetchOnMount: true,
-    refetchOnWindowFocus: true,
-    // No polling - rely on WebSocket events for real-time updates
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnMount: "always",
   });
+
+  // When a DirectMessageReceived WebSocket event arrives, useWebSocket bumps this
+  // tick. We call our own refetch() here — using the peerDid already wired into
+  // this query — instead of relying on query-key matching in the WebSocket handler.
+  const inboundTick = useMessagingStore((s) => s.inboundMessageTick);
+  useEffect(() => {
+    if (inboundTick > 0) {
+      void refetch();
+    }
+  // refetch is a stable function reference from React Query; omit from deps intentionally.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inboundTick]);
 
   const { data: typingData } = useQuery({
     queryKey: ["typing", peerDid],

@@ -1,19 +1,22 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "../stores/appStore";
-import { useIdentityStore } from "../stores/identityStore";
+import { useMessagingStore } from "../stores/messagingStore";
 import { variantWs } from "../api/websocket";
 import type { WsEvent } from "../api/types";
-import type { DirectMessage } from "../api/types";
 
 /**
- * Connect the WebSocket when the node is running and dispatch incoming events
- * to the React Query cache via invalidation.
+ * Connect the WebSocket when the node is running and dispatch incoming events.
+ *
+ * For DirectMessageReceived we bump a Zustand tick instead of calling
+ * invalidateQueries with event.from. The tick is watched by MessageView, which
+ * calls its own refetch() — avoiding any dependency on whether event.from
+ * exactly matches the React Query key used by the mounted component.
  */
 export function useWebSocket() {
   const nodeStatus = useAppStore((s) => s.nodeStatus);
-  const localDid = useIdentityStore((s) => s.did);
   const queryClient = useQueryClient();
+  const tickInboundMessage = useMessagingStore((s) => s.tickInboundMessage);
 
   useEffect(() => {
     if (nodeStatus !== "running") return;
@@ -27,62 +30,18 @@ export function useWebSocket() {
       switch (event.type) {
         case "DirectMessageReceived": {
           console.log("[WebSocket] Processing DirectMessageReceived:", event.message_id);
-          // Add message directly to cache
-          const message: DirectMessage = {
-            id: event.message_id,
-            sender_did: event.from,
-            recipient_did: localDid || "",
-            text: event.text,
-            timestamp: event.timestamp,
-            reply_to: event.reply_to,
-          };
-
-          queryClient.setQueryData<DirectMessage[]>(["messages", event.from], (old = []) => {
-            console.log("[WebSocket] Current messages for", event.from, ":", old?.length || 0);
-            // Check if message already exists
-            if (old.some((m) => m.id === message.id)) {
-              console.log("[WebSocket] Message already exists, skipping");
-              return old;
-            }
-            console.log("[WebSocket] Adding new message to cache");
-            return [...old, message];
-          });
-
-          void queryClient.invalidateQueries({
-            queryKey: ["conversations"],
-          });
+          // Bump the tick — MessageView will call refetch() in response.
+          tickInboundMessage();
+          // Update the conversation list (timestamp, ordering).
+          void queryClient.invalidateQueries({ queryKey: ["conversations"] });
           break;
         }
 
         case "DirectMessageSent": {
           console.log("[WebSocket] Processing DirectMessageSent:", event.message_id);
-          // Add sent message directly to cache
-          const message: DirectMessage = {
-            id: event.message_id,
-            sender_did: localDid || "",
-            recipient_did: event.recipient,
-            text: event.text,
-            timestamp: event.timestamp,
-            reply_to: event.reply_to,
-            status: "sent",
-          };
-
-          queryClient.setQueryData<DirectMessage[]>(["messages", event.recipient], (old = []) => {
-            console.log("[WebSocket] Current messages for", event.recipient, ":", old?.length || 0);
-            // Remove any optimistic version and add real message
-            const withoutOptimistic = old.filter((m) => !m.id.startsWith("temp-"));
-            // Check if message already exists
-            if (withoutOptimistic.some((m) => m.id === message.id)) {
-              console.log("[WebSocket] Message already exists, skipping");
-              return old;
-            }
-            console.log("[WebSocket] Adding sent message to cache");
-            return [...withoutOptimistic, message];
-          });
-
-          void queryClient.invalidateQueries({
-            queryKey: ["conversations"],
-          });
+          // onSettled in MessageInput already invalidates ["messages", peerDid].
+          // We only need to refresh the conversation list here.
+          void queryClient.invalidateQueries({ queryKey: ["conversations"] });
           break;
         }
 
@@ -106,5 +65,5 @@ export function useWebSocket() {
       off();
       variantWs.disconnect();
     };
-  }, [nodeStatus, queryClient]);
+  }, [nodeStatus, queryClient, tickInboundMessage]);
 }

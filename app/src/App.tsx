@@ -74,7 +74,7 @@ function MainShell() {
       <ConversationList />
       <main className="flex-1 overflow-hidden">
         {activePeerDid ? (
-          <MessageView peerDid={activePeerDid} />
+          <MessageView key={activePeerDid} peerDid={activePeerDid} />
         ) : (
           <div className="flex h-full items-center justify-center">
             <p className="text-sm text-surface-400">Select a conversation or start a new one</p>
