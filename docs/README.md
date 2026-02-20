@@ -6,10 +6,10 @@ This Rust implementation corrects critical architectural flaws from the Go desig
 
 **TL;DR Changes:**
 - ✅ DHT for peer discovery only (not data storage)
-- ✅ IPFS/IPNS for identity documents (planned; currently in-memory)
+- ✅ IPFS/IPNS for identity documents (implemented, untested)
+- ✅ DHT provider records for username discovery (implemented, untested)
 - ✅ Custom libp2p protocols for queries
 - ✅ Protobuf for all P2P communication
-- ✅ Multi-layer caching (L1→L2→L3 disk implemented; L4 network pending IPFS)
 
 **Recent Progress (2026-02-20):**
 - ✅ Real-time message delivery — WebSocket inbound tick drives component `refetch()`; no DID string matching
@@ -25,7 +25,7 @@ This Rust implementation corrects critical architectural flaws from the Go desig
 - ✅ WebSocket event delivery for Tauri frontend
 - ✅ Tauri desktop app — onboarding, conversations, messages UI
 - ✅ 232 tests passing across all crates
-- 🚧 IPFS/IPNS integration (identity in-memory only)
+- 🚧 IPFS/IPNS + DHT integration testing (implemented, need live daemon)
 - 🚧 WebRTC peer connection (signaling done, media stream pending)
 
 ## Documentation Index

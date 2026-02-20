@@ -287,9 +287,8 @@ RUST_LOG=variance=trace,libp2p=debug cargo run --bin variance -- start
 - [x] DID generation (ed25519 keys)
 - [x] Identity resolution protocol handler
 - [x] In-memory caching layer
-- [ ] 🚧 IPFS/IPNS integration for persistent storage
-- [ ] 🚧 DHT provider records for username discovery
-- [ ] 🚧 Multi-layer cache (disk + network fallback)
+- [x] IPFS/IPNS integration for persistent storage (untested)
+- [x] DHT provider records for username discovery (untested)
 
 **Messaging:**
 - [x] Protobuf message schemas
@@ -328,11 +327,10 @@ RUST_LOG=variance=trace,libp2p=debug cargo run --bin variance -- start
 
 ### Next Priorities
 
-1. **IPFS/IPNS Integration** — DID documents are currently in-memory only; need persistent storage via IPFS with IPNS mutable pointers for key rotation and profile updates
+1. **Integration Testing** — IPFS/IPNS and DHT provider records are implemented but untested end-to-end; integration tests need a live daemon
 2. **WebRTC Peer Connection** — Signaling protocol is complete; wire up actual media stream negotiation and STUN/TURN server configuration
-3. **DHT Provider Records** — Username discovery framework in place but not wired to the DHT; needed for `@user#1234` lookups across the network
-4. **Relay Node Selection** — Infrastructure for discovery and failover between relay nodes
-5. **Call UI** — Tauri frontend has message/conversation UI; call screens and media controls not yet wired
+3. **Relay Node Selection** — Infrastructure for discovery and failover between relay nodes
+4. **Call UI** — Tauri frontend has message/conversation UI; call screens and media controls not yet wired
 
 ## License
 
@@ -343,9 +341,8 @@ AGPL-3.0 License. See [LICENSE](LICENSE) for details.
 This is an early-stage project. Contributions welcome once foundation is stable.
 
 Key areas for future work:
-- IPFS/IPNS integration for persistent identity storage
+- End-to-end integration testing (IPFS/IPNS, DHT provider records)
 - WebRTC peer connection and STUN/TURN
-- DHT provider records for username discovery
 - Relay node selection and failover
 - Mobile support (iOS/Android)
 - Browser extension
