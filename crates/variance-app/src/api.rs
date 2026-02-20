@@ -175,6 +175,7 @@ pub struct DirectMessageResponse {
     pub text: String,
     pub timestamp: i64,
     pub reply_to: Option<String>,
+    pub status: Option<String>, // "sent", "pending", or "failed"
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -498,16 +499,37 @@ async fn start_conversation(
             },
         })?;
 
-    // Transmit over P2P (best-effort)
-    if let Err(e) = state
+    // Transmit over P2P (queue if peer offline)
+    match state
         .node_handle
         .send_direct_message(req.recipient_did.clone(), message.clone())
         .await
     {
-        tracing::debug!(
-            "P2P direct message delivery failed (will rely on offline relay): {}",
-            e
-        );
+        Ok(_) => {
+            tracing::debug!("P2P direct message delivered to {}", req.recipient_did);
+        }
+        Err(e) => {
+            let err_msg = e.to_string();
+            if err_msg.contains("Unknown peer DID") {
+                tracing::debug!(
+                    "Peer {} is offline, queuing message for later delivery",
+                    req.recipient_did
+                );
+                if let Err(queue_err) = state
+                    .direct_messaging
+                    .queue_pending_message(&req.recipient_did, message.clone())
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to queue pending message for {}: {}",
+                        req.recipient_did,
+                        queue_err
+                    );
+                }
+            } else {
+                tracing::debug!("P2P direct message delivery failed: {}", e);
+            }
+        }
     }
 
     if let Some(ref channels) = state.event_channels {
@@ -554,6 +576,101 @@ async fn send_direct_message(
     State(state): State<AppState>,
     Json(req): Json<SendDirectMessageRequest>,
 ) -> Result<Json<MessageResponse>> {
+    // Skip Olm session setup for self-messaging
+    let is_self_message = req.recipient_did == state.local_did;
+
+    // Ensure Olm session exists with the recipient (auto-initialize if needed)
+    if !is_self_message && !state.direct_messaging.has_session(&req.recipient_did).await {
+        tracing::debug!(
+            "No session exists with {}, auto-initializing via P2P...",
+            req.recipient_did
+        );
+
+        // Auto-resolve via P2P: ask connected peers for the recipient's Olm keys
+        let found = state
+            .node_handle
+            .resolve_identity_by_did(req.recipient_did.clone())
+            .await
+            .map_err(|e| Error::SessionRequired {
+                message: format!(
+                    "Cannot send message: peer not reachable via P2P. \
+                     Make sure both nodes are running and connected. ({})",
+                    e
+                ),
+            })?;
+
+        let ik_bytes: [u8; 32] =
+            found
+                .olm_identity_key
+                .try_into()
+                .map_err(|_| Error::SessionRequired {
+                    message: "Peer did not provide a valid Olm identity key".to_string(),
+                })?;
+
+        if found.one_time_keys.is_empty() {
+            return Err(Error::SessionRequired {
+                message: "Peer has no one-time pre-keys available".to_string(),
+            });
+        }
+
+        let identity_key_parsed = Curve25519PublicKey::from_bytes(ik_bytes);
+
+        // Try each OTK until one succeeds (handles stale/consumed keys)
+        let mut last_error = None;
+        for otk in found.one_time_keys {
+            let otk_bytes: [u8; 32] = match otk.try_into() {
+                Ok(b) => b,
+                Err(_) => continue, // Skip invalid keys
+            };
+            let one_time_key = Curve25519PublicKey::from_bytes(otk_bytes);
+
+            match state
+                .direct_messaging
+                .init_session_if_needed(&req.recipient_did, identity_key_parsed, one_time_key)
+                .await
+            {
+                Ok(_) => {
+                    tracing::debug!(
+                        "Session initialized successfully with {}",
+                        req.recipient_did
+                    );
+                    break;
+                }
+                Err(e) => {
+                    // If the error is about an unknown/consumed OTK, try the next one
+                    let err_msg = e.to_string();
+                    if err_msg.contains("unknown one-time key")
+                        || err_msg.contains("BAD_MESSAGE_KEY_ID")
+                    {
+                        tracing::debug!(
+                            "OTK failed (likely already consumed), trying next: {}",
+                            err_msg
+                        );
+                        last_error = Some(e);
+                        continue;
+                    }
+                    // For other errors, fail immediately
+                    return Err(Error::App {
+                        message: format!("Failed to initialize Olm session: {}", e),
+                    });
+                }
+            }
+        }
+
+        // If we exhausted all keys without success, return the last error
+        if let Some(e) = last_error {
+            if !state.direct_messaging.has_session(&req.recipient_did).await {
+                return Err(Error::SessionRequired {
+                    message: format!(
+                        "Failed to establish session: all provided OTKs were invalid ({}). \
+                            Peer may need to refresh their keys.",
+                        e
+                    ),
+                });
+            }
+        }
+    }
+
     // Create message content
     let content = MessageContent {
         text: req.text,
@@ -563,7 +680,7 @@ async fn send_direct_message(
         metadata: Default::default(),
     };
 
-    // Send message
+    // Send message (encrypts and stores locally)
     let message = state
         .direct_messaging
         .send_message(req.recipient_did.clone(), content)
@@ -572,17 +689,43 @@ async fn send_direct_message(
             message: format!("Failed to send message: {}", e),
         })?;
 
-    // Transmit over P2P (best-effort: peer may be offline, message is stored locally regardless)
-    if let Err(e) = state
+    // Transmit over P2P
+    let status = match state
         .node_handle
         .send_direct_message(req.recipient_did.clone(), message.clone())
         .await
     {
-        tracing::debug!(
-            "P2P direct message delivery failed (will rely on offline relay): {}",
-            e
-        );
-    }
+        Ok(_) => {
+            tracing::debug!("P2P direct message delivered to {}", req.recipient_did);
+            "sent"
+        }
+        Err(e) => {
+            let err_msg = e.to_string();
+            // If peer is offline (unknown DID), queue for later delivery
+            if err_msg.contains("Unknown peer DID") {
+                tracing::debug!(
+                    "Peer {} is offline, queuing message for later delivery",
+                    req.recipient_did
+                );
+                if let Err(queue_err) = state
+                    .direct_messaging
+                    .queue_pending_message(&req.recipient_did, message.clone())
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to queue pending message for {}: {}",
+                        req.recipient_did,
+                        queue_err
+                    );
+                }
+                "pending"
+            } else {
+                // Other P2P errors (transient network issues, etc.)
+                tracing::debug!("P2P direct message delivery failed: {}", e);
+                "sent" // Message is stored locally, will sync later
+            }
+        }
+    };
 
     // Emit event if event channels are available
     if let Some(ref channels) = state.event_channels {
@@ -593,9 +736,9 @@ async fn send_direct_message(
     }
 
     Ok(Json(MessageResponse {
-        message_id: message.id,
+        message_id: message.id.clone(),
         success: true,
-        message: "Message sent successfully".to_string(),
+        message: format!("Message {}", status),
     }))
 }
 
@@ -661,6 +804,20 @@ async fn get_direct_messages(
             }
         };
 
+        // Check if message is pending (only relevant for sent messages)
+        let status = if m.sender_did == state.local_did {
+            match state.direct_messaging.is_message_pending(&m.id).await {
+                Ok(true) => Some("pending".to_string()),
+                Ok(false) => Some("sent".to_string()),
+                Err(e) => {
+                    tracing::warn!("Failed to check pending status for {}: {}", m.id, e);
+                    Some("sent".to_string()) // Default to sent on error
+                }
+            }
+        } else {
+            None // Received messages don't have status
+        };
+
         responses.push(DirectMessageResponse {
             id: m.id.clone(),
             sender_did: m.sender_did.clone(),
@@ -668,6 +825,7 @@ async fn get_direct_messages(
             text,
             timestamp: m.timestamp,
             reply_to: m.reply_to.clone(),
+            status,
         });
     }
 

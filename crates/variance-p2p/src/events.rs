@@ -9,6 +9,7 @@ use variance_proto::media_proto::SignalingMessage;
 use variance_proto::messaging_proto::{DirectMessage, GroupMessage, OfflineMessageEnvelope};
 
 /// Events from the identity protocol
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum IdentityEvent {
     /// Received an identity request from a peer
@@ -87,6 +88,7 @@ pub enum SignalingEvent {
 }
 
 /// Events from direct messaging
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum DirectMessageEvent {
     /// Received a direct message

@@ -260,6 +260,49 @@ impl DirectMessageHandler {
         .await
     }
 
+    /// Queue a message for later delivery when the peer comes online.
+    ///
+    /// The message should be fully encrypted and signed. It will be stored
+    /// locally and automatically sent when the peer connects.
+    pub async fn queue_pending_message(
+        &self,
+        recipient_did: &str,
+        message: DirectMessage,
+    ) -> Result<()> {
+        self.storage
+            .store_pending_message(recipient_did, &message)
+            .await?;
+        tracing::debug!(
+            "Queued message {} for {} (peer offline)",
+            message.id,
+            recipient_did
+        );
+        Ok(())
+    }
+
+    /// Fetch all pending messages for a peer.
+    ///
+    /// Returns messages that were queued while the peer was offline,
+    /// ready to be transmitted now that they're connected.
+    pub async fn get_pending_messages(&self, peer_did: &str) -> Result<Vec<DirectMessage>> {
+        self.storage.fetch_pending_messages(peer_did).await
+    }
+
+    /// Mark a pending message as successfully sent (delete from queue).
+    pub async fn mark_pending_sent(&self, message_id: &str) -> Result<()> {
+        self.storage.delete_pending_message(message_id).await
+    }
+
+    /// Get list of all peers with pending messages.
+    pub async fn peers_with_pending_messages(&self) -> Result<Vec<String>> {
+        self.storage.list_peers_with_pending_messages().await
+    }
+
+    /// Check if a message is currently in the pending queue.
+    pub async fn is_message_pending(&self, message_id: &str) -> Result<bool> {
+        self.storage.is_message_pending(message_id).await
+    }
+
     /// Return the number of active sessions (for testing).
     #[cfg(test)]
     async fn session_count(&self) -> usize {

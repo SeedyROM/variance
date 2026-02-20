@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { CheckCheck, Clock } from "lucide-react";
 import { cn } from "../../utils/cn";
 import { shortTime } from "../../utils/time";
 import type { DirectMessage } from "../../api/types";
@@ -53,6 +54,15 @@ export function MessageBubble({ message, isOwn }: MessageBubbleProps) {
         )}
       >
         <p className="whitespace-pre-wrap wrap-break-words select-text">{message.text}</p>
+        {isOwn && message.status && (
+          <div className="mt-0.5 flex items-center justify-end gap-1">
+            {message.status === "pending" && <Clock className="h-3 w-3 text-white/60" />}
+            {message.status === "sent" && <CheckCheck className="h-3 w-3 text-white/70" />}
+            {message.status === "failed" && (
+              <span className="text-[10px] text-white/60">Failed</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Timestamp on right for received messages */}

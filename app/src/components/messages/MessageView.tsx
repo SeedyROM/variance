@@ -21,7 +21,8 @@ export function MessageView({ peerDid }: MessageViewProps) {
   const { data: messages = [] } = useQuery({
     queryKey: ["messages", peerDid],
     queryFn: () => messagesApi.getDirect(peerDid),
-    refetchInterval: 5000,
+    refetchInterval: 2000, // Poll frequently to catch new messages
+    staleTime: 0, // Always consider data stale to ensure refetch on invalidate
   });
 
   const { data: typingData } = useQuery({

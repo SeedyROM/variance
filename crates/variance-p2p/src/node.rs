@@ -548,10 +548,21 @@ impl Node {
                     mdns::Event::Discovered(peers) => {
                         for (peer_id, multiaddr) in peers {
                             info!("Discovered peer via mDNS: {} at {}", peer_id, multiaddr);
+
+                            // Add to Kademlia routing table
                             self.swarm
                                 .behaviour_mut()
                                 .kad
-                                .add_address(&peer_id, multiaddr);
+                                .add_address(&peer_id, multiaddr.clone());
+
+                            // Dial the peer to establish connection (triggers auto-discovery)
+                            if let Err(e) = self.swarm.dial(
+                                libp2p::swarm::dial_opts::DialOpts::peer_id(peer_id)
+                                    .addresses(vec![multiaddr.clone()])
+                                    .build(),
+                            ) {
+                                debug!("Failed to dial mDNS peer {}: {}", peer_id, e);
+                            }
                         }
                     }
                     mdns::Event::Expired(peers) => {
@@ -1130,21 +1141,19 @@ impl Node {
                     || error_str.contains("Connection refused")
                     || error_str.contains("Transport error");
 
-                if is_transient {
-                    if let Some(peer) = peer_id {
-                        debug!(
-                            "Outgoing connection to {} failed (transient): {}",
-                            peer, error
-                        );
-                    } else {
-                        debug!("Outgoing connection failed (transient): {}", error);
-                    }
-                } else {
+                if !is_transient {
                     if let Some(peer) = peer_id {
                         warn!("Outgoing connection to {} failed: {}", peer, error);
                     } else {
                         warn!("Outgoing connection failed: {}", error);
                     }
+                } else if let Some(peer) = peer_id {
+                    debug!(
+                        "Outgoing connection to {} failed (transient): {}",
+                        peer, error
+                    );
+                } else {
+                    debug!("Outgoing connection failed (transient): {}", error);
                 }
             }
             SwarmEvent::IncomingConnectionError {

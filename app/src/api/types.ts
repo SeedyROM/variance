@@ -44,6 +44,7 @@ export interface DirectMessage {
   text: string;
   timestamp: number;
   reply_to?: string;
+  status?: "sent" | "pending" | "failed";
 }
 
 export interface GroupMessage {

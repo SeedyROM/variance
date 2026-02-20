@@ -223,8 +223,10 @@ impl EventRouter {
             warn!("EventRouter: Group message event listener ended");
         });
 
-        // Spawn task for identity events (optional presence tracking)
+        // Spawn task for identity events (presence tracking + pending message flush)
         let ws_manager = self.ws_manager;
+        let direct_messaging = self.direct_messaging;
+        let node_handle = self.node_handle;
         tokio::spawn(async move {
             let mut rx = events.subscribe_identity();
             debug!("EventRouter: Started identity event listener");
@@ -233,8 +235,52 @@ impl EventRouter {
                 debug!("EventRouter: Received identity event: {:?}", event);
 
                 if let IdentityEvent::DidCached { did } = event {
-                    let msg = WsMessage::PresenceUpdated { did, online: true };
+                    // Broadcast presence update
+                    let msg = WsMessage::PresenceUpdated {
+                        did: did.clone(),
+                        online: true,
+                    };
                     ws_manager.broadcast(msg);
+
+                    // Flush pending messages for this peer
+                    debug!(
+                        "Flushing pending messages for newly connected peer: {}",
+                        did
+                    );
+                    match direct_messaging.get_pending_messages(&did).await {
+                        Ok(messages) => {
+                            debug!("Found {} pending messages for {}", messages.len(), did);
+                            for message in messages {
+                                let message_id = message.id.clone();
+                                match node_handle.send_direct_message(did.clone(), message).await {
+                                    Ok(_) => {
+                                        debug!(
+                                            "Successfully sent pending message {} to {}",
+                                            message_id, did
+                                        );
+                                        if let Err(e) =
+                                            direct_messaging.mark_pending_sent(&message_id).await
+                                        {
+                                            warn!(
+                                                "Failed to mark message {} as sent: {}",
+                                                message_id, e
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "Failed to send pending message {} to {}: {}",
+                                            message_id, did, e
+                                        );
+                                        // Keep in queue for next connection attempt
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to fetch pending messages for {}: {}", did, e);
+                        }
+                    }
                 }
             }
 

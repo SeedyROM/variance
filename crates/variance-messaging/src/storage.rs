@@ -101,6 +101,24 @@ pub trait MessageStorage: Send + Sync {
 
     /// Load all stored session pickles (for restoring sessions on startup).
     async fn load_all_session_pickles(&self) -> Result<Vec<(String, String)>>;
+
+    /// Store a pending message that couldn't be sent due to peer being offline.
+    ///
+    /// Messages are queued with their fully encrypted DirectMessage proto,
+    /// ready to send when the peer reconnects.
+    async fn store_pending_message(&self, peer_did: &str, message: &DirectMessage) -> Result<()>;
+
+    /// Fetch all pending messages for a specific peer.
+    async fn fetch_pending_messages(&self, peer_did: &str) -> Result<Vec<DirectMessage>>;
+
+    /// Delete a pending message after successful transmission.
+    async fn delete_pending_message(&self, message_id: &str) -> Result<()>;
+
+    /// Check if a specific message is in the pending queue.
+    async fn is_message_pending(&self, message_id: &str) -> Result<bool>;
+
+    /// List all peer DIDs that have pending messages.
+    async fn list_peers_with_pending_messages(&self) -> Result<Vec<String>>;
 }
 
 /// Local storage implementation using sled
@@ -159,6 +177,13 @@ impl LocalMessageStorage {
     fn session_pickles_tree(&self) -> Result<sled::Tree> {
         self.db
             .open_tree("session_pickles")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
+    /// Pending messages tree (peer_did:message_id → DirectMessage)
+    fn pending_messages_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("pending_messages")
             .map_err(|e| Error::Storage { source: e })
     }
 
@@ -593,6 +618,77 @@ impl MessageStorage for LocalMessageStorage {
         }
 
         Ok(sessions)
+    }
+
+    async fn store_pending_message(&self, peer_did: &str, message: &DirectMessage) -> Result<()> {
+        let tree = self.pending_messages_tree()?;
+        let key = format!("{}:{}", peer_did, message.id);
+        let value = message.encode_to_vec();
+        tree.insert(key.as_bytes(), value.as_slice())
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    async fn fetch_pending_messages(&self, peer_did: &str) -> Result<Vec<DirectMessage>> {
+        let tree = self.pending_messages_tree()?;
+        let prefix = format!("{}:", peer_did);
+        let mut messages = Vec::new();
+
+        for item in tree.scan_prefix(prefix.as_bytes()) {
+            let (_, value) = item.map_err(|e| Error::Storage { source: e })?;
+            let message =
+                DirectMessage::decode(value.as_ref()).map_err(|e| Error::Protocol { source: e })?;
+            messages.push(message);
+        }
+
+        Ok(messages)
+    }
+
+    async fn delete_pending_message(&self, message_id: &str) -> Result<()> {
+        let tree = self.pending_messages_tree()?;
+
+        // Scan all keys to find the one with this message_id
+        for item in tree.iter() {
+            let (key, _) = item.map_err(|e| Error::Storage { source: e })?;
+            let key_str = String::from_utf8_lossy(&key);
+            if key_str.ends_with(&format!(":{}", message_id)) {
+                tree.remove(key).map_err(|e| Error::Storage { source: e })?;
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn is_message_pending(&self, message_id: &str) -> Result<bool> {
+        let tree = self.pending_messages_tree()?;
+
+        // Scan all keys to check if any end with this message_id
+        for item in tree.iter() {
+            let (key, _) = item.map_err(|e| Error::Storage { source: e })?;
+            let key_str = String::from_utf8_lossy(&key);
+            if key_str.ends_with(&format!(":{}", message_id)) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    async fn list_peers_with_pending_messages(&self) -> Result<Vec<String>> {
+        let tree = self.pending_messages_tree()?;
+        let mut peers = std::collections::HashSet::new();
+
+        for item in tree.iter() {
+            let (key, _) = item.map_err(|e| Error::Storage { source: e })?;
+            let key_str = String::from_utf8_lossy(&key);
+            // Key format: peer_did:message_id
+            if let Some(peer_did) = key_str.split(':').next() {
+                peers.insert(peer_did.to_string());
+            }
+        }
+
+        Ok(peers.into_iter().collect())
     }
 }
 

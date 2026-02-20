@@ -2,7 +2,9 @@ import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Send } from "lucide-react";
 import { messagesApi, typingApi } from "../../api/client";
+import { useIdentityStore } from "../../stores/identityStore";
 import { cn } from "../../utils/cn";
+import type { DirectMessage } from "../../api/types";
 
 interface MessageInputProps {
   peerDid: string;
@@ -13,11 +15,45 @@ export function MessageInput({ peerDid }: MessageInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queryClient = useQueryClient();
+  const localDid = useIdentityStore((s) => s.did);
 
   const sendMutation = useMutation({
     mutationFn: (message: string) =>
       messagesApi.sendDirect({ recipient_did: peerDid, text: message }),
-    onSuccess: () => {
+    onMutate: async (messageText) => {
+      // Cancel any outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ["messages", peerDid] });
+
+      // Snapshot the previous value
+      const previousMessages = queryClient.getQueryData<DirectMessage[]>(["messages", peerDid]);
+
+      // Optimistically update to show the new message immediately
+      if (localDid) {
+        const optimisticMessage: DirectMessage = {
+          id: `temp-${Date.now()}`,
+          sender_did: localDid,
+          recipient_did: peerDid,
+          text: messageText,
+          timestamp: Date.now(),
+          status: "pending",
+        };
+
+        queryClient.setQueryData<DirectMessage[]>(["messages", peerDid], (old = []) => [
+          ...old,
+          optimisticMessage,
+        ]);
+      }
+
+      return { previousMessages };
+    },
+    onError: (_err, _message, context) => {
+      // Rollback on error
+      if (context?.previousMessages) {
+        queryClient.setQueryData(["messages", peerDid], context.previousMessages);
+      }
+    },
+    onSettled: () => {
+      // Always refetch after success or error to get the real state
       void queryClient.invalidateQueries({ queryKey: ["messages", peerDid] });
       void queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
