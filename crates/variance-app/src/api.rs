@@ -1,6 +1,6 @@
 use crate::{state::AppState, Error, Result};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json, Response},
     routing::{get, post},
@@ -175,6 +175,7 @@ pub struct DirectMessageResponse {
     pub text: String,
     pub timestamp: i64,
     pub reply_to: Option<String>,
+    pub status: Option<String>, // "sent", "pending", or "failed"
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -190,8 +191,13 @@ pub struct GroupMessageResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IdentityStatusResponse {
     pub did: String,
+    /// Hex-encoded Ed25519 verifying key (for message signature verification)
     pub verifying_key: String,
     pub created_at: String,
+    /// Hex-encoded Curve25519 Olm identity key (pass as recipient_identity_key when starting a conversation)
+    pub olm_identity_key: String,
+    /// Hex-encoded one-time pre-keys available for Olm session establishment (pick one as recipient_one_time_key)
+    pub one_time_keys: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -236,10 +242,21 @@ async fn health_check() -> Json<serde_json::Value> {
 // ===== Identity Handlers =====
 
 async fn get_identity(State(state): State<AppState>) -> Json<IdentityStatusResponse> {
+    let olm_identity_key = hex::encode(state.direct_messaging.identity_key().to_bytes());
+    let one_time_keys = state
+        .direct_messaging
+        .one_time_keys()
+        .await
+        .values()
+        .map(|k| hex::encode(k.to_bytes()))
+        .collect();
+
     Json(IdentityStatusResponse {
         did: state.local_did.clone(),
         verifying_key: state.verifying_key.clone(),
         created_at: state.created_at.clone(),
+        olm_identity_key,
+        one_time_keys,
     })
 }
 
@@ -327,35 +344,135 @@ async fn start_conversation(
     State(state): State<AppState>,
     Json(req): Json<StartConversationRequest>,
 ) -> Result<Json<StartConversationResponse>> {
-    // Bootstrap the Olm session when the caller provides the recipient's Olm keys.
-    // In normal flow these come from the recipient's DID document.
-    if let (Some(identity_key_hex), Some(otk_hex)) =
-        (&req.recipient_identity_key, &req.recipient_one_time_key)
-    {
-        let identity_bytes = hex::decode(identity_key_hex).map_err(|_| Error::BadRequest {
-            message: "recipient_identity_key must be hex-encoded".to_string(),
-        })?;
-        let identity_array: [u8; 32] =
-            identity_bytes.try_into().map_err(|_| Error::BadRequest {
-                message: "recipient_identity_key must be exactly 32 bytes".to_string(),
-            })?;
-        let identity_key = Curve25519PublicKey::from_bytes(identity_array);
+    // Skip Olm session setup for self-messaging (messages to yourself are unencrypted)
+    let is_self_message = req.recipient_did == state.local_did;
 
-        let otk_bytes = hex::decode(otk_hex).map_err(|_| Error::BadRequest {
-            message: "recipient_one_time_key must be hex-encoded".to_string(),
-        })?;
-        let otk_array: [u8; 32] = otk_bytes.try_into().map_err(|_| Error::BadRequest {
-            message: "recipient_one_time_key must be exactly 32 bytes".to_string(),
-        })?;
-        let one_time_key = Curve25519PublicKey::from_bytes(otk_array);
+    // Establish an Olm session with the recipient if we don't already have one.
+    // Priority: caller-supplied keys (manual/test) → P2P auto-resolve → error.
+    if !is_self_message && !state.direct_messaging.has_session(&req.recipient_did).await {
+        let (identity_key, one_time_key) = if let (Some(ik_hex), Some(otk_hex)) =
+            (&req.recipient_identity_key, &req.recipient_one_time_key)
+        {
+            // Keys supplied explicitly by the caller (e.g. during testing).
+            let ik_bytes: [u8; 32] = hex::decode(ik_hex)
+                .map_err(|_| Error::BadRequest {
+                    message: "recipient_identity_key must be hex-encoded".to_string(),
+                })?
+                .try_into()
+                .map_err(|_| Error::BadRequest {
+                    message: "recipient_identity_key must be exactly 32 bytes".to_string(),
+                })?;
+            let otk_bytes: [u8; 32] = hex::decode(otk_hex)
+                .map_err(|_| Error::BadRequest {
+                    message: "recipient_one_time_key must be hex-encoded".to_string(),
+                })?
+                .try_into()
+                .map_err(|_| Error::BadRequest {
+                    message: "recipient_one_time_key must be exactly 32 bytes".to_string(),
+                })?;
+            (
+                Curve25519PublicKey::from_bytes(ik_bytes),
+                Curve25519PublicKey::from_bytes(otk_bytes),
+            )
+        } else {
+            // Auto-resolve via P2P: ask connected peers for the recipient's Olm keys.
+            let found = state
+                .node_handle
+                .resolve_identity_by_did(req.recipient_did.clone())
+                .await
+                .map_err(|e| Error::SessionRequired {
+                    message: format!(
+                        "Cannot start conversation: peer not reachable via P2P. \
+                         Make sure both nodes are running and try again. ({})",
+                        e
+                    ),
+                })?;
 
-        state
-            .direct_messaging
-            .init_session_if_needed(&req.recipient_did, identity_key, one_time_key)
-            .await
-            .map_err(|e| Error::App {
-                message: format!("Failed to initialize session: {}", e),
-            })?;
+            let ik_bytes: [u8; 32] =
+                found
+                    .olm_identity_key
+                    .try_into()
+                    .map_err(|_| Error::SessionRequired {
+                        message: "Peer did not provide a valid Olm identity key".to_string(),
+                    })?;
+
+            if found.one_time_keys.is_empty() {
+                return Err(Error::SessionRequired {
+                    message: "Peer has no one-time pre-keys available".to_string(),
+                });
+            }
+
+            let identity_key_parsed = Curve25519PublicKey::from_bytes(ik_bytes);
+
+            // Try each OTK until one succeeds (handles stale/consumed keys)
+            let mut last_error = None;
+            for otk in found.one_time_keys {
+                let otk_bytes: [u8; 32] = match otk.try_into() {
+                    Ok(b) => b,
+                    Err(_) => continue, // Skip invalid keys
+                };
+                let one_time_key = Curve25519PublicKey::from_bytes(otk_bytes);
+
+                match state
+                    .direct_messaging
+                    .init_session_if_needed(&req.recipient_did, identity_key_parsed, one_time_key)
+                    .await
+                {
+                    Ok(_) => {
+                        // Success! Session established.
+                        break;
+                    }
+                    Err(e) => {
+                        // If the error is about an unknown/consumed OTK, try the next one
+                        let err_msg = e.to_string();
+                        if err_msg.contains("unknown one-time key")
+                            || err_msg.contains("BAD_MESSAGE_KEY_ID")
+                        {
+                            tracing::debug!(
+                                "OTK failed (likely already consumed), trying next: {}",
+                                err_msg
+                            );
+                            last_error = Some(e);
+                            continue;
+                        }
+                        // For other errors, fail immediately
+                        return Err(Error::App {
+                            message: format!("Failed to initialize Olm session: {}", e),
+                        });
+                    }
+                }
+            }
+
+            // If we exhausted all keys without success, return the last error
+            if let Some(e) = last_error {
+                if !state.direct_messaging.has_session(&req.recipient_did).await {
+                    return Err(Error::SessionRequired {
+                        message: format!(
+                            "Failed to establish session: all provided OTKs were invalid ({}). \
+                                Peer may need to refresh their keys.",
+                            e
+                        ),
+                    });
+                }
+            }
+
+            // Session should be established now (either new or existing)
+            (
+                identity_key_parsed,
+                Curve25519PublicKey::from_bytes([0u8; 32]),
+            ) // Dummy OTK
+        };
+
+        // Only call init_session_if_needed for manually-supplied keys
+        if req.recipient_identity_key.is_some() {
+            state
+                .direct_messaging
+                .init_session_if_needed(&req.recipient_did, identity_key, one_time_key)
+                .await
+                .map_err(|e| Error::App {
+                    message: format!("Failed to initialize Olm session: {}", e),
+                })?;
+        }
     }
 
     let content = variance_proto::messaging_proto::MessageContent {
@@ -373,7 +490,7 @@ async fn start_conversation(
         .map_err(|e| match &e {
             variance_messaging::Error::DoubleRatchet { .. } => Error::SessionRequired {
                 message: format!(
-                    "No Olm session with peer. Provide recipient_identity_key + recipient_one_time_key to start: {}",
+                    "No Olm session with peer. Ensure both nodes are running and retry: {}",
                     e
                 ),
             },
@@ -382,16 +499,37 @@ async fn start_conversation(
             },
         })?;
 
-    // Transmit over P2P (best-effort)
-    if let Err(e) = state
+    // Transmit over P2P (queue if peer offline)
+    match state
         .node_handle
         .send_direct_message(req.recipient_did.clone(), message.clone())
         .await
     {
-        tracing::debug!(
-            "P2P direct message delivery failed (will rely on offline relay): {}",
-            e
-        );
+        Ok(_) => {
+            tracing::debug!("P2P direct message delivered to {}", req.recipient_did);
+        }
+        Err(e) => {
+            let err_msg = e.to_string();
+            if err_msg.contains("Unknown peer DID") {
+                tracing::debug!(
+                    "Peer {} is offline, queuing message for later delivery",
+                    req.recipient_did
+                );
+                if let Err(queue_err) = state
+                    .direct_messaging
+                    .queue_pending_message(&req.recipient_did, message.clone())
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to queue pending message for {}: {}",
+                        req.recipient_did,
+                        queue_err
+                    );
+                }
+            } else {
+                tracing::debug!("P2P direct message delivery failed: {}", e);
+            }
+        }
     }
 
     if let Some(ref channels) = state.event_channels {
@@ -438,16 +576,111 @@ async fn send_direct_message(
     State(state): State<AppState>,
     Json(req): Json<SendDirectMessageRequest>,
 ) -> Result<Json<MessageResponse>> {
+    // Skip Olm session setup for self-messaging
+    let is_self_message = req.recipient_did == state.local_did;
+
+    // Ensure Olm session exists with the recipient (auto-initialize if needed)
+    if !is_self_message && !state.direct_messaging.has_session(&req.recipient_did).await {
+        tracing::debug!(
+            "No session exists with {}, auto-initializing via P2P...",
+            req.recipient_did
+        );
+
+        // Auto-resolve via P2P: ask connected peers for the recipient's Olm keys
+        let found = state
+            .node_handle
+            .resolve_identity_by_did(req.recipient_did.clone())
+            .await
+            .map_err(|e| Error::SessionRequired {
+                message: format!(
+                    "Cannot send message: peer not reachable via P2P. \
+                     Make sure both nodes are running and connected. ({})",
+                    e
+                ),
+            })?;
+
+        let ik_bytes: [u8; 32] =
+            found
+                .olm_identity_key
+                .try_into()
+                .map_err(|_| Error::SessionRequired {
+                    message: "Peer did not provide a valid Olm identity key".to_string(),
+                })?;
+
+        if found.one_time_keys.is_empty() {
+            return Err(Error::SessionRequired {
+                message: "Peer has no one-time pre-keys available".to_string(),
+            });
+        }
+
+        let identity_key_parsed = Curve25519PublicKey::from_bytes(ik_bytes);
+
+        // Try each OTK until one succeeds (handles stale/consumed keys)
+        let mut last_error = None;
+        for otk in found.one_time_keys {
+            let otk_bytes: [u8; 32] = match otk.try_into() {
+                Ok(b) => b,
+                Err(_) => continue, // Skip invalid keys
+            };
+            let one_time_key = Curve25519PublicKey::from_bytes(otk_bytes);
+
+            match state
+                .direct_messaging
+                .init_session_if_needed(&req.recipient_did, identity_key_parsed, one_time_key)
+                .await
+            {
+                Ok(_) => {
+                    tracing::debug!(
+                        "Session initialized successfully with {}",
+                        req.recipient_did
+                    );
+                    break;
+                }
+                Err(e) => {
+                    // If the error is about an unknown/consumed OTK, try the next one
+                    let err_msg = e.to_string();
+                    if err_msg.contains("unknown one-time key")
+                        || err_msg.contains("BAD_MESSAGE_KEY_ID")
+                    {
+                        tracing::debug!(
+                            "OTK failed (likely already consumed), trying next: {}",
+                            err_msg
+                        );
+                        last_error = Some(e);
+                        continue;
+                    }
+                    // For other errors, fail immediately
+                    return Err(Error::App {
+                        message: format!("Failed to initialize Olm session: {}", e),
+                    });
+                }
+            }
+        }
+
+        // If we exhausted all keys without success, return the last error
+        if let Some(e) = last_error {
+            if !state.direct_messaging.has_session(&req.recipient_did).await {
+                return Err(Error::SessionRequired {
+                    message: format!(
+                        "Failed to establish session: all provided OTKs were invalid ({}). \
+                            Peer may need to refresh their keys.",
+                        e
+                    ),
+                });
+            }
+        }
+    }
+
     // Create message content
     let content = MessageContent {
-        text: req.text,
+        text: req.text.clone(),
         attachments: vec![],
         mentions: vec![],
-        reply_to: req.reply_to,
+        reply_to: req.reply_to.clone(),
         metadata: Default::default(),
     };
 
-    // Send message
+    // Send message (encrypts and stores locally)
     let message = state
         .direct_messaging
         .send_message(req.recipient_did.clone(), content)
@@ -456,30 +689,67 @@ async fn send_direct_message(
             message: format!("Failed to send message: {}", e),
         })?;
 
-    // Transmit over P2P (best-effort: peer may be offline, message is stored locally regardless)
-    if let Err(e) = state
+    // Transmit over P2P
+    let status = match state
         .node_handle
         .send_direct_message(req.recipient_did.clone(), message.clone())
         .await
     {
-        tracing::debug!(
-            "P2P direct message delivery failed (will rely on offline relay): {}",
-            e
-        );
-    }
+        Ok(_) => {
+            tracing::debug!("P2P direct message delivered to {}", req.recipient_did);
+            "sent"
+        }
+        Err(e) => {
+            let err_msg = e.to_string();
+            // If peer is offline (unknown DID), queue for later delivery
+            if err_msg.contains("Unknown peer DID") {
+                tracing::debug!(
+                    "Peer {} is offline, queuing message for later delivery",
+                    req.recipient_did
+                );
+                if let Err(queue_err) = state
+                    .direct_messaging
+                    .queue_pending_message(&req.recipient_did, message.clone())
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to queue pending message for {}: {}",
+                        req.recipient_did,
+                        queue_err
+                    );
+                }
+                "pending"
+            } else {
+                // Other P2P errors (transient network issues, etc.)
+                tracing::debug!("P2P direct message delivery failed: {}", e);
+                "sent" // Message is stored locally, will sync later
+            }
+        }
+    };
 
     // Emit event if event channels are available
     if let Some(ref channels) = state.event_channels {
         channels.send_direct_message(DirectMessageEvent::MessageSent {
             message_id: message.id.clone(),
-            recipient: req.recipient_did,
+            recipient: req.recipient_did.clone(),
         });
     }
 
+    // Broadcast the sent message via WebSocket with full content (we already have the plaintext)
+    state
+        .ws_manager
+        .broadcast(crate::websocket::WsMessage::DirectMessageSent {
+            recipient: req.recipient_did.clone(),
+            message_id: message.id.clone(),
+            text: req.text.clone(),
+            timestamp: message.timestamp,
+            reply_to: req.reply_to.clone(),
+        });
+
     Ok(Json(MessageResponse {
-        message_id: message.id,
+        message_id: message.id.clone(),
         success: true,
-        message: "Message sent successfully".to_string(),
+        message: format!("Message {}", status),
     }))
 }
 
@@ -520,33 +790,65 @@ async fn send_group_message(
     }))
 }
 
+#[derive(Deserialize)]
+struct DirectMessagesParams {
+    /// Exclusive upper bound on timestamp (ms) for cursor-based pagination.
+    /// Pass the oldest message's timestamp from the current page to load the page before it.
+    before: Option<i64>,
+    /// Max messages to return. Defaults to 1024.
+    limit: Option<usize>,
+}
+
 async fn get_direct_messages(
     State(state): State<AppState>,
     Path(did): Path<String>,
+    Query(params): Query<DirectMessagesParams>,
 ) -> Result<Json<Vec<DirectMessageResponse>>> {
-    // Get messages from storage
+    let limit = params.limit.unwrap_or(1024);
     let messages = state
         .storage
         .as_ref()
-        .fetch_direct(&state.local_did, &did, 50, None)
+        .fetch_direct(&state.local_did, &did, limit, params.before)
         .await
         .map_err(|e| Error::App {
             message: format!("Failed to get messages: {}", e),
         })?;
 
-    // Convert to response format
-    // Note: We can't decrypt here without the session, so just return metadata
-    let responses = messages
-        .iter()
-        .map(|m| DirectMessageResponse {
+    // Decrypt each message (uses cache for sent messages, decrypts received messages)
+    let mut responses = Vec::new();
+    for m in messages {
+        let text = match state.direct_messaging.get_message_content(&m).await {
+            Ok(content) => content.text,
+            Err(e) => {
+                tracing::warn!("Failed to get message content for {}: {}", m.id, e);
+                "[decryption failed]".to_string()
+            }
+        };
+
+        // Check if message is pending (only relevant for sent messages)
+        let status = if m.sender_did == state.local_did {
+            match state.direct_messaging.is_message_pending(&m.id).await {
+                Ok(true) => Some("pending".to_string()),
+                Ok(false) => Some("sent".to_string()),
+                Err(e) => {
+                    tracing::warn!("Failed to check pending status for {}: {}", m.id, e);
+                    Some("sent".to_string()) // Default to sent on error
+                }
+            }
+        } else {
+            None // Received messages don't have status
+        };
+
+        responses.push(DirectMessageResponse {
             id: m.id.clone(),
             sender_did: m.sender_did.clone(),
             recipient_did: m.recipient_did.clone(),
-            text: "[encrypted]".to_string(), // Would need decryption
+            text,
             timestamp: m.timestamp,
             reply_to: m.reply_to.clone(),
-        })
-        .collect();
+            status,
+        });
+    }
 
     Ok(Json(responses))
 }
@@ -565,18 +867,26 @@ async fn get_group_messages(
             message: format!("Failed to get messages: {}", e),
         })?;
 
-    // Convert to response format
-    let responses = messages
-        .iter()
-        .map(|m| GroupMessageResponse {
+    // Decrypt each message
+    let mut responses = Vec::new();
+    for m in messages {
+        let text = match state.group_messaging.receive_message(m.clone()).await {
+            Ok(content) => content.text,
+            Err(e) => {
+                tracing::warn!("Failed to decrypt group message {}: {}", m.id, e);
+                "[decryption failed]".to_string()
+            }
+        };
+
+        responses.push(GroupMessageResponse {
             id: m.id.clone(),
             sender_did: m.sender_did.clone(),
             group_id: m.group_id.clone(),
-            text: "[encrypted]".to_string(), // Would need decryption
+            text,
             timestamp: m.timestamp,
             reply_to: m.reply_to.clone(),
-        })
-        .collect();
+        });
+    }
 
     Ok(Json(responses))
 }
@@ -1188,6 +1498,9 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["did"], "did:variance:test");
+        // Olm keys must be present so peers can establish sessions
+        assert!(json["olm_identity_key"].as_str().is_some());
+        assert!(json["one_time_keys"].as_array().is_some());
     }
 
     #[tokio::test]

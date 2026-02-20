@@ -4,6 +4,8 @@ export interface IdentityStatus {
   did: string;
   verifying_key: string;
   created_at: string;
+  olm_identity_key: string;
+  one_time_keys: string[];
 }
 
 export interface ResolvedIdentity {
@@ -24,6 +26,8 @@ export interface Conversation {
 export interface StartConversationRequest {
   recipient_did: string;
   text: string;
+  recipient_identity_key?: string;
+  recipient_one_time_key?: string;
 }
 
 export interface StartConversationResponse {
@@ -40,6 +44,7 @@ export interface DirectMessage {
   text: string;
   timestamp: number;
   reply_to?: string;
+  status?: "sent" | "pending" | "failed";
 }
 
 export interface GroupMessage {
@@ -84,7 +89,22 @@ export interface HealthResponse {
 // ===== WebSocket Events =====
 
 export type WsEvent =
-  | { type: "DirectMessageReceived"; from: string; message_id: string }
+  | {
+      type: "DirectMessageReceived";
+      from: string;
+      message_id: string;
+      text: string;
+      timestamp: number;
+      reply_to?: string;
+    }
+  | {
+      type: "DirectMessageSent";
+      recipient: string;
+      message_id: string;
+      text: string;
+      timestamp: number;
+      reply_to?: string;
+    }
   | { type: "GroupMessageReceived"; group_id: string; message_id: string }
   | { type: "TypingStarted"; from: string; recipient: string }
   | { type: "TypingStopped"; from: string; recipient: string }

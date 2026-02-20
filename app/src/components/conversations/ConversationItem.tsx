@@ -36,7 +36,7 @@ export function ConversationItem({
     >
       <Avatar did={conversation.peer_did} size="md" />
 
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 cursor-default">
         <p className="truncate text-sm font-medium text-surface-900 dark:text-surface-50">
           {conversation.peer_did.slice(-12)}
         </p>

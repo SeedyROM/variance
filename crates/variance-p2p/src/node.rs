@@ -14,14 +14,20 @@ use std::time::Duration;
 use tokio::select;
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
-use variance_proto::identity_proto::IdentityResponse;
+use variance_proto::identity_proto::{IdentityFound, IdentityResponse};
 use variance_proto::messaging_proto::{DirectMessageAck, GroupMessage};
 
 type ProviderQueryResult = (Vec<PeerId>, oneshot::Sender<Result<Vec<PeerId>>>);
 
+/// Tracks a broadcast DID resolve: how many individual requests are still pending
+/// and the oneshot channel to fire when the first Found response arrives.
+type BroadcastResolve = (usize, oneshot::Sender<Result<IdentityFound>>);
+
 pub struct Node {
     swarm: Swarm<VarianceBehaviour>,
     peer_id: PeerId,
+    /// Local DID, set via SetLocalIdentity command after node initialization
+    local_did: Arc<tokio::sync::RwLock<Option<String>>>,
     identity_handler: Arc<handlers::identity::IdentityHandler>,
     offline_handler: Arc<handlers::offline::OfflineMessageHandler>,
     signaling_handler: Arc<handlers::signaling::SignalingHandler>,
@@ -36,6 +42,13 @@ pub struct Node {
     pending_provider_queries: HashMap<kad::QueryId, ProviderQueryResult>,
     /// DID to PeerId mapping for routing signaling messages
     did_to_peer: Arc<tokio::sync::RwLock<HashMap<String, PeerId>>>,
+    /// Broadcast DID resolution: DID → (remaining request count, response sender).
+    /// Fires on the first Found response; if all requests fail, fires an error.
+    pending_did_broadcasts: HashMap<String, BroadcastResolve>,
+    /// Maps individual identity request_id → DID being resolved (for broadcast lookups).
+    pending_resolve_requests: HashMap<libp2p::request_response::OutboundRequestId, String>,
+    /// Auto-discovery requests sent when peers connect: request_id → peer_id
+    pending_auto_discovery: HashMap<libp2p::request_response::OutboundRequestId, libp2p::PeerId>,
 }
 
 impl Node {
@@ -121,7 +134,7 @@ impl Node {
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
-                tcp::Config::default(),
+                tcp::Config::default().nodelay(true),
                 noise::Config::new,
                 yamux::Config::default,
             )
@@ -133,7 +146,15 @@ impl Node {
             .map_err(|e| Error::Transport {
                 source: Box::new(e),
             })?
-            .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+            .with_swarm_config(|c| {
+                c.with_idle_connection_timeout(Duration::from_secs(60))
+                    // Limit concurrent dials to prevent connection storms
+                    .with_dial_concurrency_factor(
+                        std::num::NonZeroU8::new(8).expect("8 is non-zero"),
+                    )
+                    // Only keep one connection per peer
+                    .with_max_negotiating_inbound_streams(128)
+            })
             .build();
 
         // Initialize protocol handlers
@@ -155,6 +176,7 @@ impl Node {
         let node = Node {
             swarm,
             peer_id,
+            local_did: Arc::new(tokio::sync::RwLock::new(None)),
             identity_handler,
             offline_handler,
             signaling_handler,
@@ -163,6 +185,9 @@ impl Node {
             pending_identity_requests: HashMap::new(),
             pending_provider_queries: std::collections::HashMap::new(),
             did_to_peer: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            pending_did_broadcasts: HashMap::new(),
+            pending_resolve_requests: HashMap::new(),
+            pending_auto_discovery: HashMap::new(),
         };
 
         let handle = NodeHandle::new(command_tx);
@@ -364,11 +389,78 @@ impl Node {
                 self.pending_provider_queries
                     .insert(query_id, (Vec::new(), response_tx));
             }
+            NodeCommand::SetLocalIdentity {
+                did,
+                olm_identity_key,
+                one_time_keys,
+            } => {
+                // Store local DID for self-messaging support
+                *self.local_did.write().await = Some(did.clone());
+
+                let handler = self.identity_handler.clone();
+                tokio::spawn(async move {
+                    handler
+                        .set_local_identity(did, olm_identity_key, one_time_keys)
+                        .await;
+                });
+            }
+            NodeCommand::UpdateOneTimeKeys { one_time_keys } => {
+                let handler = self.identity_handler.clone();
+                tokio::spawn(async move {
+                    handler.update_one_time_keys(one_time_keys).await;
+                });
+            }
+            NodeCommand::ResolveIdentityByDid { did, response_tx } => {
+                // Collect currently connected peers
+                let peers: Vec<PeerId> = self.swarm.connected_peers().cloned().collect();
+
+                if peers.is_empty() {
+                    let _ = response_tx.send(Err(Error::Protocol {
+                        message: format!("Cannot resolve {}: no peers connected", did),
+                    }));
+                    return;
+                }
+
+                let peer_count = peers.len();
+                self.pending_did_broadcasts
+                    .insert(did.clone(), (peer_count, response_tx));
+
+                let request = variance_identity::protocol::create_did_request(&did, None);
+                for peer in peers {
+                    debug!("Broadcasting DID resolve request for {} to {}", did, peer);
+                    let request_id = self
+                        .swarm
+                        .behaviour_mut()
+                        .identity
+                        .send_request(&peer, request.clone());
+                    self.pending_resolve_requests
+                        .insert(request_id, did.clone());
+                }
+            }
             NodeCommand::SendDirectMessage {
                 peer_did,
                 message,
                 response_tx,
             } => {
+                // Check for self-messaging: if sending to our own DID, emit locally
+                let local_did = self.local_did.read().await;
+                if let Some(ref our_did) = *local_did {
+                    if peer_did == *our_did {
+                        debug!("Self-messaging detected: emitting message locally");
+
+                        // Emit the message as received locally without network transmission
+                        self.events
+                            .send_direct_message(DirectMessageEvent::MessageReceived {
+                                peer: self.peer_id,
+                                message: message.clone(),
+                            });
+
+                        let _ = response_tx.send(Ok(()));
+                        return;
+                    }
+                }
+                drop(local_did);
+
                 let did_to_peer = self.did_to_peer.read().await;
                 if let Some(peer) = did_to_peer.get(&peer_did) {
                     debug!("Sending direct message to {} ({})", peer_did, peer);
@@ -456,10 +548,21 @@ impl Node {
                     mdns::Event::Discovered(peers) => {
                         for (peer_id, multiaddr) in peers {
                             info!("Discovered peer via mDNS: {} at {}", peer_id, multiaddr);
+
+                            // Add to Kademlia routing table
                             self.swarm
                                 .behaviour_mut()
                                 .kad
-                                .add_address(&peer_id, multiaddr);
+                                .add_address(&peer_id, multiaddr.clone());
+
+                            // Dial the peer to establish connection (triggers auto-discovery)
+                            if let Err(e) = self.swarm.dial(
+                                libp2p::swarm::dial_opts::DialOpts::peer_id(peer_id)
+                                    .addresses(vec![multiaddr.clone()])
+                                    .build(),
+                            ) {
+                                debug!("Failed to dial mDNS peer {}: {}", peer_id, e);
+                            }
                         }
                     }
                     mdns::Event::Expired(peers) => {
@@ -537,10 +640,53 @@ impl Node {
                                     request_id, peer, response
                                 );
 
-                                // Complete pending request if exists
+                                // Complete point-to-point pending request if exists
                                 if let Some(tx) = self.pending_identity_requests.remove(&request_id)
                                 {
                                     let _ = tx.send(Ok(response.clone()));
+                                }
+
+                                // Handle auto-discovery cleanup
+                                let is_auto_discovery =
+                                    self.pending_auto_discovery.remove(&request_id).is_some();
+                                if is_auto_discovery {
+                                    match &response.result {
+                                        Some(variance_proto::identity_proto::identity_response::Result::Found(_)) => {
+                                            debug!("Auto-discovery succeeded for peer {}", peer);
+                                        }
+                                        _ => {
+                                            debug!("Auto-discovery failed for peer {}: no identity found", peer);
+                                        }
+                                    }
+                                }
+
+                                // Handle broadcast DID resolution if this request was part of one
+                                if let Some(did) = self.pending_resolve_requests.remove(&request_id)
+                                {
+                                    match &response.result {
+                                        Some(variance_proto::identity_proto::identity_response::Result::Found(found)) => {
+                                            // Got a match — fire the broadcast sender and remove the broadcast entry
+                                            if let Some((_, tx)) = self.pending_did_broadcasts.remove(&did) {
+                                                let _ = tx.send(Ok(found.clone()));
+                                            }
+                                            // Remove any remaining resolve requests for this DID
+                                            self.pending_resolve_requests.retain(|_, v| v != &did);
+                                        }
+                                        _ => {
+                                            // Not found or error from this peer — decrement counter
+                                            if let Some((remaining, _)) = self.pending_did_broadcasts.get_mut(&did) {
+                                                *remaining -= 1;
+                                                if *remaining == 0 {
+                                                    // All peers responded without a Found — report failure
+                                                    if let Some((_, tx)) = self.pending_did_broadcasts.remove(&did) {
+                                                        let _ = tx.send(Err(Error::Protocol {
+                                                            message: format!("DID not found on any connected peer: {}", did),
+                                                        }));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
 
                                 // Send event
@@ -584,6 +730,26 @@ impl Node {
                                 "Identity request {:?} to {} failed: {}",
                                 request_id, peer, error
                             );
+                            // Decrement broadcast counter on outbound failure
+                            if let Some(did) = self.pending_resolve_requests.remove(&request_id) {
+                                if let Some((remaining, _)) =
+                                    self.pending_did_broadcasts.get_mut(&did)
+                                {
+                                    *remaining -= 1;
+                                    if *remaining == 0 {
+                                        if let Some((_, tx)) =
+                                            self.pending_did_broadcasts.remove(&did)
+                                        {
+                                            let _ = tx.send(Err(Error::Protocol {
+                                                message: format!(
+                                                    "DID not found on any connected peer: {}",
+                                                    did
+                                                ),
+                                            }));
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Event::InboundFailure {
                             peer,
@@ -945,6 +1111,21 @@ impl Node {
                     peer_id,
                     endpoint.get_remote_address()
                 );
+
+                // Automatically query the peer for their identity to build DID → PeerId mapping.
+                // This allows us to send messages to their DID without manual discovery.
+                // We query by their peer_id, which will cause them to respond with their actual DID.
+                debug!("Querying {} for their identity", peer_id);
+                let request =
+                    variance_identity::protocol::create_peer_id_request(&peer_id.to_string(), None);
+                let request_id = self
+                    .swarm
+                    .behaviour_mut()
+                    .identity
+                    .send_request(&peer_id, request);
+
+                // Track this as an auto-discovery request (we don't need to respond to anyone)
+                self.pending_auto_discovery.insert(request_id, peer_id);
             }
             SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
                 debug!("Connection to {} closed: {:?}", peer_id, cause);
@@ -953,10 +1134,26 @@ impl Node {
                 debug!("Incoming connection from {}", send_back_addr);
             }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                if let Some(peer) = peer_id {
-                    warn!("Outgoing connection to {} failed: {}", peer, error);
+                // Common transient errors (handshake failures, simultaneous dials, etc.) are debug level
+                let error_str = error.to_string();
+                let is_transient = error_str.contains("Handshake failed")
+                    || error_str.contains("Address already in use")
+                    || error_str.contains("Connection refused")
+                    || error_str.contains("Transport error");
+
+                if !is_transient {
+                    if let Some(peer) = peer_id {
+                        warn!("Outgoing connection to {} failed: {}", peer, error);
+                    } else {
+                        warn!("Outgoing connection failed: {}", error);
+                    }
+                } else if let Some(peer) = peer_id {
+                    debug!(
+                        "Outgoing connection to {} failed (transient): {}",
+                        peer, error
+                    );
                 } else {
-                    warn!("Outgoing connection failed: {}", error);
+                    debug!("Outgoing connection failed (transient): {}", error);
                 }
             }
             SwarmEvent::IncomingConnectionError {
@@ -964,7 +1161,8 @@ impl Node {
                 error,
                 ..
             } => {
-                warn!(
+                // Most incoming connection errors are transient (failed handshakes, etc.)
+                debug!(
                     "Incoming connection from {} failed: {}",
                     send_back_addr, error
                 );

@@ -35,6 +35,10 @@ vodozemac = "0.9"
 # Crypto (for Group messaging)
 aes-gcm = "0.10"
 
+# Crypto (for at-rest plaintext encryption)
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+
 # Storage
 sled = { workspace = true }
 

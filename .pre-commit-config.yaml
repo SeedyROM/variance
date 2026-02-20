@@ -5,10 +5,13 @@ repos:
     hooks:
       - id: trailing-whitespace
         name: trim trailing whitespace
+        exclude: ^app/src-tauri/gen/
       - id: end-of-file-fixer
         name: fix end of files
+        exclude: ^app/src-tauri/gen/
       - id: check-yaml
         name: check yaml files
+        exclude: ^app/src-tauri/gen/
       - id: check-toml
         name: check toml files
       - id: check-added-large-files
@@ -40,6 +43,7 @@ repos:
         name: prettier (js/ts/jsx/tsx)
         types_or: [javascript, jsx, ts, tsx, json, css]
         files: ^app/
+        exclude: ^app/src-tauri/gen/
         additional_dependencies:
           - prettier@3.4.2
 

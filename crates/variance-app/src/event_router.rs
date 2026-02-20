@@ -7,13 +7,14 @@ use crate::websocket::{WebSocketManager, WsMessage};
 use std::sync::Arc;
 use tracing::{debug, warn};
 use variance_messaging::{direct::DirectMessageHandler, group::GroupMessageHandler};
-use variance_p2p::{EventChannels, IdentityEvent, OfflineMessageEvent, SignalingEvent};
+use variance_p2p::{EventChannels, IdentityEvent, NodeHandle, OfflineMessageEvent, SignalingEvent};
 
 /// Bridges P2P events to WebSocket clients
 pub struct EventRouter {
     ws_manager: WebSocketManager,
     direct_messaging: Arc<DirectMessageHandler>,
     group_messaging: Arc<GroupMessageHandler>,
+    node_handle: NodeHandle,
 }
 
 impl EventRouter {
@@ -21,11 +22,13 @@ impl EventRouter {
         ws_manager: WebSocketManager,
         direct_messaging: Arc<DirectMessageHandler>,
         group_messaging: Arc<GroupMessageHandler>,
+        node_handle: NodeHandle,
     ) -> Self {
         Self {
             ws_manager,
             direct_messaging,
             group_messaging,
+            node_handle,
         }
     }
 
@@ -117,6 +120,7 @@ impl EventRouter {
         // Decrypts incoming messages using the Double Ratchet handler before broadcasting.
         let ws_manager = self.ws_manager.clone();
         let direct_messaging = self.direct_messaging.clone();
+        let node_handle = self.node_handle.clone();
         let events_clone = events.clone();
         tokio::spawn(async move {
             use variance_p2p::events::DirectMessageEvent;
@@ -126,29 +130,60 @@ impl EventRouter {
             while let Ok(event) = rx.recv().await {
                 debug!("EventRouter: Received direct message event: {:?}", event);
 
-                if let DirectMessageEvent::MessageReceived { peer: _, message } = event {
-                    let from = message.sender_did.clone();
-                    let message_id = message.id.clone();
-                    let timestamp = message.timestamp;
-                    let reply_to = message.reply_to.clone();
+                match event {
+                    DirectMessageEvent::MessageReceived { peer: _, message } => {
+                        let from = message.sender_did.clone();
+                        let message_id = message.id.clone();
+                        let timestamp = message.timestamp;
+                        let reply_to = message.reply_to.clone();
+                        let was_prekey = message.olm_message_type == 0;
 
-                    match direct_messaging.receive_message(message).await {
-                        Ok(content) => {
-                            let msg = WsMessage::DirectMessageReceived {
-                                from,
-                                message_id,
-                                text: content.text,
-                                timestamp,
-                                reply_to,
-                            };
-                            ws_manager.broadcast(msg);
+                        match direct_messaging.receive_message(message).await {
+                            Ok(content) => {
+                                let msg = WsMessage::DirectMessageReceived {
+                                    from,
+                                    message_id,
+                                    text: content.text,
+                                    timestamp,
+                                    reply_to,
+                                };
+                                ws_manager.broadcast(msg);
+
+                                // If this was a PreKey message, it consumed an OTK.
+                                // Refresh the P2P handler's OTK list so other peers don't
+                                // try to use the consumed key.
+                                if was_prekey {
+                                    debug!(
+                                    "PreKey message consumed an OTK, refreshing advertised keys"
+                                );
+                                    let one_time_keys = direct_messaging
+                                        .one_time_keys()
+                                        .await
+                                        .values()
+                                        .map(|k| k.to_bytes().to_vec())
+                                        .collect();
+
+                                    if let Err(e) =
+                                        node_handle.update_one_time_keys(one_time_keys).await
+                                    {
+                                        warn!("Failed to update OTK list in P2P handler: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "EventRouter: Failed to decrypt direct message {}: {}",
+                                    message_id, e
+                                );
+                            }
                         }
-                        Err(e) => {
-                            warn!(
-                                "EventRouter: Failed to decrypt direct message {}: {}",
-                                message_id, e
-                            );
-                        }
+                    }
+                    DirectMessageEvent::MessageSent {
+                        message_id: _,
+                        recipient: _,
+                    } => {
+                        // DirectMessageSent is now broadcast directly from the API layer
+                        // with full message content, so we don't handle it here
                     }
                 }
             }
@@ -197,8 +232,10 @@ impl EventRouter {
             warn!("EventRouter: Group message event listener ended");
         });
 
-        // Spawn task for identity events (optional presence tracking)
+        // Spawn task for identity events (presence tracking + pending message flush)
         let ws_manager = self.ws_manager;
+        let direct_messaging = self.direct_messaging;
+        let node_handle = self.node_handle;
         tokio::spawn(async move {
             let mut rx = events.subscribe_identity();
             debug!("EventRouter: Started identity event listener");
@@ -207,8 +244,52 @@ impl EventRouter {
                 debug!("EventRouter: Received identity event: {:?}", event);
 
                 if let IdentityEvent::DidCached { did } = event {
-                    let msg = WsMessage::PresenceUpdated { did, online: true };
+                    // Broadcast presence update
+                    let msg = WsMessage::PresenceUpdated {
+                        did: did.clone(),
+                        online: true,
+                    };
                     ws_manager.broadcast(msg);
+
+                    // Flush pending messages for this peer
+                    debug!(
+                        "Flushing pending messages for newly connected peer: {}",
+                        did
+                    );
+                    match direct_messaging.get_pending_messages(&did).await {
+                        Ok(messages) => {
+                            debug!("Found {} pending messages for {}", messages.len(), did);
+                            for message in messages {
+                                let message_id = message.id.clone();
+                                match node_handle.send_direct_message(did.clone(), message).await {
+                                    Ok(_) => {
+                                        debug!(
+                                            "Successfully sent pending message {} to {}",
+                                            message_id, did
+                                        );
+                                        if let Err(e) =
+                                            direct_messaging.mark_pending_sent(&message_id).await
+                                        {
+                                            warn!(
+                                                "Failed to mark message {} as sent: {}",
+                                                message_id, e
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "Failed to send pending message {} to {}: {}",
+                                            message_id, did, e
+                                        );
+                                        // Keep in queue for next connection attempt
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to fetch pending messages for {}: {}", did, e);
+                        }
+                    }
                 }
             }
 
@@ -235,6 +316,7 @@ mod tests {
             state.ws_manager.clone(),
             state.direct_messaging.clone(),
             state.group_messaging.clone(),
+            state.node_handle.clone(),
         )
     }
 
@@ -282,6 +364,7 @@ mod tests {
             ws_manager.clone(),
             state.direct_messaging.clone(),
             state.group_messaging.clone(),
+            state.node_handle.clone(),
         );
         let events = EventChannels::default();
 

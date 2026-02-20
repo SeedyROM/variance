@@ -77,8 +77,10 @@ export const conversationsApi = {
 // ===== Messages =====
 
 export const messagesApi = {
-  getDirect: (peerDid: string) =>
-    request<DirectMessage[]>(`/messages/direct/${encodeURIComponent(peerDid)}`),
+  getDirect: (peerDid: string, before?: number) => {
+    const qs = before !== undefined ? `?before=${before}` : "";
+    return request<DirectMessage[]>(`/messages/direct/${encodeURIComponent(peerDid)}${qs}`);
+  },
 
   sendDirect: (body: SendDirectMessageRequest) =>
     request<MessageResponse>("/messages/direct", {

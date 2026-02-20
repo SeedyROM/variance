@@ -178,11 +178,51 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
 
     tracing::info!("Identity loaded: {}", app_state.local_did);
 
+    // Generate initial batch of one-time pre-keys so peers can establish Olm sessions.
+    app_state.direct_messaging.generate_one_time_keys(50).await;
+
+    // Register our own identity with the P2P identity handler so we can respond to
+    // inbound DID queries with our Olm keys. Peers need these to open outbound sessions.
+    let olm_identity_key = app_state
+        .direct_messaging
+        .identity_key()
+        .to_bytes()
+        .to_vec();
+    let one_time_keys = app_state
+        .direct_messaging
+        .one_time_keys()
+        .await
+        .values()
+        .map(|k| k.to_bytes().to_vec())
+        .collect::<Vec<_>>();
+
+    // Mark keys as published so vodozemac moves them into its published pool.
+    // create_inbound_session() only searches published keys — calling this is what
+    // makes inbound PreKey messages decryptable.
+    app_state
+        .direct_messaging
+        .mark_one_time_keys_as_published()
+        .await;
+
+    // Restore any previously established Olm sessions from disk
+    if let Err(e) = app_state.direct_messaging.restore_sessions().await {
+        tracing::warn!("Failed to restore Olm sessions: {} (starting fresh)", e);
+    }
+
+    if let Err(e) = app_state
+        .node_handle
+        .set_local_identity(app_state.local_did.clone(), olm_identity_key, one_time_keys)
+        .await
+    {
+        tracing::warn!("Failed to register local identity with P2P handler: {}", e);
+    }
+
     // Start event router to bridge P2P events to WebSocket clients
     let event_router = EventRouter::new(
         app_state.ws_manager.clone(),
         app_state.direct_messaging.clone(),
         app_state.group_messaging.clone(),
+        app_state.node_handle.clone(),
     );
     event_router.start((*event_channels).clone());
     tracing::debug!("EventRouter started");

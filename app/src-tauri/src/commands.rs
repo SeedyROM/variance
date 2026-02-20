@@ -77,15 +77,32 @@ pub async fn recover_identity(mnemonic: String, output_path: String) -> Result<S
     Ok(identity.did)
 }
 
-/// Return the default identity file path inside the platform data directory.
+/// Resolve the base data directory for this instance.
 ///
-/// macOS: `~/Library/Application Support/variance/identity.json`
-/// Linux: `~/.local/share/variance/identity.json`
+/// Reads `VARIANCE_DATA_DIR` first so a second instance can be run with a
+/// different identity by setting that variable before launching the binary:
+///
+///   VARIANCE_DATA_DIR=/tmp/peer-b ./variance-app
+///
+/// Falls back to the platform default (`~/Library/Application Support/variance`
+/// on macOS, `~/.local/share/variance` on Linux) when the variable is not set.
+fn data_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("VARIANCE_DATA_DIR") {
+        std::path::PathBuf::from(dir)
+    } else {
+        dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("variance")
+    }
+}
+
+/// Return the default identity file path for this instance.
+///
+/// Respects `VARIANCE_DATA_DIR` so multiple instances can each have their own
+/// identity without conflicting.
 #[tauri::command]
 pub fn default_identity_path() -> String {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("variance")
+    data_dir()
         .join("identity.json")
         .to_string_lossy()
         .into_owned()
@@ -111,12 +128,7 @@ pub async fn start_node(state: State<'_, NodeState>, identity_path: String) -> R
         return Ok(port);
     }
 
-    // Resolve data directory via XDG / platform conventions (same as P2P config):
-    // macOS → ~/Library/Application Support/variance
-    // Linux → ~/.local/share/variance
-    let base_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("variance");
+    let base_dir = data_dir();
 
     // Ensure the data directory exists before sled or the identity loader touch it.
     std::fs::create_dir_all(&base_dir)
@@ -288,6 +300,14 @@ mod tests {
     #[test]
     fn test_default_identity_path() {
         let path = default_identity_path();
-        assert!(path.ends_with(".variance/identity.json"));
+        assert!(path.ends_with("identity.json"));
+    }
+
+    #[test]
+    fn test_data_dir_env_override() {
+        std::env::set_var("VARIANCE_DATA_DIR", "/tmp/test-peer");
+        let path = default_identity_path();
+        std::env::remove_var("VARIANCE_DATA_DIR");
+        assert_eq!(path, "/tmp/test-peer/identity.json");
     }
 }

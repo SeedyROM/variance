@@ -127,6 +127,20 @@ pub fn create_did_request(
     }
 }
 
+/// Helper to create an identity request for a peer ID
+pub fn create_peer_id_request(
+    peer_id: &str,
+    requester_did: Option<String>,
+) -> identity_proto::IdentityRequest {
+    identity_proto::IdentityRequest {
+        query: Some(identity_proto::identity_request::Query::PeerId(
+            peer_id.to_string(),
+        )),
+        requester_did,
+        timestamp: Utc::now().timestamp(),
+    }
+}
+
 /// Helper to create a success response
 pub fn create_success_response(did: &Did) -> identity_proto::IdentityResponse {
     identity_proto::IdentityResponse {
@@ -136,6 +150,8 @@ pub fn create_success_response(did: &Did) -> identity_proto::IdentityResponse {
                 ipns_key: None,
                 multiaddrs: vec![],
                 discriminator: None,
+                olm_identity_key: vec![],
+                one_time_keys: vec![],
             },
         )),
         timestamp: Utc::now().timestamp(),

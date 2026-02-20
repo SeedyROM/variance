@@ -76,6 +76,13 @@ message IdentityFound {
   optional string ipns_key = 2;
   repeated string multiaddrs = 3;
   optional uint32 discriminator = 4;
+  // Olm Curve25519 identity key of the responding peer (32 bytes).
+  // Set when responding to a DID query so the requester can establish an Olm session.
+  bytes olm_identity_key = 5;
+  // Olm one-time pre-keys available for session establishment (each 32 bytes).
+  // The requester should pick exactly one and use it with olm_identity_key to
+  // call create_outbound_session().
+  repeated bytes one_time_keys = 6;
 }
 
 message IdentityNotFound {

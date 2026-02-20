@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { OnboardingShell } from "./components/onboarding/OnboardingShell";
 import { ConversationList } from "./components/conversations/ConversationList";
@@ -54,40 +54,27 @@ function MainShell() {
   // Wire up WebSocket
   useWebSocket();
 
-  // Find the peer DID for the active conversation
-  const [activePeerDid, setActivePeerDid] = useState<string | null>(null);
-  useEffect(() => {
-    if (!activeId) {
-      setActivePeerDid(null);
-      return;
-    }
-    // conversation_id is "sorted_did1:sorted_did2", peer is the non-local half
-    // We re-query conversations to resolve, but simplify: use the stored conversations
-    setActivePeerDid(null); // resolved below via the conversations query
-  }, [activeId]);
-
-  useQuery({
+  // Fetch conversations
+  const { data: conversations = [] } = useQuery({
     queryKey: ["conversations"],
     queryFn: async () => {
       const { conversationsApi } = await import("./api/client");
       return conversationsApi.list();
     },
     enabled: true,
-    select: (convs) => {
-      if (activeId) {
-        const active = convs.find((c) => c.id === activeId);
-        if (active) setActivePeerDid(active.peer_did);
-      }
-      return convs;
-    },
   });
 
+  // Derive the peer DID from active conversation ID
+  const activePeerDid = activeId
+    ? (conversations.find((c) => c.id === activeId)?.peer_did ?? null)
+    : null;
+
   return (
-    <div className="flex h-screen bg-surface-100 dark:bg-surface-950 overscroll-none">
+    <div className="flex h-screen bg-surface-100 dark:bg-surface-950 overscroll-none select-none">
       <ConversationList />
       <main className="flex-1 overflow-hidden">
         {activePeerDid ? (
-          <MessageView peerDid={activePeerDid} />
+          <MessageView key={activePeerDid} peerDid={activePeerDid} />
         ) : (
           <div className="flex h-full items-center justify-center">
             <p className="text-sm text-surface-400">Select a conversation or start a new one</p>
@@ -103,8 +90,6 @@ export function App() {
   const nodeStatus = useAppStore((s) => s.nodeStatus);
   const setNodeStatus = useAppStore((s) => s.setNodeStatus);
   const setApiPort = useAppStore((s) => s.setApiPort);
-  const identityPath = useIdentityStore((s) => s.identityPath);
-
   // Poll for node readiness when starting
   useNodeReady();
 
@@ -116,7 +101,9 @@ export function App() {
     const startNode = async () => {
       setNodeStatus("starting");
       try {
-        const path = identityPath ?? (await invoke<string>("default_identity_path"));
+        // Always ask the backend for the identity path so VARIANCE_DATA_DIR is respected
+        // when running a second instance with a different data directory.
+        const path = await invoke<string>("default_identity_path");
 
         // If the identity file is gone (e.g. user deleted the data directory),
         // reset to onboarding rather than showing an opaque error.

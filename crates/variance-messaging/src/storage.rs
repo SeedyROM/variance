@@ -18,13 +18,18 @@ pub trait MessageStorage: Send + Sync {
     /// Store a direct message
     async fn store_direct(&self, message: &DirectMessage) -> Result<()>;
 
-    /// Fetch direct messages for a conversation
+    /// Fetch the most recent `limit` direct messages for a conversation.
+    ///
+    /// Results are returned in chronological order (oldest first).
+    /// `before` is an exclusive upper bound on `message.timestamp` (ms) for
+    /// cursor-based backwards pagination — pass the oldest timestamp from the
+    /// previous page to load the page before it.
     async fn fetch_direct(
         &self,
         sender_did: &str,
         recipient_did: &str,
         limit: usize,
-        before: Option<String>,
+        before: Option<i64>,
     ) -> Result<Vec<DirectMessage>>;
 
     /// Store a group message
@@ -79,6 +84,46 @@ pub trait MessageStorage: Send + Sync {
 
     /// Delete all messages in a direct conversation.
     async fn delete_direct_conversation(&self, did1: &str, did2: &str) -> Result<()>;
+
+    /// Persist encrypted plaintext for a message so it can be read after restart.
+    ///
+    /// `encrypted` is `nonce (12 bytes) || AES-256-GCM ciphertext` produced by
+    /// `DirectMessageHandler`. The storage layer treats it as opaque bytes.
+    async fn store_plaintext(&self, message_id: &str, encrypted: &[u8]) -> Result<()>;
+
+    /// Retrieve previously stored encrypted plaintext for a message, or `None`
+    /// if the message has not been decrypted in this or a prior session.
+    async fn fetch_plaintext(&self, message_id: &str) -> Result<Option<Vec<u8>>>;
+
+    /// Store a pickled Olm session for a peer DID.
+    ///
+    /// Sessions must be persisted to survive restarts. vodozemac `Session::pickle()`
+    /// produces JSON that can be restored via `Session::from_pickle()`.
+    async fn store_session_pickle(&self, peer_did: &str, pickle_json: &str) -> Result<()>;
+
+    /// Fetch a pickled Olm session for a peer DID.
+    async fn fetch_session_pickle(&self, peer_did: &str) -> Result<Option<String>>;
+
+    /// Load all stored session pickles (for restoring sessions on startup).
+    async fn load_all_session_pickles(&self) -> Result<Vec<(String, String)>>;
+
+    /// Store a pending message that couldn't be sent due to peer being offline.
+    ///
+    /// Messages are queued with their fully encrypted DirectMessage proto,
+    /// ready to send when the peer reconnects.
+    async fn store_pending_message(&self, peer_did: &str, message: &DirectMessage) -> Result<()>;
+
+    /// Fetch all pending messages for a specific peer.
+    async fn fetch_pending_messages(&self, peer_did: &str) -> Result<Vec<DirectMessage>>;
+
+    /// Delete a pending message after successful transmission.
+    async fn delete_pending_message(&self, message_id: &str) -> Result<()>;
+
+    /// Check if a specific message is in the pending queue.
+    async fn is_message_pending(&self, message_id: &str) -> Result<bool>;
+
+    /// List all peer DIDs that have pending messages.
+    async fn list_peers_with_pending_messages(&self) -> Result<Vec<String>>;
 }
 
 /// Local storage implementation using sled
@@ -123,6 +168,27 @@ impl LocalMessageStorage {
     fn receipts_tree(&self) -> Result<sled::Tree> {
         self.db
             .open_tree("read_receipts")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
+    /// Encrypted plaintext cache tree (message_id → nonce || ciphertext)
+    fn plaintext_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("plaintext_cache")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
+    /// Olm session pickles tree (peer_did → JSON pickle)
+    fn session_pickles_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("session_pickles")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
+    /// Pending messages tree (peer_did:message_id → DirectMessage)
+    fn pending_messages_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("pending_messages")
             .map_err(|e| Error::Storage { source: e })
     }
 
@@ -201,36 +267,25 @@ impl MessageStorage for LocalMessageStorage {
         sender_did: &str,
         recipient_did: &str,
         limit: usize,
-        before: Option<String>,
+        before: Option<i64>,
     ) -> Result<Vec<DirectMessage>> {
         let tree = self.direct_tree()?;
         let conv_id = Self::conversation_id(sender_did, recipient_did);
         let prefix = format!("{conv_id}:");
 
-        let mut messages = Vec::new();
-        let iter = tree.scan_prefix(prefix.as_bytes()).rev();
+        // Scan newest-first so `limit` gives the most recent N messages.
+        // Keys are `{conv_id}:{timestamp:020}:{id}` — lexicographic == chronological.
+        // .rev() on sled's DoubleEndedIterator walks from the last key in the prefix.
+        let mut messages: Vec<DirectMessage> = tree
+            .scan_prefix(prefix.as_bytes())
+            .rev()
+            .filter_map(|entry| DirectMessage::decode(entry.ok()?.1.as_ref()).ok())
+            .filter(|msg| before.is_none_or(|ts| msg.timestamp < ts))
+            .take(limit)
+            .collect();
 
-        for entry in iter {
-            let (key, value) = entry.map_err(|e| Error::Storage { source: e })?;
-
-            // Check before cursor if specified
-            if let Some(ref before_ts) = before {
-                let key_str = String::from_utf8_lossy(&key);
-                if key_str.as_ref() >= before_ts.as_str() {
-                    continue;
-                }
-            }
-
-            let message =
-                DirectMessage::decode(value.as_ref()).map_err(|e| Error::Protocol { source: e })?;
-
-            messages.push(message);
-
-            if messages.len() >= limit {
-                break;
-            }
-        }
-
+        // Restore chronological order for the caller.
+        messages.reverse();
         Ok(messages)
     }
 
@@ -255,7 +310,7 @@ impl MessageStorage for LocalMessageStorage {
         let prefix = format!("{group_id}:");
 
         let mut messages = Vec::new();
-        let iter = tree.scan_prefix(prefix.as_bytes()).rev();
+        let iter = tree.scan_prefix(prefix.as_bytes());
 
         for entry in iter {
             let (key, value) = entry.map_err(|e| Error::Storage { source: e })?;
@@ -497,6 +552,21 @@ impl MessageStorage for LocalMessageStorage {
         Ok(result)
     }
 
+    async fn store_plaintext(&self, message_id: &str, encrypted: &[u8]) -> Result<()> {
+        let tree = self.plaintext_tree()?;
+        tree.insert(message_id.as_bytes(), encrypted)
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    async fn fetch_plaintext(&self, message_id: &str) -> Result<Option<Vec<u8>>> {
+        let tree = self.plaintext_tree()?;
+        Ok(tree
+            .get(message_id.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?
+            .map(|v| v.to_vec()))
+    }
+
     async fn delete_direct_conversation(&self, did1: &str, did2: &str) -> Result<()> {
         let tree = self.direct_tree()?;
         let conv_id = Self::conversation_id(did1, did2);
@@ -513,6 +583,106 @@ impl MessageStorage for LocalMessageStorage {
         }
 
         Ok(())
+    }
+
+    async fn store_session_pickle(&self, peer_did: &str, pickle_json: &str) -> Result<()> {
+        let tree = self.session_pickles_tree()?;
+        tree.insert(peer_did.as_bytes(), pickle_json.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    async fn fetch_session_pickle(&self, peer_did: &str) -> Result<Option<String>> {
+        let tree = self.session_pickles_tree()?;
+        Ok(tree
+            .get(peer_did.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?
+            .map(|v| String::from_utf8_lossy(&v).to_string()))
+    }
+
+    async fn load_all_session_pickles(&self) -> Result<Vec<(String, String)>> {
+        let tree = self.session_pickles_tree()?;
+        let mut sessions = Vec::new();
+
+        for item in tree.iter() {
+            let (key, value) = item.map_err(|e| Error::Storage { source: e })?;
+            let peer_did = String::from_utf8_lossy(&key).to_string();
+            let pickle_json = String::from_utf8_lossy(&value).to_string();
+            sessions.push((peer_did, pickle_json));
+        }
+
+        Ok(sessions)
+    }
+
+    async fn store_pending_message(&self, peer_did: &str, message: &DirectMessage) -> Result<()> {
+        let tree = self.pending_messages_tree()?;
+        let key = format!("{}:{}", peer_did, message.id);
+        let value = message.encode_to_vec();
+        tree.insert(key.as_bytes(), value.as_slice())
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    async fn fetch_pending_messages(&self, peer_did: &str) -> Result<Vec<DirectMessage>> {
+        let tree = self.pending_messages_tree()?;
+        let prefix = format!("{}:", peer_did);
+        let mut messages = Vec::new();
+
+        for item in tree.scan_prefix(prefix.as_bytes()) {
+            let (_, value) = item.map_err(|e| Error::Storage { source: e })?;
+            let message =
+                DirectMessage::decode(value.as_ref()).map_err(|e| Error::Protocol { source: e })?;
+            messages.push(message);
+        }
+
+        Ok(messages)
+    }
+
+    async fn delete_pending_message(&self, message_id: &str) -> Result<()> {
+        let tree = self.pending_messages_tree()?;
+
+        // Scan all keys to find the one with this message_id
+        for item in tree.iter() {
+            let (key, _) = item.map_err(|e| Error::Storage { source: e })?;
+            let key_str = String::from_utf8_lossy(&key);
+            if key_str.ends_with(&format!(":{}", message_id)) {
+                tree.remove(key).map_err(|e| Error::Storage { source: e })?;
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn is_message_pending(&self, message_id: &str) -> Result<bool> {
+        let tree = self.pending_messages_tree()?;
+
+        // Scan all keys to check if any end with this message_id
+        for item in tree.iter() {
+            let (key, _) = item.map_err(|e| Error::Storage { source: e })?;
+            let key_str = String::from_utf8_lossy(&key);
+            if key_str.ends_with(&format!(":{}", message_id)) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    async fn list_peers_with_pending_messages(&self) -> Result<Vec<String>> {
+        let tree = self.pending_messages_tree()?;
+        let mut peers = std::collections::HashSet::new();
+
+        for item in tree.iter() {
+            let (key, _) = item.map_err(|e| Error::Storage { source: e })?;
+            let key_str = String::from_utf8_lossy(&key);
+            // Key format: peer_did:message_id
+            if let Some(peer_did) = key_str.split(':').next() {
+                peers.insert(peer_did.to_string());
+            }
+        }
+
+        Ok(peers.into_iter().collect())
     }
 }
 
