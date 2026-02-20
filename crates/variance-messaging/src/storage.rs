@@ -79,6 +79,16 @@ pub trait MessageStorage: Send + Sync {
 
     /// Delete all messages in a direct conversation.
     async fn delete_direct_conversation(&self, did1: &str, did2: &str) -> Result<()>;
+
+    /// Persist encrypted plaintext for a message so it can be read after restart.
+    ///
+    /// `encrypted` is `nonce (12 bytes) || AES-256-GCM ciphertext` produced by
+    /// `DirectMessageHandler`. The storage layer treats it as opaque bytes.
+    async fn store_plaintext(&self, message_id: &str, encrypted: &[u8]) -> Result<()>;
+
+    /// Retrieve previously stored encrypted plaintext for a message, or `None`
+    /// if the message has not been decrypted in this or a prior session.
+    async fn fetch_plaintext(&self, message_id: &str) -> Result<Option<Vec<u8>>>;
 }
 
 /// Local storage implementation using sled
@@ -123,6 +133,13 @@ impl LocalMessageStorage {
     fn receipts_tree(&self) -> Result<sled::Tree> {
         self.db
             .open_tree("read_receipts")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
+    /// Encrypted plaintext cache tree (message_id → nonce || ciphertext)
+    fn plaintext_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("plaintext_cache")
             .map_err(|e| Error::Storage { source: e })
     }
 
@@ -495,6 +512,21 @@ impl MessageStorage for LocalMessageStorage {
         let mut result: Vec<(String, i64)> = conversations.into_iter().collect();
         result.sort_by(|a, b| b.1.cmp(&a.1));
         Ok(result)
+    }
+
+    async fn store_plaintext(&self, message_id: &str, encrypted: &[u8]) -> Result<()> {
+        let tree = self.plaintext_tree()?;
+        tree.insert(message_id.as_bytes(), encrypted)
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    async fn fetch_plaintext(&self, message_id: &str) -> Result<Option<Vec<u8>>> {
+        let tree = self.plaintext_tree()?;
+        Ok(tree
+            .get(message_id.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?
+            .map(|v| v.to_vec()))
     }
 
     async fn delete_direct_conversation(&self, did1: &str, did2: &str) -> Result<()> {

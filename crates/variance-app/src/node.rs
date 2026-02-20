@@ -179,7 +179,6 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
     tracing::info!("Identity loaded: {}", app_state.local_did);
 
     // Generate initial batch of one-time pre-keys so peers can establish Olm sessions.
-    // These remain in the Account's pool until consumed by an inbound PreKey message.
     app_state.direct_messaging.generate_one_time_keys(50).await;
 
     // Register our own identity with the P2P identity handler so we can respond to
@@ -196,6 +195,15 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         .values()
         .map(|k| k.to_bytes().to_vec())
         .collect::<Vec<_>>();
+
+    // Mark keys as published so vodozemac moves them into its published pool.
+    // create_inbound_session() only searches published keys — calling this is what
+    // makes inbound PreKey messages decryptable.
+    app_state
+        .direct_messaging
+        .mark_one_time_keys_as_published()
+        .await;
+
     if let Err(e) = app_state
         .node_handle
         .set_local_identity(app_state.local_did.clone(), olm_identity_key, one_time_keys)

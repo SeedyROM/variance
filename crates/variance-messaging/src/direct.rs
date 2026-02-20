@@ -1,7 +1,14 @@
 use crate::error::*;
 use crate::storage::MessageStorage;
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use hkdf::Hkdf;
 use prost::Message;
+use rand::RngCore;
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -38,9 +45,13 @@ pub struct DirectMessageHandler {
     /// Message storage backend
     storage: Arc<dyn MessageStorage>,
 
-    /// Plaintext cache for sent messages (message_id → MessageContent)
-    /// Required because Olm doesn't allow decrypting your own sent messages
-    sent_message_cache: Arc<RwLock<HashMap<String, MessageContent>>>,
+    /// AES-256-GCM key for at-rest encryption of decrypted message plaintext.
+    ///
+    /// Derived deterministically from the Ed25519 signing key via HKDF-SHA256
+    /// so it can be rederived on any restart without storing it separately.
+    /// Protects the `plaintext_cache` sled tree: a stolen DB file is unreadable
+    /// without the identity file.
+    storage_key: [u8; 32],
 }
 
 impl DirectMessageHandler {
@@ -52,6 +63,15 @@ impl DirectMessageHandler {
         storage: Arc<dyn MessageStorage>,
     ) -> Self {
         let identity_key = account.curve25519_key();
+
+        // Derive a 32-byte AES-256-GCM key from the signing key.
+        // Using a labeled HKDF expansion means this key is distinct from the
+        // signing key itself and can't be used to forge signatures.
+        let hk = Hkdf::<Sha256>::new(None, signing_key.as_bytes());
+        let mut storage_key = [0u8; 32];
+        hk.expand(b"variance-plaintext-storage-v1", &mut storage_key)
+            .expect("HKDF expand with 32-byte output always succeeds");
+
         Self {
             local_did,
             signing_key,
@@ -59,7 +79,7 @@ impl DirectMessageHandler {
             identity_key,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             storage,
-            sent_message_cache: Arc::new(RwLock::new(HashMap::new())),
+            storage_key,
         }
     }
 
@@ -86,6 +106,62 @@ impl DirectMessageHandler {
     /// Mark all pending one-time keys as published.
     pub async fn mark_one_time_keys_as_published(&self) {
         self.account.write().await.mark_keys_as_published();
+    }
+
+    /// Encrypt `content` with AES-256-GCM and persist it under `message_id`.
+    ///
+    /// Format: random 12-byte nonce || GCM ciphertext (plaintext + 16-byte tag).
+    /// This is called after every successful send or receive so history is
+    /// readable across restarts without re-doing Olm decryption.
+    async fn persist_plaintext(&self, message_id: &str, content: &MessageContent) -> Result<()> {
+        let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&self.storage_key);
+        let cipher = Aes256Gcm::new(key);
+
+        let mut nonce_bytes = [0u8; 12];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        let plaintext = content.encode_to_vec();
+        let ciphertext =
+            cipher
+                .encrypt(nonce, plaintext.as_slice())
+                .map_err(|_| Error::Crypto {
+                    message: "At-rest encryption failed".to_string(),
+                })?;
+
+        let mut blob = nonce_bytes.to_vec();
+        blob.extend_from_slice(&ciphertext);
+
+        self.storage.store_plaintext(message_id, &blob).await
+    }
+
+    /// Decrypt a blob previously written by `persist_plaintext`.
+    async fn load_plaintext(&self, message_id: &str) -> Result<Option<MessageContent>> {
+        let Some(blob) = self.storage.fetch_plaintext(message_id).await? else {
+            return Ok(None);
+        };
+
+        if blob.len() < 12 {
+            return Err(Error::Crypto {
+                message: "Stored plaintext blob is too short".to_string(),
+            });
+        }
+
+        let (nonce_bytes, ciphertext) = blob.split_at(12);
+        let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&self.storage_key);
+        let cipher = Aes256Gcm::new(key);
+        let nonce = Nonce::from_slice(nonce_bytes);
+
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|_| Error::Crypto {
+                message: "At-rest decryption failed (wrong key or corrupted data)".to_string(),
+            })?;
+
+        let content = MessageContent::decode(plaintext.as_slice())
+            .map_err(|e| Error::Protocol { source: e })?;
+
+        Ok(Some(content))
     }
 
     /// Initialize a session as initiator (Alice).
@@ -198,12 +274,7 @@ impl DirectMessageHandler {
 
         message.signature = self.sign_message(&message)?;
         self.storage.store_direct(&message).await?;
-
-        // Cache plaintext for sent messages (Olm doesn't allow decrypting your own messages)
-        self.sent_message_cache
-            .write()
-            .await
-            .insert(id.clone(), content);
+        self.persist_plaintext(&id, &content).await?;
 
         Ok(message)
     }
@@ -233,12 +304,7 @@ impl DirectMessageHandler {
 
         message.signature = self.sign_message(&message)?;
         self.storage.store_direct(&message).await?;
-
-        // Cache plaintext for sent self-messages
-        self.sent_message_cache
-            .write()
-            .await
-            .insert(id.clone(), content);
+        self.persist_plaintext(&id, &content).await?;
 
         Ok(message)
     }
@@ -260,6 +326,7 @@ impl DirectMessageHandler {
             let content = MessageContent::decode(message.ciphertext.as_slice())
                 .map_err(|e| Error::Protocol { source: e })?;
             self.storage.store_direct(&message).await?;
+            self.persist_plaintext(&message.id, &content).await?;
             return Ok(content);
         }
 
@@ -323,6 +390,7 @@ impl DirectMessageHandler {
             .map_err(|e| Error::Protocol { source: e })?;
 
         self.storage.store_direct(&message).await?;
+        self.persist_plaintext(&message.id, &content).await?;
 
         Ok(content)
     }
@@ -331,16 +399,17 @@ impl DirectMessageHandler {
     ///
     /// This is the preferred method for retrieving message content when displaying
     /// a conversation, as it handles both sent and received messages correctly.
+    /// Get message content for display.
+    ///
+    /// Checks the encrypted persistent plaintext store first (survives restarts).
+    /// Falls through to Olm decryption only for messages not yet in the store,
+    /// which also writes the result to the store for future reads.
     pub async fn get_message_content(&self, message: &DirectMessage) -> Result<MessageContent> {
-        // Check cache first for messages we sent
-        if message.sender_did == self.local_did {
-            let cache = self.sent_message_cache.read().await;
-            if let Some(content) = cache.get(&message.id) {
-                return Ok(content.clone());
-            }
+        if let Some(content) = self.load_plaintext(&message.id).await? {
+            return Ok(content);
         }
 
-        // For received messages or cache misses, decrypt normally
+        // Not in the persistent store yet — decrypt via Olm (also persists).
         self.receive_message(message.clone()).await
     }
 
