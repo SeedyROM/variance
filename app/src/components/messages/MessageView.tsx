@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Avatar } from "../ui/Avatar";
 import { ScrollArea } from "../ui/ScrollArea";
@@ -10,14 +10,25 @@ import { messagesApi, typingApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { isDifferentDay } from "../../utils/time";
+import type { DirectMessage } from "../../api/types";
 
 interface MessageViewProps {
   peerDid: string;
 }
 
+// Must match the backend default limit in get_direct_messages.
+const PAGE_SIZE = 1024;
+
 export function MessageView({ peerDid }: MessageViewProps) {
   const localDid = useIdentityStore((s) => s.did);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const topSentinelRef = useRef<HTMLDivElement>(null);
+
+  // Older pages fetched when scrolling to the top.
+  const [olderMessages, setOlderMessages] = useState<DirectMessage[]>([]);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
 
   const { data: messages = [], refetch } = useQuery({
     queryKey: ["messages", peerDid],
@@ -45,13 +56,82 @@ export function MessageView({ peerDid }: MessageViewProps) {
     refetchInterval: 2000,
   });
 
-  // Sort messages by timestamp (oldest first)
-  const sortedMessages = [...messages].sort((a, b) => a.timestamp - b.timestamp);
+  // Merge older pages with the current page, deduplicate, sort chronologically.
+  const sortedMessages = [...olderMessages, ...messages]
+    .filter((msg, i, arr) => arr.findIndex((m) => m.id === msg.id) === i)
+    .sort((a, b) => a.timestamp - b.timestamp);
 
-  // Scroll to bottom when new messages arrive
+  const loadOlder = useCallback(async () => {
+    if (loadingOlder || !hasMore) return;
+
+    const oldestTimestamp = sortedMessages[0]?.timestamp;
+    if (oldestTimestamp === undefined) return;
+
+    setLoadingOlder(true);
+
+    // Capture scroll height before the DOM update so we can restore position.
+    const container = scrollRef.current;
+    const prevScrollHeight = container?.scrollHeight ?? 0;
+
+    try {
+      const page = await messagesApi.getDirect(peerDid, oldestTimestamp);
+
+      if (page.length === 0) {
+        setHasMore(false);
+        return;
+      }
+
+      if (page.length < PAGE_SIZE) setHasMore(false);
+
+      setOlderMessages((prev) =>
+        [...page, ...prev].filter((m, i, arr) => arr.findIndex((x) => x.id === m.id) === i)
+      );
+
+      // After React re-renders with the new messages, pin scroll so the user
+      // stays at the same visual position instead of jumping to the top.
+      requestAnimationFrame(() => {
+        if (container) {
+          container.scrollTop += container.scrollHeight - prevScrollHeight;
+        }
+      });
+    } finally {
+      setLoadingOlder(false);
+    }
+  // sortedMessages changes every render; use the length + first id as stable deps.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadingOlder, hasMore, sortedMessages[0]?.timestamp, peerDid]);
+
+  // Fire loadOlder when the top sentinel scrolls into the scroll container's viewport.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const sentinel = topSentinelRef.current;
+    const container = scrollRef.current;
+    if (!sentinel || !container) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) void loadOlder();
+      },
+      { root: container, threshold: 0 }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [loadOlder]);
+
+  // Scroll to bottom when the newest page gains messages (new send/receive), but
+  // not when older pages are prepended (that would pull the user away from history).
+  const prevNewestCountRef = useRef(messages.length);
+  useEffect(() => {
+    if (messages.length > prevNewestCountRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+    prevNewestCountRef.current = messages.length;
   }, [messages.length]);
+
+  // On mount (or conversation switch, handled by key=), jump straight to the bottom.
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView();
+  }, []);
 
   return (
     <div className="flex h-full flex-col">
@@ -67,7 +147,16 @@ export function MessageView({ peerDid }: MessageViewProps) {
       </div>
 
       {/* Messages */}
-      <ScrollArea className="flex-1 px-4 py-4">
+      <ScrollArea ref={scrollRef} className="flex-1 px-4 py-4">
+        {/* Sentinel observed by IntersectionObserver to trigger older-page loads. */}
+        <div ref={topSentinelRef} />
+
+        {loadingOlder && (
+          <div className="flex justify-center py-2">
+            <p className="text-xs text-surface-400">Loading earlier messages…</p>
+          </div>
+        )}
+
         {sortedMessages.length === 0 ? (
           <div className="flex h-40 items-center justify-center">
             <p className="text-sm text-surface-400">No messages yet. Say hello!</p>

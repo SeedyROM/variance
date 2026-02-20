@@ -18,13 +18,18 @@ pub trait MessageStorage: Send + Sync {
     /// Store a direct message
     async fn store_direct(&self, message: &DirectMessage) -> Result<()>;
 
-    /// Fetch direct messages for a conversation
+    /// Fetch the most recent `limit` direct messages for a conversation.
+    ///
+    /// Results are returned in chronological order (oldest first).
+    /// `before` is an exclusive upper bound on `message.timestamp` (ms) for
+    /// cursor-based backwards pagination — pass the oldest timestamp from the
+    /// previous page to load the page before it.
     async fn fetch_direct(
         &self,
         sender_did: &str,
         recipient_did: &str,
         limit: usize,
-        before: Option<String>,
+        before: Option<i64>,
     ) -> Result<Vec<DirectMessage>>;
 
     /// Store a group message
@@ -262,36 +267,25 @@ impl MessageStorage for LocalMessageStorage {
         sender_did: &str,
         recipient_did: &str,
         limit: usize,
-        before: Option<String>,
+        before: Option<i64>,
     ) -> Result<Vec<DirectMessage>> {
         let tree = self.direct_tree()?;
         let conv_id = Self::conversation_id(sender_did, recipient_did);
         let prefix = format!("{conv_id}:");
 
-        let mut messages = Vec::new();
-        let iter = tree.scan_prefix(prefix.as_bytes());
+        // Scan newest-first so `limit` gives the most recent N messages.
+        // Keys are `{conv_id}:{timestamp:020}:{id}` — lexicographic == chronological.
+        // .rev() on sled's DoubleEndedIterator walks from the last key in the prefix.
+        let mut messages: Vec<DirectMessage> = tree
+            .scan_prefix(prefix.as_bytes())
+            .rev()
+            .filter_map(|entry| DirectMessage::decode(entry.ok()?.1.as_ref()).ok())
+            .filter(|msg| before.map_or(true, |ts| msg.timestamp < ts))
+            .take(limit)
+            .collect();
 
-        for entry in iter {
-            let (key, value) = entry.map_err(|e| Error::Storage { source: e })?;
-
-            // Check before cursor if specified
-            if let Some(ref before_ts) = before {
-                let key_str = String::from_utf8_lossy(&key);
-                if key_str.as_ref() >= before_ts.as_str() {
-                    continue;
-                }
-            }
-
-            let message =
-                DirectMessage::decode(value.as_ref()).map_err(|e| Error::Protocol { source: e })?;
-
-            messages.push(message);
-
-            if messages.len() >= limit {
-                break;
-            }
-        }
-
+        // Restore chronological order for the caller.
+        messages.reverse();
         Ok(messages)
     }
 

@@ -1,6 +1,6 @@
 use crate::{state::AppState, Error, Result};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json, Response},
     routing::{get, post},
@@ -790,15 +790,25 @@ async fn send_group_message(
     }))
 }
 
+#[derive(Deserialize)]
+struct DirectMessagesParams {
+    /// Exclusive upper bound on timestamp (ms) for cursor-based pagination.
+    /// Pass the oldest message's timestamp from the current page to load the page before it.
+    before: Option<i64>,
+    /// Max messages to return. Defaults to 1024.
+    limit: Option<usize>,
+}
+
 async fn get_direct_messages(
     State(state): State<AppState>,
     Path(did): Path<String>,
+    Query(params): Query<DirectMessagesParams>,
 ) -> Result<Json<Vec<DirectMessageResponse>>> {
-    // Get messages from storage
+    let limit = params.limit.unwrap_or(1024);
     let messages = state
         .storage
         .as_ref()
-        .fetch_direct(&state.local_did, &did, usize::MAX, None)
+        .fetch_direct(&state.local_did, &did, limit, params.before)
         .await
         .map_err(|e| Error::App {
             message: format!("Failed to get messages: {}", e),

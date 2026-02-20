@@ -588,7 +588,7 @@ impl DirectMessageHandler {
         &self,
         peer_did: &str,
         limit: usize,
-        before: Option<String>,
+        before: Option<i64>,
     ) -> Result<Vec<DirectMessage>> {
         self.storage
             .fetch_direct(&self.local_did, peer_did, limit, before)
