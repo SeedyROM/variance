@@ -18,11 +18,15 @@ export function useWebSocket() {
   useEffect(() => {
     if (nodeStatus !== "running") return;
 
+    console.log("[WebSocket] Connecting...");
     void variantWs.connect();
 
     const off = variantWs.on((event: WsEvent) => {
+      console.log("[WebSocket] Received event:", event.type, event);
+
       switch (event.type) {
         case "DirectMessageReceived": {
+          console.log("[WebSocket] Processing DirectMessageReceived:", event.message_id);
           // Add message directly to cache
           const message: DirectMessage = {
             id: event.message_id,
@@ -34,8 +38,13 @@ export function useWebSocket() {
           };
 
           queryClient.setQueryData<DirectMessage[]>(["messages", event.from], (old = []) => {
+            console.log("[WebSocket] Current messages for", event.from, ":", old?.length || 0);
             // Check if message already exists
-            if (old.some((m) => m.id === message.id)) return old;
+            if (old.some((m) => m.id === message.id)) {
+              console.log("[WebSocket] Message already exists, skipping");
+              return old;
+            }
+            console.log("[WebSocket] Adding new message to cache");
             return [...old, message];
           });
 
@@ -46,6 +55,7 @@ export function useWebSocket() {
         }
 
         case "DirectMessageSent": {
+          console.log("[WebSocket] Processing DirectMessageSent:", event.message_id);
           // Add sent message directly to cache
           const message: DirectMessage = {
             id: event.message_id,
@@ -58,10 +68,15 @@ export function useWebSocket() {
           };
 
           queryClient.setQueryData<DirectMessage[]>(["messages", event.recipient], (old = []) => {
+            console.log("[WebSocket] Current messages for", event.recipient, ":", old?.length || 0);
             // Remove any optimistic version and add real message
             const withoutOptimistic = old.filter((m) => !m.id.startsWith("temp-"));
             // Check if message already exists
-            if (withoutOptimistic.some((m) => m.id === message.id)) return old;
+            if (withoutOptimistic.some((m) => m.id === message.id)) {
+              console.log("[WebSocket] Message already exists, skipping");
+              return old;
+            }
+            console.log("[WebSocket] Adding sent message to cache");
             return [...withoutOptimistic, message];
           });
 

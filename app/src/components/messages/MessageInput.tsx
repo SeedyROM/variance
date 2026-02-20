@@ -53,8 +53,9 @@ export function MessageInput({ peerDid }: MessageInputProps) {
       }
     },
     onSettled: () => {
-      // WebSocket events handle message updates via setQueryData, no need to refetch
-      // Just invalidate conversations to update the sidebar
+      // Refetch to sync with backend state
+      // TODO: Rely purely on WebSocket events once they're working reliably
+      void queryClient.invalidateQueries({ queryKey: ["messages", peerDid] });
       void queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
   });
