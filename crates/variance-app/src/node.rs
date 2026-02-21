@@ -204,6 +204,29 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         .mark_one_time_keys_as_published()
         .await;
 
+    // Persist the account (now holding the generated OTKs) back to identity.json.
+    // Without this, OTKs are in-memory only: a restart reverts to the zero-OTK
+    // initial pickle, making any queued PreKey messages impossible to decrypt.
+    match app_state.direct_messaging.account_pickle().await {
+        Ok(pickle_json) => match AppState::load_identity(identity_path) {
+            Ok(mut identity_file) => {
+                identity_file.olm_account_pickle = pickle_json;
+                match serde_json::to_string_pretty(&identity_file) {
+                    Ok(json) => {
+                        if let Err(e) = std::fs::write(identity_path, json) {
+                            tracing::warn!("Failed to persist Olm OTKs to identity file: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to serialize identity for OTK persistence: {}", e)
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("Failed to reload identity file for OTK persistence: {}", e),
+        },
+        Err(e) => tracing::warn!("Failed to serialize Olm account pickle: {}", e),
+    }
+
     // Restore any previously established Olm sessions from disk
     if let Err(e) = app_state.direct_messaging.restore_sessions().await {
         tracing::warn!("Failed to restore Olm sessions: {} (starting fresh)", e);

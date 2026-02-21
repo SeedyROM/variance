@@ -116,6 +116,20 @@ impl DirectMessageHandler {
         self.account.write().await.mark_keys_as_published();
     }
 
+    /// Serialize the current Olm account state to a JSON pickle string.
+    ///
+    /// Must be called after `mark_one_time_keys_as_published` and the result
+    /// written back to the identity file.  Without this, OTKs generated at
+    /// startup are in-memory only: after a restart the account reverts to the
+    /// initial (zero-OTK) state, making any pending PreKey messages that
+    /// reference those keys impossible to decrypt on the recipient side.
+    pub async fn account_pickle(&self) -> Result<String> {
+        let pickle = self.account.read().await.pickle();
+        serde_json::to_string(&pickle).map_err(|e| Error::Crypto {
+            message: format!("Failed to serialize account pickle: {}", e),
+        })
+    }
+
     /// Encrypt `content` with AES-256-GCM and persist it under `message_id`.
     ///
     /// Format: random 12-byte nonce || GCM ciphertext (plaintext + 16-byte tag).
@@ -339,24 +353,30 @@ impl DirectMessageHandler {
             return self.send_self_message(content).await;
         }
 
-        let mut sessions = self.sessions.write().await;
-        let session = sessions
-            .get_mut(&recipient_did)
-            .ok_or_else(|| Error::DoubleRatchet {
-                message: format!("No session with {}", recipient_did),
-            })?;
-
         let plaintext = prost::Message::encode_to_vec(&content);
-        let olm_message = session.encrypt(&plaintext);
 
-        // Include our identity key on PreKey messages so the recipient can call
-        // create_inbound_session() without a separate key lookup.
-        let sender_identity_key = match &olm_message {
-            OlmMessage::PreKey(_) => Some(self.identity_key.to_vec()),
-            OlmMessage::Normal(_) => None,
-        };
+        // Encrypt inside a scoped block so the sessions write lock is released
+        // before we call persist_session (which needs its own read lock).
+        let (olm_message_type, ciphertext, sender_identity_key) = {
+            let mut sessions = self.sessions.write().await;
+            let session = sessions
+                .get_mut(&recipient_did)
+                .ok_or_else(|| Error::DoubleRatchet {
+                    message: format!("No session with {}", recipient_did),
+                })?;
 
-        let (olm_message_type, ciphertext) = olm_message.to_parts();
+            let olm_message = session.encrypt(&plaintext);
+
+            // Include our identity key on PreKey messages so the recipient can call
+            // create_inbound_session() without a separate key lookup.
+            let sender_identity_key = match &olm_message {
+                OlmMessage::PreKey(_) => Some(self.identity_key.to_vec()),
+                OlmMessage::Normal(_) => None,
+            };
+
+            let (msg_type, bytes) = olm_message.to_parts();
+            (msg_type, bytes, sender_identity_key)
+        }; // sessions write lock released here
 
         let id = Ulid::new().to_string();
         let timestamp = chrono::Utc::now().timestamp_millis();
@@ -377,6 +397,15 @@ impl DirectMessageHandler {
         message.signature = self.sign_message(&message)?;
         self.storage.store_direct(&message).await?;
         self.persist_plaintext(&id, &content).await?;
+
+        // Persist the advanced ratchet state so decryption survives restarts.
+        if let Err(e) = self.persist_session(&recipient_did).await {
+            tracing::warn!(
+                "Failed to persist session state for {}: {}",
+                recipient_did,
+                e
+            );
+        }
 
         Ok(message)
     }
@@ -483,17 +512,31 @@ impl DirectMessageHandler {
                 result.plaintext
             }
             OlmMessage::Normal(_) => {
-                let mut sessions = self.sessions.write().await;
-                let session =
-                    sessions
-                        .get_mut(&message.sender_did)
-                        .ok_or_else(|| Error::DoubleRatchet {
+                // Decrypt inside a scoped block so the write lock is released
+                // before persist_session acquires its own read lock below.
+                let plaintext = {
+                    let mut sessions = self.sessions.write().await;
+                    let session = sessions.get_mut(&message.sender_did).ok_or_else(|| {
+                        Error::DoubleRatchet {
                             message: format!("No session with {}", message.sender_did),
-                        })?;
+                        }
+                    })?;
 
-                session.decrypt(&olm_message).map_err(|e| Error::Crypto {
-                    message: format!("Decryption failure: {}", e),
-                })?
+                    session.decrypt(&olm_message).map_err(|e| Error::Crypto {
+                        message: format!("Decryption failure: {}", e),
+                    })?
+                }; // sessions write lock released here
+
+                // Persist the advanced ratchet state so subsequent messages survive restarts.
+                if let Err(e) = self.persist_session(&message.sender_did).await {
+                    tracing::warn!(
+                        "Failed to persist session for {}: {}",
+                        message.sender_did,
+                        e
+                    );
+                }
+
+                plaintext
             }
         };
 

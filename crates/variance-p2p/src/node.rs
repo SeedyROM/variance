@@ -1129,6 +1129,25 @@ impl Node {
             }
             SwarmEvent::ConnectionClosed { peer_id, cause, .. } => {
                 debug!("Connection to {} closed: {:?}", peer_id, cause);
+
+                // Remove stale DID→PeerId mappings for this peer so future sends are
+                // correctly detected as offline and queued rather than silently dropped.
+                let mut did_to_peer = self.did_to_peer.write().await;
+                let offline_dids: Vec<String> = did_to_peer
+                    .iter()
+                    .filter(|(_, &v)| v == peer_id)
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for did in &offline_dids {
+                    did_to_peer.remove(did);
+                }
+                drop(did_to_peer);
+
+                for did in offline_dids {
+                    debug!("Peer {} (DID {}) went offline", peer_id, did);
+                    self.events
+                        .send_identity(IdentityEvent::PeerOffline { did });
+                }
             }
             SwarmEvent::IncomingConnection { send_back_addr, .. } => {
                 debug!("Incoming connection from {}", send_back_addr);

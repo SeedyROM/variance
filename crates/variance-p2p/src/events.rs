@@ -26,6 +26,9 @@ pub enum IdentityEvent {
 
     /// DID was cached locally
     DidCached { did: String },
+
+    /// Peer went offline (connection closed and DID mapping removed)
+    PeerOffline { did: String },
 }
 
 /// Events from the offline message protocol
