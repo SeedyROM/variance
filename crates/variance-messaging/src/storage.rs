@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use prost::Message;
 use std::path::Path;
 use variance_proto::messaging_proto::{
-    DirectMessage, GroupMessage, OfflineMessageEnvelope, ReadReceipt,
+    DirectMessage, Group, GroupMessage, OfflineMessageEnvelope, ReadReceipt,
 };
 
 /// Message storage backend abstraction
@@ -124,6 +124,20 @@ pub trait MessageStorage: Send + Sync {
 
     /// List all peer DIDs that have pending messages.
     async fn list_peers_with_pending_messages(&self) -> Result<Vec<String>>;
+
+    // ===== Group metadata persistence =====
+
+    /// Persist group membership/metadata (without the raw key — that goes in store_group_key_encrypted).
+    async fn store_group_metadata(&self, group: &Group) -> Result<()>;
+
+    /// Fetch all stored group metadata records (used at startup to restore in-memory state).
+    async fn fetch_all_group_metadata(&self) -> Result<Vec<Group>>;
+
+    /// Persist an AES-256-GCM encrypted group key blob (nonce || ciphertext).
+    async fn store_group_key_encrypted(&self, group_id: &str, encrypted: &[u8]) -> Result<()>;
+
+    /// Fetch the encrypted group key blob for a group, or None if not stored.
+    async fn fetch_group_key_encrypted(&self, group_id: &str) -> Result<Option<Vec<u8>>>;
 }
 
 /// Local storage implementation using sled
@@ -189,6 +203,20 @@ impl LocalMessageStorage {
     fn pending_messages_tree(&self) -> Result<sled::Tree> {
         self.db
             .open_tree("pending_messages")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
+    /// Group metadata tree (group_id → serialized Group proto, key cleared)
+    fn group_metadata_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("group_metadata")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
+    /// Encrypted group keys tree (group_id → nonce || AES-256-GCM ciphertext)
+    fn group_keys_encrypted_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("group_keys_encrypted")
             .map_err(|e| Error::Storage { source: e })
     }
 
@@ -676,13 +704,49 @@ impl MessageStorage for LocalMessageStorage {
         for item in tree.iter() {
             let (key, _) = item.map_err(|e| Error::Storage { source: e })?;
             let key_str = String::from_utf8_lossy(&key);
-            // Key format: peer_did:message_id
-            if let Some(peer_did) = key_str.split(':').next() {
+            // Key format: "{peer_did}:{message_ulid}" where peer_did contains colons
+            // (e.g. "did:variance:abc123:01ARZMSGID"). rsplit_once peels off the
+            // ULID suffix leaving the full DID as the peer identifier.
+            if let Some((peer_did, _)) = key_str.rsplit_once(':') {
                 peers.insert(peer_did.to_string());
             }
         }
 
         Ok(peers.into_iter().collect())
+    }
+
+    async fn store_group_metadata(&self, group: &Group) -> Result<()> {
+        let tree = self.group_metadata_tree()?;
+        let bytes = prost::Message::encode_to_vec(group);
+        tree.insert(group.id.as_bytes(), bytes.as_slice())
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    async fn fetch_all_group_metadata(&self) -> Result<Vec<Group>> {
+        let tree = self.group_metadata_tree()?;
+        let mut groups = Vec::new();
+        for entry in tree.iter() {
+            let (_, value) = entry.map_err(|e| Error::Storage { source: e })?;
+            let group = Group::decode(value.as_ref()).map_err(|e| Error::Protocol { source: e })?;
+            groups.push(group);
+        }
+        Ok(groups)
+    }
+
+    async fn store_group_key_encrypted(&self, group_id: &str, encrypted: &[u8]) -> Result<()> {
+        let tree = self.group_keys_encrypted_tree()?;
+        tree.insert(group_id.as_bytes(), encrypted)
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    async fn fetch_group_key_encrypted(&self, group_id: &str) -> Result<Option<Vec<u8>>> {
+        let tree = self.group_keys_encrypted_tree()?;
+        Ok(tree
+            .get(group_id.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?
+            .map(|v| v.to_vec()))
     }
 }
 

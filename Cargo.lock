@@ -7519,6 +7519,7 @@ dependencies = [
  "variance-identity",
  "variance-proto",
  "vodozemac",
+ "x25519-dalek",
 ]
 
 [[package]]

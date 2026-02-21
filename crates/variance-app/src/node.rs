@@ -232,6 +232,11 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         tracing::warn!("Failed to restore Olm sessions: {} (starting fresh)", e);
     }
 
+    // Restore group memberships and encrypted keys from disk
+    if let Err(e) = app_state.group_messaging.restore_groups().await {
+        tracing::warn!("Failed to restore group state: {} (starting fresh)", e);
+    }
+
     if let Err(e) = app_state
         .node_handle
         .set_local_identity(app_state.local_did.clone(), olm_identity_key, one_time_keys)
@@ -239,6 +244,25 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
     {
         tracing::warn!("Failed to register local identity with P2P handler: {}", e);
     }
+
+    // Spawn a background task to periodically clean up expired offline messages.
+    // Without this they accumulate in sled indefinitely (30-day TTL is not self-enforcing).
+    let cleanup_storage = app_state.storage.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        interval.tick().await; // skip the immediate first tick
+        loop {
+            interval.tick().await;
+            use variance_messaging::storage::MessageStorage;
+            match cleanup_storage.cleanup_expired().await {
+                Ok(n) if n > 0 => {
+                    tracing::info!("Cleaned up {} expired offline messages", n)
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("Offline message cleanup failed: {}", e),
+            }
+        }
+    });
 
     // Start event router to bridge P2P events to WebSocket clients
     let event_router = EventRouter::new(
