@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
+use variance_identity::cache::MultiLayerCache;
+use variance_identity::username::UsernameRegistry;
 use variance_media::{CallManager, SignalingHandler};
 use variance_messaging::{
     direct::DirectMessageHandler, group::GroupMessageHandler, offline::OfflineRelayHandler,
@@ -22,6 +24,13 @@ pub struct IdentityFile {
     /// auto-migrates by generating a fresh account and rewriting the file.
     #[serde(default)]
     pub olm_account_pickle: String,
+    /// Registered username (lowercase, without discriminator).
+    /// `None` if the user hasn't registered a username yet.
+    #[serde(default)]
+    pub username: Option<String>,
+    /// 4-digit discriminator (1–9999) paired with username.
+    #[serde(default)]
+    pub discriminator: Option<u32>,
     pub created_at: String,
 }
 
@@ -75,6 +84,12 @@ pub struct AppState {
 
     /// P2P event channels for real-time updates
     pub event_channels: Option<Arc<variance_p2p::EventChannels>>,
+
+    /// Username registry (username#discriminator → DID)
+    pub username_registry: Arc<UsernameRegistry>,
+
+    /// Multi-layer identity cache (L1 hot → L2 warm → L3 disk)
+    pub identity_cache: Arc<MultiLayerCache>,
 }
 
 impl AppState {
@@ -111,6 +126,7 @@ impl AppState {
     pub fn from_identity_file(
         identity_path: &Path,
         db_path: &str,
+        identity_cache_dir: &str,
         node_handle: variance_p2p::NodeHandle,
         event_channels: Option<Arc<variance_p2p::EventChannels>>,
     ) -> anyhow::Result<Self> {
@@ -143,6 +159,22 @@ impl AppState {
         let olm_account = vodozemac::olm::Account::from_pickle(olm_pickle);
 
         let storage = Arc::new(LocalMessageStorage::new(db_path)?);
+
+        // Build identity cache
+        let identity_cache = Arc::new(
+            MultiLayerCache::new(identity_cache_dir)
+                .map_err(|e| anyhow::anyhow!("Failed to create identity cache: {}", e))?,
+        );
+
+        // Build username registry and seed with persisted username if present
+        let username_registry = Arc::new(UsernameRegistry::new());
+        if let (Some(ref username), Some(discriminator)) =
+            (&identity.username, identity.discriminator)
+        {
+            username_registry
+                .register_with_discriminator(username.clone(), discriminator, identity.did.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to seed username registry: {}", e))?;
+        }
 
         Ok(Self {
             direct_messaging: Arc::new(DirectMessageHandler::new(
@@ -181,6 +213,8 @@ impl AppState {
             node_handle,
             ws_manager: WebSocketManager::new(),
             event_channels,
+            username_registry,
+            identity_cache,
         })
     }
 
@@ -294,6 +328,15 @@ impl AppState {
             node_handle: Self::test_node_handle(),
             ws_manager: WebSocketManager::new(),
             event_channels: None,
+            username_registry: Arc::new(UsernameRegistry::new()),
+            identity_cache: Arc::new({
+                let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+                let temp_dir_path = temp_dir.path().join("identity-cache");
+                // Keep the temp dir alive for the lifetime of the cache (test scope)
+                let _ = temp_dir.keep();
+                MultiLayerCache::new(&temp_dir_path.to_string_lossy())
+                    .expect("Failed to create test identity cache")
+            }),
         }
     }
 }

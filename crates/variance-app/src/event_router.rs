@@ -6,6 +6,7 @@
 use crate::websocket::{WebSocketManager, WsMessage};
 use std::sync::Arc;
 use tracing::{debug, warn};
+use variance_media::{CallManager, SignalingHandler};
 use variance_messaging::{direct::DirectMessageHandler, group::GroupMessageHandler};
 use variance_p2p::{EventChannels, IdentityEvent, NodeHandle, OfflineMessageEvent, SignalingEvent};
 
@@ -14,6 +15,8 @@ pub struct EventRouter {
     ws_manager: WebSocketManager,
     direct_messaging: Arc<DirectMessageHandler>,
     group_messaging: Arc<GroupMessageHandler>,
+    call_manager: Arc<CallManager>,
+    signaling: Arc<SignalingHandler>,
     node_handle: NodeHandle,
 }
 
@@ -22,12 +25,16 @@ impl EventRouter {
         ws_manager: WebSocketManager,
         direct_messaging: Arc<DirectMessageHandler>,
         group_messaging: Arc<GroupMessageHandler>,
+        call_manager: Arc<CallManager>,
+        signaling: Arc<SignalingHandler>,
         node_handle: NodeHandle,
     ) -> Self {
         Self {
             ws_manager,
             direct_messaging,
             group_messaging,
+            call_manager,
+            signaling,
             node_handle,
         }
     }
@@ -37,6 +44,79 @@ impl EventRouter {
     /// This spawns background tasks that subscribe to each event channel
     /// and broadcast events to all connected WebSocket clients.
     pub fn start(self, events: EventChannels) {
+        // Spawn task for call manager events (state changes, ICE candidates)
+        let ws_manager = self.ws_manager.clone();
+        let call_manager = self.call_manager.clone();
+        let signaling = self.signaling.clone();
+        let node_handle = self.node_handle.clone();
+        let mut call_rx = self.call_manager.subscribe();
+        tokio::spawn(async move {
+            use variance_media::CallEvent;
+            debug!("EventRouter: Started call event listener");
+
+            while let Ok(event) = call_rx.recv().await {
+                debug!("EventRouter: Received call event: {:?}", event);
+
+                match event {
+                    CallEvent::StateChanged { call_id, status } => {
+                        let status_str = match status {
+                            variance_proto::media_proto::CallStatus::Active => "active",
+                            variance_proto::media_proto::CallStatus::Failed => "failed",
+                            variance_proto::media_proto::CallStatus::Ended => "ended",
+                            _ => "unknown",
+                        };
+                        ws_manager.broadcast(WsMessage::CallStateChanged {
+                            call_id,
+                            status: status_str.to_string(),
+                        });
+                    }
+                    CallEvent::IceCandidateGathered {
+                        call_id,
+                        candidate,
+                        sdp_mid,
+                        sdp_mline_index,
+                    } => {
+                        // Send local ICE candidate to remote peer via P2P signaling
+                        let remote_peer = call_manager.get_remote_peer(&call_id);
+                        if let Some(recipient_did) = remote_peer {
+                            match signaling.send_ice_candidate(
+                                call_id.clone(),
+                                recipient_did.clone(),
+                                candidate,
+                                sdp_mid.unwrap_or_default(),
+                                sdp_mline_index.map(|i| i as u32),
+                            ) {
+                                Ok(message) => {
+                                    if let Err(e) = node_handle
+                                        .send_signaling_message(recipient_did, message)
+                                        .await
+                                    {
+                                        warn!(
+                                            "Failed to send ICE candidate for call {}: {}",
+                                            call_id, e
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to create ICE candidate message for call {}: {}",
+                                        call_id, e
+                                    );
+                                }
+                            }
+                        } else {
+                            warn!(
+                                "No remote peer found for call {} to send ICE candidate",
+                                call_id
+                            );
+                        }
+                    }
+                }
+            }
+
+            warn!("EventRouter: Call event listener ended");
+        });
+
         // Spawn task for signaling events
         let ws_manager = self.ws_manager.clone();
         let events_clone = events.clone();
@@ -326,6 +406,8 @@ mod tests {
             state.ws_manager.clone(),
             state.direct_messaging.clone(),
             state.group_messaging.clone(),
+            state.calls.clone(),
+            state.signaling.clone(),
             state.node_handle.clone(),
         )
     }
@@ -374,6 +456,8 @@ mod tests {
             ws_manager.clone(),
             state.direct_messaging.clone(),
             state.group_messaging.clone(),
+            state.calls.clone(),
+            state.signaling.clone(),
             state.node_handle.clone(),
         );
         let events = EventChannels::default();

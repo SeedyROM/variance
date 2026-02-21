@@ -11,7 +11,7 @@ pub mod error;
 pub mod protocol;
 pub mod signaling;
 
-pub use call::{Call, CallManager};
+pub use call::{Call, CallEvent, CallManager};
 pub use config::{IceServerConfig, MediaConfig};
 pub use error::{Error, Result};
 pub use signaling::SignalingHandler;

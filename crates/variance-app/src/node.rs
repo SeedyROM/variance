@@ -169,6 +169,7 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
     let app_state = AppState::from_identity_file(
         identity_path,
         config.storage.message_db_path.to_str().unwrap(),
+        config.storage.identity_cache_dir.to_str().unwrap(),
         node_handle,
         Some(event_channels.clone()),
     )
@@ -248,11 +249,14 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
     // Spawn a background task to periodically clean up expired offline messages.
     // Without this they accumulate in sled indefinitely (30-day TTL is not self-enforcing).
     let cleanup_storage = app_state.storage.clone();
+    let cleanup_identity_cache = app_state.identity_cache.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
         interval.tick().await; // skip the immediate first tick
         loop {
             interval.tick().await;
+
+            // Evict expired offline messages
             use variance_messaging::storage::MessageStorage;
             match cleanup_storage.cleanup_expired().await {
                 Ok(n) if n > 0 => {
@@ -261,6 +265,9 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
                 Ok(_) => {}
                 Err(e) => tracing::warn!("Offline message cleanup failed: {}", e),
             }
+
+            // Evict expired identity cache entries (L1 + L2 + L3)
+            cleanup_identity_cache.evict_expired();
         }
     });
 
@@ -269,6 +276,8 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         app_state.ws_manager.clone(),
         app_state.direct_messaging.clone(),
         app_state.group_messaging.clone(),
+        app_state.calls.clone(),
+        app_state.signaling.clone(),
         app_state.node_handle.clone(),
     );
     event_router.start((*event_channels).clone());

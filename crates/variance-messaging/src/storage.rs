@@ -220,6 +220,16 @@ impl LocalMessageStorage {
             .map_err(|e| Error::Storage { source: e })
     }
 
+    /// Reverse index tree (idx:{message_id} → tree_name:full_key)
+    ///
+    /// Enables O(1) lookup by message ID for offline and pending messages,
+    /// replacing the previous O(n) full-tree scans.
+    fn message_index_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("message_index")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
     /// Generate conversation ID from two DIDs (sorted for consistency)
     fn conversation_id(did1: &str, did2: &str) -> String {
         let mut dids = [did1, did2];
@@ -365,6 +375,7 @@ impl MessageStorage for LocalMessageStorage {
 
     async fn store_offline(&self, envelope: &OfflineMessageEnvelope) -> Result<()> {
         let tree = self.offline_tree()?;
+        let index = self.message_index_tree()?;
 
         // Extract message ID and timestamp from envelope
         let (id, timestamp) = match &envelope.message {
@@ -385,6 +396,13 @@ impl MessageStorage for LocalMessageStorage {
 
         let bytes = prost::Message::encode_to_vec(envelope);
         tree.insert(key.as_bytes(), bytes.as_slice())
+            .map_err(|e| Error::Storage { source: e })?;
+
+        // Insert reverse index: idx:{message_id} → offline:{full_key}
+        let idx_key = format!("idx:{id}");
+        let idx_val = format!("offline:{key}");
+        index
+            .insert(idx_key.as_bytes(), idx_val.as_bytes())
             .map_err(|e| Error::Storage { source: e })?;
 
         Ok(())
@@ -435,8 +453,26 @@ impl MessageStorage for LocalMessageStorage {
 
     async fn delete_offline(&self, message_id: &str) -> Result<()> {
         let tree = self.offline_tree()?;
+        let index = self.message_index_tree()?;
+        let idx_key = format!("idx:{message_id}");
 
-        // Scan all keys to find matching message_id
+        // Try O(1) reverse-index lookup first
+        if let Some(idx_val) = index
+            .get(idx_key.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?
+        {
+            let val_str = String::from_utf8_lossy(&idx_val);
+            if let Some(full_key) = val_str.strip_prefix("offline:") {
+                tree.remove(full_key.as_bytes())
+                    .map_err(|e| Error::Storage { source: e })?;
+                index
+                    .remove(idx_key.as_bytes())
+                    .map_err(|e| Error::Storage { source: e })?;
+                return Ok(());
+            }
+        }
+
+        // Fallback: scan for backward compatibility with data stored before the index
         for entry in tree.iter() {
             let (key, value) = entry.map_err(|e| Error::Storage { source: e })?;
 
@@ -454,7 +490,8 @@ impl MessageStorage for LocalMessageStorage {
             };
 
             if env_id == message_id {
-                tree.remove(key).map_err(|e| Error::Storage { source: e })?;
+                tree.remove(&key)
+                    .map_err(|e| Error::Storage { source: e })?;
                 return Ok(());
             }
         }
@@ -644,10 +681,19 @@ impl MessageStorage for LocalMessageStorage {
 
     async fn store_pending_message(&self, peer_did: &str, message: &DirectMessage) -> Result<()> {
         let tree = self.pending_messages_tree()?;
+        let index = self.message_index_tree()?;
         let key = format!("{}:{}", peer_did, message.id);
         let value = message.encode_to_vec();
         tree.insert(key.as_bytes(), value.as_slice())
             .map_err(|e| Error::Storage { source: e })?;
+
+        // Insert reverse index: idx:{message_id} → pending:{full_key}
+        let idx_key = format!("idx:{}", message.id);
+        let idx_val = format!("pending:{key}");
+        index
+            .insert(idx_key.as_bytes(), idx_val.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?;
+
         Ok(())
     }
 
@@ -668,8 +714,26 @@ impl MessageStorage for LocalMessageStorage {
 
     async fn delete_pending_message(&self, message_id: &str) -> Result<()> {
         let tree = self.pending_messages_tree()?;
+        let index = self.message_index_tree()?;
+        let idx_key = format!("idx:{message_id}");
 
-        // Scan all keys to find the one with this message_id
+        // Try O(1) reverse-index lookup first
+        if let Some(idx_val) = index
+            .get(idx_key.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?
+        {
+            let val_str = String::from_utf8_lossy(&idx_val);
+            if let Some(full_key) = val_str.strip_prefix("pending:") {
+                tree.remove(full_key.as_bytes())
+                    .map_err(|e| Error::Storage { source: e })?;
+                index
+                    .remove(idx_key.as_bytes())
+                    .map_err(|e| Error::Storage { source: e })?;
+                return Ok(());
+            }
+        }
+
+        // Fallback: scan for backward compatibility with pre-index data
         for item in tree.iter() {
             let (key, _) = item.map_err(|e| Error::Storage { source: e })?;
             let key_str = String::from_utf8_lossy(&key);
@@ -683,9 +747,22 @@ impl MessageStorage for LocalMessageStorage {
     }
 
     async fn is_message_pending(&self, message_id: &str) -> Result<bool> {
-        let tree = self.pending_messages_tree()?;
+        let index = self.message_index_tree()?;
+        let idx_key = format!("idx:{message_id}");
 
-        // Scan all keys to check if any end with this message_id
+        // Try O(1) reverse-index lookup first
+        if let Some(idx_val) = index
+            .get(idx_key.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?
+        {
+            let val_str = String::from_utf8_lossy(&idx_val);
+            if val_str.starts_with("pending:") {
+                return Ok(true);
+            }
+        }
+
+        // Fallback: scan for backward compatibility with pre-index data
+        let tree = self.pending_messages_tree()?;
         for item in tree.iter() {
             let (key, _) = item.map_err(|e| Error::Storage { source: e })?;
             let key_str = String::from_utf8_lossy(&key);
@@ -1105,5 +1182,102 @@ mod tests {
             .unwrap();
 
         assert_eq!(messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_pending_message_reverse_index() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let message = DirectMessage {
+            id: "01PENDING_MSG_ID".to_string(),
+            sender_did: "did:variance:alice".to_string(),
+            recipient_did: "did:variance:bob".to_string(),
+            ciphertext: vec![1, 2, 3],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: 5000,
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+
+        // Store pending message (creates reverse index entry)
+        storage
+            .store_pending_message("did:variance:bob", &message)
+            .await
+            .unwrap();
+
+        // O(1) is_message_pending via index
+        assert!(storage
+            .is_message_pending("01PENDING_MSG_ID")
+            .await
+            .unwrap());
+        assert!(!storage.is_message_pending("nonexistent").await.unwrap());
+
+        // O(1) delete via index
+        storage
+            .delete_pending_message("01PENDING_MSG_ID")
+            .await
+            .unwrap();
+
+        assert!(!storage
+            .is_message_pending("01PENDING_MSG_ID")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_offline_message_reverse_index() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let direct = DirectMessage {
+            id: "01OFFLINE_MSG_ID".to_string(),
+            sender_did: "did:variance:alice".to_string(),
+            recipient_did: "did:variance:bob".to_string(),
+            ciphertext: vec![],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: 3000,
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+
+        let envelope = OfflineMessageEnvelope {
+            recipient_did: "did:variance:bob".to_string(),
+            message: Some(
+                variance_proto::messaging_proto::offline_message_envelope::Message::Direct(direct),
+            ),
+            relay_peer_id: "peer123".to_string(),
+            stored_at: 3000,
+            expires_at: i64::MAX,
+        };
+
+        // Store creates index entry
+        storage.store_offline(&envelope).await.unwrap();
+
+        let messages = storage
+            .fetch_offline("did:variance:bob", None, 10)
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 1);
+
+        // O(1) delete via index
+        storage.delete_offline("01OFFLINE_MSG_ID").await.unwrap();
+
+        let messages = storage
+            .fetch_offline("did:variance:bob", None, 10)
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 0);
+
+        // Index entry should be cleaned up too
+        let index = storage.message_index_tree().unwrap();
+        assert!(index
+            .get("idx:01OFFLINE_MSG_ID".as_bytes())
+            .unwrap()
+            .is_none());
     }
 }

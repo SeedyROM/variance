@@ -65,14 +65,14 @@ enum MessageType {
 message MessageContent {
   string text = 1;
   repeated Attachment attachments = 2;
-  repeated string mentions = 3;  // DIDs mentioned
+  repeated string mentions = 3; // DIDs mentioned
   optional string reply_to = 4;
   map<string, string> metadata = 5;
 }
 
 message Attachment {
   AttachmentType type = 1;
-  string cid = 2;  // IPFS CID
+  string cid = 2; // IPFS CID
   string name = 3;
   uint64 size = 4;
   string mime_type = 5;
@@ -141,7 +141,7 @@ enum GroupRole {
 
 message GroupKey {
   uint32 version = 1;
-  bytes key = 2;  // AES-256 key (encrypted per-member)
+  bytes key = 2; // AES-256 key (encrypted per-member)
   int64 created_at = 3;
 }
 
@@ -156,6 +156,9 @@ message GroupInvitation {
 
   int64 timestamp = 6;
   bytes signature = 7;
+
+  // Full member list at time of invitation, so acceptor starts with correct state
+  repeated GroupMember members = 8;
 }
 
 // ACK for direct message delivery confirmation
@@ -174,13 +177,13 @@ message OfflineMessageEnvelope {
   // Relay metadata
   string relay_peer_id = 4;
   int64 stored_at = 5;
-  int64 expires_at = 6;  // TTL
+  int64 expires_at = 6; // TTL
 }
 
 message OfflineMessageRequest {
   string did = 1;
   optional int64 since_timestamp = 2;  // Only messages after this
-  uint32 limit = 3;  // Max messages to fetch
+  uint32 limit = 3; // Max messages to fetch
 }
 
 message OfflineMessageResponse {

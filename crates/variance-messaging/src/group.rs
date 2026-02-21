@@ -38,7 +38,7 @@ pub struct GroupMessageHandler {
     /// Message storage backend
     storage: Arc<dyn MessageStorage>,
 
-    /// AES-256-GCM key for encrypting group keys at rest.
+    /// AES-256-GCM key for encrypting group keys and plaintext at rest.
     ///
     /// Derived from the signing key via HKDF-SHA256 so it can be rederived on
     /// restart without storing it separately. A stolen DB cannot yield group keys
@@ -230,16 +230,18 @@ impl GroupMessageHandler {
         encrypted_group_key.extend_from_slice(&nonce_bytes);
         encrypted_group_key.extend_from_slice(&ciphertext);
 
-        let group_name = self
+        let group_ref = self
             .groups
             .get(group_id)
             .ok_or_else(|| Error::GroupNotFound {
                 group_id: group_id.to_string(),
-            })?
-            .name
-            .clone();
+            })?;
+        let group_name = group_ref.name.clone();
+        let members = group_ref.members.clone();
+        drop(group_ref);
 
-        // Create invitation
+        // Create invitation with full member list so the acceptor
+        // starts with correct group membership state.
         let invitation = GroupInvitation {
             group_id: group_id.to_string(),
             group_name,
@@ -248,6 +250,7 @@ impl GroupMessageHandler {
             encrypted_group_key,
             timestamp: chrono::Utc::now().timestamp_millis(),
             signature: vec![],
+            members,
         };
 
         // Sign invitation
@@ -470,10 +473,85 @@ impl GroupMessageHandler {
         let content = MessageContent::decode(plaintext.as_slice())
             .map_err(|e| Error::Protocol { source: e })?;
 
-        // Store message
+        // Persist decrypted plaintext for future reads (avoids re-decryption)
+        if let Err(e) = self.persist_plaintext(&message.id, &content).await {
+            tracing::warn!("Failed to persist group message plaintext: {}", e);
+        }
+
+        // Store the ciphertext message
         self.storage.store_group(&message).await?;
 
         Ok(content)
+    }
+
+    /// Encrypt `content` with AES-256-GCM and persist under `message_id`.
+    ///
+    /// Format: random 12-byte nonce || GCM ciphertext (plaintext + 16-byte tag).
+    /// Called after successful decryption so history is readable across restarts
+    /// without re-doing AES-GCM group decryption.
+    async fn persist_plaintext(&self, message_id: &str, content: &MessageContent) -> Result<()> {
+        let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&self.storage_key);
+        let cipher = Aes256Gcm::new(key);
+
+        let mut nonce_bytes = [0u8; 12];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        let plaintext = content.encode_to_vec();
+        let ciphertext =
+            cipher
+                .encrypt(nonce, plaintext.as_slice())
+                .map_err(|_| Error::Crypto {
+                    message: "At-rest encryption failed".to_string(),
+                })?;
+
+        let mut blob = nonce_bytes.to_vec();
+        blob.extend_from_slice(&ciphertext);
+
+        self.storage.store_plaintext(message_id, &blob).await
+    }
+
+    /// Decrypt a blob previously written by `persist_plaintext`.
+    async fn load_plaintext(&self, message_id: &str) -> Result<Option<MessageContent>> {
+        let Some(blob) = self.storage.fetch_plaintext(message_id).await? else {
+            return Ok(None);
+        };
+
+        if blob.len() < 12 {
+            return Err(Error::Crypto {
+                message: "Stored plaintext blob is too short".to_string(),
+            });
+        }
+
+        let (nonce_bytes, ciphertext) = blob.split_at(12);
+        let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&self.storage_key);
+        let cipher = Aes256Gcm::new(key);
+        let nonce = Nonce::from_slice(nonce_bytes);
+
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|_| Error::Crypto {
+                message: "At-rest decryption failed (wrong key or corrupted data)".to_string(),
+            })?;
+
+        let content = MessageContent::decode(plaintext.as_slice())
+            .map_err(|e| Error::Protocol { source: e })?;
+
+        Ok(Some(content))
+    }
+
+    /// Get message content for display.
+    ///
+    /// Checks the encrypted persistent plaintext store first (survives restarts).
+    /// Falls through to AES-GCM group decryption only for messages not yet in
+    /// the store, which also writes the result for future reads.
+    pub async fn get_message_content(&self, message: &GroupMessage) -> Result<MessageContent> {
+        if let Some(content) = self.load_plaintext(&message.id).await? {
+            return Ok(content);
+        }
+
+        // Not in the persistent store yet — decrypt (also persists).
+        self.receive_message(message.clone()).await
     }
 
     /// Get group by ID
@@ -551,15 +629,12 @@ impl GroupMessageHandler {
             })?;
 
         let group_id = invitation.group_id.clone();
-        let now = chrono::Utc::now().timestamp_millis();
 
-        // Build a local Group record from the invitation. We only know the inviter
-        // and ourselves at this point; full membership syncs via future group updates.
-        let group = Group {
-            id: group_id.clone(),
-            name: invitation.group_name.clone(),
-            admin_did: invitation.inviter_did.clone(),
-            members: vec![
+        // Use the full member list from the invitation if provided,
+        // falling back to inviter + self for backward compatibility.
+        let members = if invitation.members.is_empty() {
+            let now = chrono::Utc::now().timestamp_millis();
+            vec![
                 GroupMember {
                     did: invitation.inviter_did.clone(),
                     role: GroupRole::Admin.into(),
@@ -572,7 +647,16 @@ impl GroupMessageHandler {
                     joined_at: now,
                     nickname: None,
                 },
-            ],
+            ]
+        } else {
+            invitation.members.clone()
+        };
+
+        let group = Group {
+            id: group_id.clone(),
+            name: invitation.group_name.clone(),
+            admin_did: invitation.inviter_did.clone(),
+            members,
             current_key: None, // stored separately in group_keys
             created_at: invitation.timestamp,
             avatar_cid: None,
@@ -721,15 +805,53 @@ impl GroupMessageHandler {
 
     /// Sign a group invitation
     fn sign_invitation(&self, invitation: &GroupInvitation) -> Result<Vec<u8>> {
+        let data = Self::invitation_signable_bytes(invitation);
+        let signature = self.signing_key.sign(&data);
+        Ok(signature.to_bytes().to_vec())
+    }
+
+    /// Verify a group invitation signature against the inviter's Ed25519 key.
+    ///
+    /// Must be called before `accept_invitation` to ensure the invitation is
+    /// authentic and hasn't been tampered with.
+    pub fn verify_invitation_with_key(
+        invitation: &GroupInvitation,
+        inviter_verifying_key: &VerifyingKey,
+    ) -> Result<()> {
+        let data = Self::invitation_signable_bytes(invitation);
+
+        let signature =
+            Signature::from_bytes(invitation.signature.as_slice().try_into().map_err(|_| {
+                Error::InvalidSignature {
+                    message_id: invitation.group_id.clone(),
+                }
+            })?);
+
+        inviter_verifying_key
+            .verify(&data, &signature)
+            .map_err(|_| Error::InvalidSignature {
+                message_id: format!(
+                    "invitation:{}/{}",
+                    invitation.group_id, invitation.inviter_did
+                ),
+            })?;
+
+        Ok(())
+    }
+
+    /// Produce the canonical bytes that are signed/verified for an invitation.
+    fn invitation_signable_bytes(invitation: &GroupInvitation) -> Vec<u8> {
         let mut data = Vec::new();
         data.extend_from_slice(invitation.group_id.as_bytes());
         data.extend_from_slice(invitation.inviter_did.as_bytes());
         data.extend_from_slice(invitation.invitee_did.as_bytes());
         data.extend_from_slice(&invitation.encrypted_group_key);
         data.extend_from_slice(&invitation.timestamp.to_le_bytes());
-
-        let signature = self.signing_key.sign(&data);
-        Ok(signature.to_bytes().to_vec())
+        // Include member DIDs so the member list can't be tampered with
+        for member in &invitation.members {
+            data.extend_from_slice(member.did.as_bytes());
+        }
+        data
     }
 
     /// Infer message type from content
@@ -1112,5 +1234,56 @@ mod tests {
             result.unwrap_err(),
             Error::InvalidSignature { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn test_verify_invitation_signature() {
+        let alice_dir = tempdir().unwrap();
+        let bob_dir = tempdir().unwrap();
+        let alice_storage = Arc::new(LocalMessageStorage::new(alice_dir.path()).unwrap());
+        let bob_storage = Arc::new(LocalMessageStorage::new(bob_dir.path()).unwrap());
+
+        let alice_key = SigningKey::generate(&mut OsRng);
+        let alice_verifying_key = alice_key.verifying_key();
+
+        let alice =
+            GroupMessageHandler::new("did:variance:alice".to_string(), alice_key, alice_storage);
+        let bob = GroupMessageHandler::new(
+            "did:variance:bob".to_string(),
+            SigningKey::generate(&mut OsRng),
+            bob_storage,
+        );
+
+        let (group_id, _) = alice
+            .create_group("Signed Group".to_string(), None)
+            .await
+            .unwrap();
+
+        let invitation = alice
+            .add_member(
+                &group_id,
+                "did:variance:bob".to_string(),
+                bob.x25519_public_key(),
+            )
+            .await
+            .unwrap();
+
+        // Verify with correct key succeeds
+        GroupMessageHandler::verify_invitation_with_key(&invitation, &alice_verifying_key).unwrap();
+
+        // Tampered invitation fails verification
+        let mut tampered = invitation.clone();
+        tampered.group_name = "Tampered Group".to_string();
+        // group_name isn't in signable bytes, so this won't fail — but mutating
+        // a signable field will:
+        tampered.invitee_did = "did:variance:mallory".to_string();
+        let result =
+            GroupMessageHandler::verify_invitation_with_key(&tampered, &alice_verifying_key);
+        assert!(result.is_err());
+
+        // Wrong key fails verification
+        let wrong_key = SigningKey::generate(&mut OsRng).verifying_key();
+        let result = GroupMessageHandler::verify_invitation_with_key(&invitation, &wrong_key);
+        assert!(result.is_err());
     }
 }

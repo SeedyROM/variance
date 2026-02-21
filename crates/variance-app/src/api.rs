@@ -54,6 +54,14 @@ pub fn create_router(state: AppState) -> Router {
         .route("/signaling/answer", post(send_answer))
         .route("/signaling/ice", post(send_ice_candidate))
         .route("/signaling/control", post(send_control))
+        // Group management endpoints
+        .route("/groups", get(list_groups))
+        .route("/groups", post(create_group))
+        .route("/groups/{id}", get(get_group))
+        .route("/groups/{id}/invite", post(invite_to_group))
+        .route("/groups/{id}/members", get(get_group_members))
+        .route("/groups/{id}/leave", post(leave_group))
+        .route("/groups/accept", post(accept_group_invitation))
         // Receipt endpoints
         .route("/receipts/delivered", post(send_delivered_receipt))
         .route("/receipts/read", post(send_read_receipt))
@@ -176,6 +184,7 @@ pub struct DirectMessageResponse {
     pub timestamp: i64,
     pub reply_to: Option<String>,
     pub status: Option<String>, // "sent", "pending", or "failed"
+    pub sender_username: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -186,6 +195,7 @@ pub struct GroupMessageResponse {
     pub text: String,
     pub timestamp: i64,
     pub reply_to: Option<String>,
+    pub sender_username: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -198,6 +208,12 @@ pub struct IdentityStatusResponse {
     pub olm_identity_key: String,
     /// Hex-encoded one-time pre-keys available for Olm session establishment (pick one as recipient_one_time_key)
     pub one_time_keys: Vec<String>,
+    /// Username (if registered)
+    pub username: Option<String>,
+    /// Discriminator (if registered), e.g. 1234 for name#1234
+    pub discriminator: Option<u32>,
+    /// Full display name, e.g. "alice#1234"
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -230,6 +246,58 @@ pub struct RegisterUsernameRequest {
     pub username: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateGroupRequest {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GroupResponse {
+    pub id: String,
+    pub name: String,
+    pub admin_did: String,
+    pub members: Vec<GroupMemberResponse>,
+    pub created_at: i64,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GroupMemberResponse {
+    pub did: String,
+    pub role: String,
+    pub joined_at: i64,
+    pub nickname: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InviteToGroupRequest {
+    pub invitee_did: String,
+    /// Hex-encoded X25519 public key of the invitee
+    pub invitee_x25519_key: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AcceptGroupInvitationRequest {
+    /// The full GroupInvitation as JSON (forwarded from the inviter)
+    pub group_id: String,
+    pub group_name: String,
+    pub inviter_did: String,
+    pub encrypted_group_key: String, // hex-encoded
+    pub timestamp: i64,
+    pub signature: String, // hex-encoded
+    #[serde(default)]
+    pub members: Vec<InvitationMember>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InvitationMember {
+    pub did: String,
+    pub role: i32,
+    pub joined_at: i64,
+    pub nickname: Option<String>,
+}
+
 // ===== Health Check =====
 
 async fn health_check() -> Json<serde_json::Value> {
@@ -251,12 +319,25 @@ async fn get_identity(State(state): State<AppState>) -> Json<IdentityStatusRespo
         .map(|k| hex::encode(k.to_bytes()))
         .collect();
 
+    let (username, discriminator, display_name) =
+        match state.username_registry.get_username(&state.local_did) {
+            Some((name, disc)) => (
+                Some(name.clone()),
+                Some(disc),
+                Some(variance_identity::username::UsernameRegistry::format_username(&name, disc)),
+            ),
+            None => (None, None, None),
+        };
+
     Json(IdentityStatusResponse {
         did: state.local_did.clone(),
         verifying_key: state.verifying_key.clone(),
         created_at: state.created_at.clone(),
         olm_identity_key,
         one_time_keys,
+        username,
+        discriminator,
+        display_name,
     })
 }
 
@@ -296,6 +377,15 @@ async fn register_username(
         },
     )?;
 
+    // Register locally with auto-assigned discriminator
+    let (display_name, discriminator) = state
+        .username_registry
+        .register_local(req.username.clone(), state.local_did.clone())
+        .map_err(|e| Error::App {
+            message: format!("Failed to register username: {}", e),
+        })?;
+
+    // Publish to DHT so other peers can find us
     state
         .node_handle
         .provide_username(&req.username)
@@ -306,6 +396,8 @@ async fn register_username(
 
     Ok(Json(serde_json::json!({
         "username": req.username,
+        "discriminator": discriminator,
+        "display_name": display_name,
         "did": state.local_did,
     })))
 }
@@ -847,6 +939,7 @@ async fn get_direct_messages(
             timestamp: m.timestamp,
             reply_to: m.reply_to.clone(),
             status,
+            sender_username: state.username_registry.get_display_name(&m.sender_did),
         });
     }
 
@@ -867,10 +960,10 @@ async fn get_group_messages(
             message: format!("Failed to get messages: {}", e),
         })?;
 
-    // Decrypt each message
+    // Decrypt each message (uses plaintext cache for previously decrypted messages)
     let mut responses = Vec::new();
     for m in messages {
-        let text = match state.group_messaging.receive_message(m.clone()).await {
+        let text = match state.group_messaging.get_message_content(&m).await {
             Ok(content) => content.text,
             Err(e) => {
                 tracing::warn!("Failed to decrypt group message {}: {}", m.id, e);
@@ -885,10 +978,202 @@ async fn get_group_messages(
             text,
             timestamp: m.timestamp,
             reply_to: m.reply_to.clone(),
+            sender_username: state.username_registry.get_display_name(&m.sender_did),
         });
     }
 
     Ok(Json(responses))
+}
+
+// ===== Group Management Handlers =====
+
+async fn list_groups(State(state): State<AppState>) -> Result<Json<Vec<GroupResponse>>> {
+    let groups = state
+        .group_messaging
+        .list_groups()
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to list groups: {}", e),
+        })?;
+
+    let responses = groups.into_iter().map(group_to_response).collect();
+    Ok(Json(responses))
+}
+
+async fn create_group(
+    State(state): State<AppState>,
+    Json(req): Json<CreateGroupRequest>,
+) -> Result<Json<GroupResponse>> {
+    let (_group_id, group) = state
+        .group_messaging
+        .create_group(req.name, req.description)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to create group: {}", e),
+        })?;
+
+    Ok(Json(group_to_response(group)))
+}
+
+async fn get_group(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<GroupResponse>> {
+    let group = state
+        .group_messaging
+        .get_group(&id)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to get group: {}", e),
+        })?
+        .ok_or_else(|| Error::NotFound {
+            message: format!("Group {} not found", id),
+        })?;
+
+    Ok(Json(group_to_response(group)))
+}
+
+async fn get_group_members(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<GroupMemberResponse>>> {
+    let group = state
+        .group_messaging
+        .get_group(&id)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to get group: {}", e),
+        })?
+        .ok_or_else(|| Error::NotFound {
+            message: format!("Group {} not found", id),
+        })?;
+
+    let members = group.members.into_iter().map(member_to_response).collect();
+    Ok(Json(members))
+}
+
+async fn invite_to_group(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<InviteToGroupRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let key_bytes = hex::decode(&req.invitee_x25519_key).map_err(|_| Error::BadRequest {
+        message: "Invalid hex-encoded X25519 key".to_string(),
+    })?;
+    let x25519_key: [u8; 32] = key_bytes.try_into().map_err(|_| Error::BadRequest {
+        message: "X25519 key must be exactly 32 bytes".to_string(),
+    })?;
+
+    let invitation = state
+        .group_messaging
+        .add_member(&id, req.invitee_did.clone(), x25519_key)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to invite member: {}", e),
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "group_id": invitation.group_id,
+        "invitee_did": invitation.invitee_did,
+        "encrypted_group_key": hex::encode(&invitation.encrypted_group_key),
+        "signature": hex::encode(&invitation.signature),
+        "timestamp": invitation.timestamp,
+        "members_count": invitation.members.len(),
+    })))
+}
+
+async fn leave_group(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    // Remove ourselves from the group by removing our membership
+    // If we're admin, this effectively abandons the group
+    state
+        .group_messaging
+        .remove_member(&id, &state.local_did.clone())
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to leave group: {}", e),
+        })?;
+
+    Ok(Json(serde_json::json!({ "success": true, "group_id": id })))
+}
+
+async fn accept_group_invitation(
+    State(state): State<AppState>,
+    Json(req): Json<AcceptGroupInvitationRequest>,
+) -> Result<Json<serde_json::Value>> {
+    use variance_proto::messaging_proto::{GroupInvitation, GroupMember};
+
+    let encrypted_group_key =
+        hex::decode(&req.encrypted_group_key).map_err(|_| Error::BadRequest {
+            message: "Invalid hex-encoded encrypted_group_key".to_string(),
+        })?;
+    let signature = hex::decode(&req.signature).map_err(|_| Error::BadRequest {
+        message: "Invalid hex-encoded signature".to_string(),
+    })?;
+
+    let members: Vec<GroupMember> = req
+        .members
+        .into_iter()
+        .map(|m| GroupMember {
+            did: m.did,
+            role: m.role,
+            joined_at: m.joined_at,
+            nickname: m.nickname,
+        })
+        .collect();
+
+    let invitation = GroupInvitation {
+        group_id: req.group_id.clone(),
+        group_name: req.group_name,
+        inviter_did: req.inviter_did,
+        invitee_did: state.local_did.clone(),
+        encrypted_group_key,
+        timestamp: req.timestamp,
+        signature,
+        members,
+    };
+
+    state
+        .group_messaging
+        .accept_invitation(invitation)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to accept invitation: {}", e),
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "group_id": req.group_id,
+    })))
+}
+
+fn group_to_response(group: variance_proto::messaging_proto::Group) -> GroupResponse {
+    GroupResponse {
+        id: group.id,
+        name: group.name,
+        admin_did: group.admin_did,
+        members: group.members.into_iter().map(member_to_response).collect(),
+        created_at: group.created_at,
+        description: group.description,
+    }
+}
+
+fn member_to_response(member: variance_proto::messaging_proto::GroupMember) -> GroupMemberResponse {
+    let role = match member.role {
+        1 => "member",
+        2 => "moderator",
+        3 => "admin",
+        _ => "unknown",
+    };
+    GroupMemberResponse {
+        did: member.did,
+        role: role.to_string(),
+        joined_at: member.joined_at,
+        nickname: member.nickname,
+    }
 }
 
 // ===== Call Handlers =====
@@ -1719,5 +2004,178 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn test_list_groups_empty() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/groups")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_create_group() {
+        let app = create_router(test_state());
+
+        let req_body = serde_json::json!({
+            "name": "Test Group",
+            "description": "A test group"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/groups")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["name"], "Test Group");
+        assert_eq!(json["description"], "A test group");
+        assert!(!json["id"].as_str().unwrap().is_empty());
+        assert_eq!(json["admin_did"], "did:variance:test");
+        assert_eq!(json["members"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_create_and_get_group() {
+        let state = test_state();
+        // Create a group via the handler directly
+        let (_, _group) = state
+            .group_messaging
+            .create_group("My Group".to_string(), None)
+            .await
+            .unwrap();
+
+        let app = create_router(state);
+
+        // List groups should now return 1
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/groups")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["name"], "My Group");
+    }
+
+    #[tokio::test]
+    async fn test_get_group_not_found() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/groups/nonexistent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_group_members() {
+        let state = test_state();
+        let (group_id, _) = state
+            .group_messaging
+            .create_group("Members Test".to_string(), None)
+            .await
+            .unwrap();
+
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/groups/{}/members", group_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let members = json.as_array().unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0]["did"], "did:variance:test");
+        assert_eq!(members[0]["role"], "admin");
+    }
+
+    #[tokio::test]
+    async fn test_get_identity_with_username() {
+        let state = test_state();
+        // Register a username
+        state
+            .username_registry
+            .register_local("alice".to_string(), "did:variance:test".to_string())
+            .unwrap();
+
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/identity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["did"], "did:variance:test");
+        assert_eq!(json["username"], "alice");
+        assert!(json["discriminator"].as_u64().is_some());
+        assert!(json["display_name"].as_str().unwrap().starts_with("alice#"));
     }
 }

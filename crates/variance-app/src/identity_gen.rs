@@ -38,6 +38,8 @@ pub fn generate() -> Result<(IdentityFile, String)> {
         signaling_key: hex::encode(signaling_key.to_bytes()),
         olm_account_pickle: serde_json::to_string(&olm_account.pickle())
             .map_err(|e| anyhow::anyhow!("Failed to serialize Olm account: {}", e))?,
+        username: None,
+        discriminator: None,
         created_at: chrono::Utc::now().to_rfc3339(),
     };
 
@@ -69,6 +71,8 @@ pub fn recover(mnemonic_phrase: &str) -> Result<IdentityFile> {
         signaling_key: hex::encode(signaling_key.to_bytes()),
         olm_account_pickle: serde_json::to_string(&olm_account.pickle())
             .map_err(|e| anyhow::anyhow!("Failed to serialize Olm account: {}", e))?,
+        username: None,
+        discriminator: None,
         created_at: chrono::Utc::now().to_rfc3339(),
     })
 }

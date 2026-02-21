@@ -215,10 +215,36 @@ impl MultiLayerCache {
         Ok(())
     }
 
-    /// Evict expired entries from memory caches
+    /// Evict expired entries from all cache layers
     pub fn evict_expired(&self) {
         self.l1.evict_expired();
         self.l2.evict_expired();
+        self.evict_expired_l3();
+    }
+
+    /// Evict expired entries from the disk cache (L3)
+    fn evict_expired_l3(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut to_delete = Vec::new();
+        for (key, value) in self.l3.db.iter().flatten() {
+            if let Ok(disk_entry) = serde_json::from_slice::<DiskEntry>(&value) {
+                if now >= disk_entry.expires_at {
+                    to_delete.push(key);
+                }
+            }
+        }
+
+        if !to_delete.is_empty() {
+            let count = to_delete.len();
+            for key in to_delete {
+                let _ = self.l3.db.remove(key);
+            }
+            tracing::debug!("Evicted {} expired entries from identity L3 cache", count);
+        }
     }
 }
 

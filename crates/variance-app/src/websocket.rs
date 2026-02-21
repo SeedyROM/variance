@@ -77,6 +77,10 @@ pub enum WsMessage {
         call_id: String,
         reason: String,
     },
+    CallStateChanged {
+        call_id: String,
+        status: String,
+    },
 
     // Message events
     DirectMessageReceived {

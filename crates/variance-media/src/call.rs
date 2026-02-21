@@ -1,7 +1,7 @@
 use crate::error::*;
 use dashmap::DashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 use ulid::Ulid;
 use variance_proto::media_proto::{CallState, CallStatus, CallType};
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -12,6 +12,20 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
+
+/// Events emitted by CallManager for state changes and ICE candidates
+#[derive(Debug, Clone)]
+pub enum CallEvent {
+    /// WebRTC connection state changed, call status updated
+    StateChanged { call_id: String, status: CallStatus },
+    /// Local ICE candidate gathered, needs to be sent to remote peer
+    IceCandidateGathered {
+        call_id: String,
+        candidate: String,
+        sdp_mid: Option<String>,
+        sdp_mline_index: Option<u16>,
+    },
+}
 
 /// Call manager
 ///
@@ -33,6 +47,9 @@ pub struct CallManager {
 
     /// STUN/TURN servers for NAT traversal
     ice_servers: Vec<String>,
+
+    /// Broadcast channel for call events (state changes, ICE candidates)
+    event_tx: broadcast::Sender<CallEvent>,
 }
 
 /// Call state
@@ -117,11 +134,14 @@ impl CallManager {
             .with_interceptor_registry(registry)
             .build();
 
+        let (event_tx, _) = broadcast::channel(64);
+
         Ok(Self {
             local_did,
             calls: Arc::new(DashMap::new()),
             webrtc_api,
             ice_servers,
+            event_tx,
         })
     }
 
@@ -287,8 +307,8 @@ impl CallManager {
             call_id: call_id.to_string(),
         })?;
 
-        // Create peer connection
-        let peer_connection = self.create_peer_connection().await?;
+        // Create peer connection with state/ICE handlers wired to this call
+        let peer_connection = self.create_peer_connection(call_id).await?;
 
         // TODO: Add media tracks based on call_type
         // For now, create data channel to trigger offer generation
@@ -330,8 +350,8 @@ impl CallManager {
             call_id: call_id.to_string(),
         })?;
 
-        // Create peer connection
-        let peer_connection = self.create_peer_connection().await?;
+        // Create peer connection with state/ICE handlers wired to this call
+        let peer_connection = self.create_peer_connection(call_id).await?;
 
         // Set remote description from offer
         peer_connection
@@ -436,6 +456,16 @@ impl CallManager {
         self.calls.get(call_id).map(|r| r.clone())
     }
 
+    /// Get the remote peer DID for a call (the participant that isn't us)
+    pub fn get_remote_peer(&self, call_id: &str) -> Option<String> {
+        self.calls.get(call_id).and_then(|call| {
+            call.participants
+                .iter()
+                .find(|p| *p != &self.local_did)
+                .cloned()
+        })
+    }
+
     /// List all active calls
     pub fn list_active_calls(&self) -> Vec<Call> {
         self.calls
@@ -479,10 +509,16 @@ impl CallManager {
         }
     }
 
+    /// Subscribe to call events (state changes, ICE candidates)
+    pub fn subscribe(&self) -> broadcast::Receiver<CallEvent> {
+        self.event_tx.subscribe()
+    }
+
     /// Create a configured WebRTC peer connection
     ///
-    /// Configures STUN/TURN servers and sets up state change handlers.
-    async fn create_peer_connection(&self) -> Result<RTCPeerConnection> {
+    /// Configures STUN/TURN servers and sets up state change + ICE candidate handlers.
+    /// The `call_id` is used to update the correct call state when WebRTC events fire.
+    async fn create_peer_connection(&self, call_id: &str) -> Result<RTCPeerConnection> {
         // Configure ICE servers
         let config = RTCConfiguration {
             ice_servers: self
@@ -506,12 +542,72 @@ impl CallManager {
             })?;
 
         // Set up connection state change handler
+        // Maps RTCPeerConnectionState → CallStatus and updates the call in DashMap
+        let calls = Arc::clone(&self.calls);
+        let event_tx = self.event_tx.clone();
+        let owned_call_id = call_id.to_string();
         peer_connection.on_peer_connection_state_change(Box::new(
             move |state: RTCPeerConnectionState| {
-                tracing::debug!("Peer connection state changed: {:?}", state);
-                Box::pin(async {})
+                let calls = Arc::clone(&calls);
+                let event_tx = event_tx.clone();
+                let call_id = owned_call_id.clone();
+
+                Box::pin(async move {
+                    tracing::debug!(
+                        "Peer connection state changed for call {}: {:?}",
+                        call_id,
+                        state
+                    );
+
+                    let new_status = match state {
+                        RTCPeerConnectionState::Connected => Some(CallStatus::Active),
+                        RTCPeerConnectionState::Failed => Some(CallStatus::Failed),
+                        RTCPeerConnectionState::Disconnected => Some(CallStatus::Failed),
+                        RTCPeerConnectionState::Closed => Some(CallStatus::Ended),
+                        _ => None,
+                    };
+
+                    if let Some(status) = new_status {
+                        if let Some(mut call_ref) = calls.get_mut(&call_id) {
+                            call_ref.status = status;
+
+                            if matches!(status, CallStatus::Failed | CallStatus::Ended) {
+                                call_ref.ended_at = Some(chrono::Utc::now().timestamp_millis());
+                            }
+                        }
+
+                        let _ = event_tx.send(CallEvent::StateChanged { call_id, status });
+                    }
+                })
             },
         ));
+
+        // Set up ICE candidate handler
+        // Sends gathered local candidates via broadcast so they can be relayed to the remote peer
+        let event_tx = self.event_tx.clone();
+        let owned_call_id = call_id.to_string();
+        peer_connection.on_ice_candidate(Box::new(move |candidate| {
+            let event_tx = event_tx.clone();
+            let call_id = owned_call_id.clone();
+
+            Box::pin(async move {
+                if let Some(candidate) = candidate {
+                    let json = candidate.to_json().unwrap_or_default();
+                    tracing::debug!(
+                        "ICE candidate gathered for call {}: {}",
+                        call_id,
+                        json.candidate
+                    );
+
+                    let _ = event_tx.send(CallEvent::IceCandidateGathered {
+                        call_id,
+                        candidate: json.candidate,
+                        sdp_mid: json.sdp_mid,
+                        sdp_mline_index: json.sdp_mline_index,
+                    });
+                }
+            })
+        }));
 
         Ok(peer_connection)
     }
@@ -665,6 +761,25 @@ mod tests {
         let result = manager.accept_call("nonexistent");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::CallNotFound { .. }));
+    }
+
+    #[test]
+    fn test_get_remote_peer() {
+        let manager = create_test_manager("did:variance:alice");
+
+        let call = manager.create_call("did:variance:bob".to_string(), CallType::Audio);
+        assert_eq!(
+            manager.get_remote_peer(&call.id),
+            Some("did:variance:bob".to_string())
+        );
+
+        assert_eq!(manager.get_remote_peer("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_subscribe_returns_receiver() {
+        let manager = create_test_manager("did:variance:alice");
+        let _rx = manager.subscribe();
     }
 
     #[test]
