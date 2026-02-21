@@ -31,6 +31,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/identity", get(get_identity))
         .route("/identity/resolve/{did}", get(resolve_identity))
         .route("/identity/username", post(register_username))
+        .route(
+            "/identity/username/resolve/{username}",
+            get(resolve_username),
+        )
         // Conversation endpoints
         .route("/conversations", get(list_conversations))
         .route("/conversations", post(start_conversation))
@@ -378,6 +382,12 @@ async fn register_username(
     )?;
 
     // Register locally with auto-assigned discriminator
+    // TODO: When changing an existing username, broadcast a rename notification to
+    // connected peers so they can update their cached display names. Without this,
+    // peers who already resolved the old name won't see the change until they
+    // re-resolve via DHT. Needs a custom libp2p protocol message (e.g.
+    // `/variance/identity/rename/1.0.0`) that pushes the new name+discriminator
+    // to all peers we have active sessions with.
     let (display_name, discriminator) = state
         .username_registry
         .register_local(req.username.clone(), state.local_did.clone())
@@ -400,6 +410,64 @@ async fn register_username(
         "display_name": display_name,
         "did": state.local_did,
     })))
+}
+
+/// Resolve a username (with or without discriminator) to a DID.
+///
+/// Accepts formats: `name%230001` (URL-encoded `name#0001`) or just `name`.
+/// If no discriminator is provided and there is exactly one match, returns it.
+async fn resolve_username(
+    State(state): State<AppState>,
+    Path(username): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    use variance_identity::username::UsernameRegistry;
+
+    // Try parsing as name#disc
+    if let Some((name, disc)) = UsernameRegistry::parse_username(&username) {
+        if let Some(did) = state.username_registry.lookup_exact(&name, disc) {
+            return Ok(Json(serde_json::json!({
+                "did": did,
+                "username": name,
+                "discriminator": disc,
+                "display_name": UsernameRegistry::format_username(&name, disc),
+            })));
+        }
+        return Err(Error::NotFound {
+            message: format!("No user found with username {}#{:04}", name, disc),
+        });
+    }
+
+    // No discriminator — look up all matches
+    let matches = state.username_registry.lookup_all(&username);
+    match matches.len() {
+        0 => Err(Error::NotFound {
+            message: format!("No user found with username {}", username),
+        }),
+        1 => {
+            let (disc, did) = &matches[0];
+            Ok(Json(serde_json::json!({
+                "did": did,
+                "username": username,
+                "discriminator": disc,
+                "display_name": UsernameRegistry::format_username(&username, *disc),
+            })))
+        }
+        _ => {
+            // Multiple matches — return list so UI can let user pick
+            let results: Vec<serde_json::Value> = matches
+                .iter()
+                .map(|(disc, did)| {
+                    serde_json::json!({
+                        "did": did,
+                        "username": username,
+                        "discriminator": disc,
+                        "display_name": UsernameRegistry::format_username(&username, *disc),
+                    })
+                })
+                .collect();
+            Ok(Json(serde_json::json!({ "matches": results })))
+        }
+    }
 }
 
 // ===== Conversation Handlers =====

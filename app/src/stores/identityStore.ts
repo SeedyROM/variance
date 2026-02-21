@@ -7,10 +7,15 @@ interface IdentityStore {
   createdAt: string | null;
   identityPath: string | null;
   isOnboarded: boolean;
+  username: string | null;
+  discriminator: number | null;
+  displayName: string | null;
 
   setIdentity: (did: string, verifyingKey: string, createdAt: string) => void;
   setIdentityPath: (path: string) => void;
   setIsOnboarded: (value: boolean) => void;
+  setUsername: (username: string, discriminator: number, displayName: string) => void;
+  clearUsername: () => void;
   reset: () => void;
 }
 
@@ -22,10 +27,16 @@ export const useIdentityStore = create<IdentityStore>()(
       createdAt: null,
       identityPath: null,
       isOnboarded: false,
+      username: null,
+      discriminator: null,
+      displayName: null,
 
       setIdentity: (did, verifyingKey, createdAt) => set({ did, verifyingKey, createdAt }),
       setIdentityPath: (identityPath) => set({ identityPath }),
       setIsOnboarded: (isOnboarded) => set({ isOnboarded }),
+      setUsername: (username, discriminator, displayName) =>
+        set({ username, discriminator, displayName }),
+      clearUsername: () => set({ username: null, discriminator: null, displayName: null }),
       reset: () =>
         set({
           did: null,
@@ -33,6 +44,9 @@ export const useIdentityStore = create<IdentityStore>()(
           createdAt: null,
           identityPath: null,
           isOnboarded: false,
+          username: null,
+          discriminator: null,
+          displayName: null,
         }),
     }),
     { name: "variance-identity" }

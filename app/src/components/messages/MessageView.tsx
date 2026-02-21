@@ -133,6 +133,11 @@ export function MessageView({ peerDid }: MessageViewProps) {
     bottomRef.current?.scrollIntoView();
   }, []);
 
+  // Try to get the peer's username from messages (sender_username on received messages)
+  const peerUsername = sortedMessages.find(
+    (m) => m.sender_did === peerDid && m.sender_username
+  )?.sender_username;
+
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
@@ -140,7 +145,7 @@ export function MessageView({ peerDid }: MessageViewProps) {
         <Avatar did={peerDid} size="md" />
         <div className="cursor-default">
           <p className="text-sm font-semibold text-surface-900 dark:text-surface-50">
-            {peerDid.slice(-16)}
+            {peerUsername ?? peerDid.slice(-16)}
           </p>
           <p className="text-xs text-surface-500 font-mono">{peerDid}</p>
         </div>

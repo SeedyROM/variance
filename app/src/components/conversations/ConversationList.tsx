@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Settings } from "lucide-react";
+import { Plus, Settings, AtSign, Copy, Check } from "lucide-react";
 import { ConversationItem } from "./ConversationItem";
 import { NewConversationModal } from "./NewConversationModal";
+import { ChangeUsernameDialog } from "./ChangeUsernameDialog";
 import { ThemeToggle } from "../ui/ThemeToggle";
 import { ScrollArea } from "../ui/ScrollArea";
 import { Avatar } from "../ui/Avatar";
@@ -13,9 +14,12 @@ import { useIdentityStore } from "../../stores/identityStore";
 export function ConversationList() {
   const [showNew, setShowNew] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showUsernameDialog, setShowUsernameDialog] = useState(false);
+  const [copied, setCopied] = useState(false);
   const activeId = useMessagingStore((s) => s.activeConversationId);
   const setActiveId = useMessagingStore((s) => s.setActiveConversationId);
   const did = useIdentityStore((s) => s.did);
+  const displayName = useIdentityStore((s) => s.displayName);
   const queryClient = useQueryClient();
 
   const { data: conversations = [] } = useQuery({
@@ -79,23 +83,49 @@ export function ConversationList() {
             className="flex items-center gap-2 rounded-lg p-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
           >
             {did && <Avatar did={did} size="sm" />}
-            <Settings className="h-4 w-4 text-surface-500" />
+            {displayName ? (
+              <span className="text-xs font-medium text-surface-700 dark:text-surface-300 max-w-[100px] truncate">
+                {displayName}
+              </span>
+            ) : (
+              <Settings className="h-4 w-4 text-surface-500" />
+            )}
           </button>
 
           <ThemeToggle />
         </div>
 
         {showSettings && did && (
-          <div className="mt-2 rounded-lg bg-surface-100 p-2 dark:bg-surface-800 cursor-default">
-            <p className="mb-1 text-xs text-surface-500">Your DID</p>
-            <p className="break-all font-mono text-xs text-surface-700 dark:text-surface-300">
-              {did}
-            </p>
+          <div className="mt-2 rounded-lg bg-surface-100 p-3 dark:bg-surface-800 cursor-default space-y-2">
+            {displayName && (
+              <div>
+                <p className="text-xs text-surface-500">Username</p>
+                <p className="text-sm font-semibold text-primary-500">{displayName}</p>
+              </div>
+            )}
+            <div>
+              <p className="text-xs text-surface-500">Your DID</p>
+              <p className="break-all font-mono text-xs text-surface-700 dark:text-surface-300">
+                {did}
+              </p>
+            </div>
             <button
-              onClick={() => void navigator.clipboard.writeText(did)}
-              className="mt-1 text-xs text-primary-500 hover:underline"
+              onClick={() => {
+                void navigator.clipboard.writeText(displayName ?? did);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+              }}
+              className="flex items-center gap-1 text-xs text-primary-500 hover:underline"
             >
-              Copy
+              {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+              {copied ? "Copied!" : displayName ? "Copy username" : "Copy DID"}
+            </button>
+            <button
+              onClick={() => setShowUsernameDialog(true)}
+              className="flex items-center gap-1 text-xs text-primary-500 hover:underline"
+            >
+              <AtSign className="h-3 w-3" />
+              {displayName ? "Change username" : "Set username"}
             </button>
           </div>
         )}
@@ -108,6 +138,11 @@ export function ConversationList() {
           setActiveId(id);
           setShowNew(false);
         }}
+      />
+
+      <ChangeUsernameDialog
+        open={showUsernameDialog}
+        onClose={() => setShowUsernameDialog(false)}
       />
     </div>
   );

@@ -3,8 +3,9 @@ import { WelcomeStep } from "./WelcomeStep";
 import { GenerateStep } from "./GenerateStep";
 import { RecoverStep } from "./RecoverStep";
 import { SetupComplete } from "./SetupComplete";
+import { UsernameStep } from "./UsernameStep";
 
-type Step = "welcome" | "generate" | "recover" | "complete";
+type Step = "welcome" | "generate" | "recover" | "complete" | "username";
 
 interface OnboardingShellProps {
   onComplete: () => void;
@@ -40,8 +41,9 @@ export function OnboardingShell({ onComplete }: OnboardingShellProps) {
           <RecoverStep onBack={() => setStep("welcome")} onComplete={handleRecovered} />
         )}
         {step === "complete" && completedDid && (
-          <SetupComplete did={completedDid} onStart={onComplete} />
+          <SetupComplete did={completedDid} onStart={() => setStep("username")} />
         )}
+        {step === "username" && <UsernameStep onComplete={onComplete} />}
       </div>
     </div>
   );

@@ -40,6 +40,7 @@ function LoadingScreen() {
 function MainShell() {
   const activeId = useMessagingStore((s) => s.activeConversationId);
   const setIdentity = useIdentityStore((s) => s.setIdentity);
+  const setUsernameStore = useIdentityStore((s) => s.setUsername);
 
   // Sync identity into store after node starts
   useQuery({
@@ -47,6 +48,9 @@ function MainShell() {
     queryFn: async () => {
       const id = await identityApi.get();
       setIdentity(id.did, id.verifying_key, id.created_at);
+      if (id.username && id.discriminator !== undefined && id.display_name) {
+        setUsernameStore(id.username, id.discriminator, id.display_name);
+      }
       return id;
     },
   });

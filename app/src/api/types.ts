@@ -6,6 +6,9 @@ export interface IdentityStatus {
   created_at: string;
   olm_identity_key: string;
   one_time_keys: string[];
+  username?: string;
+  discriminator?: number;
+  display_name?: string;
 }
 
 export interface ResolvedIdentity {
@@ -45,6 +48,7 @@ export interface DirectMessage {
   timestamp: number;
   reply_to?: string;
   status?: "sent" | "pending" | "failed";
+  sender_username?: string;
 }
 
 export interface GroupMessage {
@@ -54,6 +58,7 @@ export interface GroupMessage {
   text: string;
   timestamp: number;
   reply_to?: string;
+  sender_username?: string;
 }
 
 export interface SendDirectMessageRequest {
@@ -124,4 +129,24 @@ export interface NodeStatus {
   running: boolean;
   local_did: string | null;
   api_port: number | null;
+}
+
+// ===== Username Resolution =====
+
+export interface RegisterUsernameResponse {
+  username: string;
+  discriminator: number;
+  display_name: string;
+  did: string;
+}
+
+export interface ResolvedUsername {
+  did: string;
+  username: string;
+  discriminator: number;
+  display_name: string;
+}
+
+export interface ResolvedUsernameMultiple {
+  matches: ResolvedUsername[];
 }

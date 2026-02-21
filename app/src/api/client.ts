@@ -6,7 +6,10 @@ import type {
   HealthResponse,
   IdentityStatus,
   MessageResponse,
+  RegisterUsernameResponse,
   ResolvedIdentity,
+  ResolvedUsername,
+  ResolvedUsernameMultiple,
   SendDirectMessageRequest,
   StartConversationRequest,
   StartConversationResponse,
@@ -55,6 +58,15 @@ export const identityApi = {
   get: () => request<IdentityStatus>("/identity"),
   resolve: (did: string) =>
     request<ResolvedIdentity>(`/identity/resolve/${encodeURIComponent(did)}`),
+  registerUsername: (username: string) =>
+    request<RegisterUsernameResponse>("/identity/username", {
+      method: "POST",
+      body: JSON.stringify({ username }),
+    }),
+  resolveUsername: (username: string) =>
+    request<ResolvedUsername | ResolvedUsernameMultiple>(
+      `/identity/username/resolve/${encodeURIComponent(username)}`
+    ),
 };
 
 // ===== Conversations =====
