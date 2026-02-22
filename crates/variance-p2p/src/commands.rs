@@ -84,6 +84,13 @@ pub enum NodeCommand {
     /// we don't advertise already-used keys to other peers.
     UpdateOneTimeKeys { one_time_keys: Vec<Vec<u8>> },
 
+    /// Set the local username and discriminator in the identity handler so they
+    /// are included in responses to identity queries about ourselves.
+    SetLocalUsername {
+        username: String,
+        discriminator: u32,
+    },
+
     /// Resolve a peer's DID by broadcasting an identity request to all connected peers.
     ///
     /// Returns the first `IdentityFound` response received, carrying the peer's
@@ -302,6 +309,22 @@ impl NodeHandle {
     pub async fn update_one_time_keys(&self, one_time_keys: Vec<Vec<u8>>) -> Result<()> {
         self.command_tx
             .send(NodeCommand::UpdateOneTimeKeys { one_time_keys })
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to send command to node".to_string(),
+            })
+    }
+
+    /// Set the local username and discriminator in the identity handler.
+    ///
+    /// After this call, identity responses for our own DID will include the
+    /// discriminator so remote peers get the real value instead of a placeholder.
+    pub async fn set_local_username(&self, username: String, discriminator: u32) -> Result<()> {
+        self.command_tx
+            .send(NodeCommand::SetLocalUsername {
+                username,
+                discriminator,
+            })
             .await
             .map_err(|_| crate::error::Error::Protocol {
                 message: "Failed to send command to node".to_string(),

@@ -15,6 +15,10 @@ struct LocalIdentity {
     did: String,
     olm_identity_key: Vec<u8>,
     one_time_keys: Vec<Vec<u8>>,
+    /// Registered username (if any), e.g. "alice"
+    username: Option<String>,
+    /// 4-digit discriminator paired with username, e.g. 42
+    discriminator: Option<u32>,
 }
 
 /// Identity resolution handler
@@ -61,7 +65,18 @@ impl IdentityHandler {
             did,
             olm_identity_key,
             one_time_keys,
+            username: None,
+            discriminator: None,
         });
+    }
+
+    /// Set the local username and discriminator so they are included in identity
+    /// responses. Call after registering or loading a persisted username.
+    pub async fn set_local_username(&self, username: String, discriminator: u32) {
+        if let Some(ref mut local_id) = *self.local_identity.write().await {
+            local_id.username = Some(username);
+            local_id.discriminator = Some(discriminator);
+        }
     }
 
     /// Update just the one-time keys list (called after OTK consumption).
@@ -136,6 +151,7 @@ impl IdentityHandler {
                     did_document: Some(did_doc),
                     olm_identity_key: local_id.olm_identity_key.clone(),
                     one_time_keys: local_id.one_time_keys.clone(),
+                    discriminator: local_id.discriminator,
                     ..Default::default()
                 };
                 return Ok(IdentityResponse {

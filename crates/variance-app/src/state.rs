@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use variance_identity::cache::MultiLayerCache;
 use variance_identity::username::UsernameRegistry;
@@ -90,6 +90,9 @@ pub struct AppState {
 
     /// Multi-layer identity cache (L1 hot → L2 warm → L3 disk)
     pub identity_cache: Arc<MultiLayerCache>,
+
+    /// Path to the identity file (for persisting username changes etc.)
+    pub identity_path: PathBuf,
 }
 
 impl AppState {
@@ -215,6 +218,7 @@ impl AppState {
             event_channels,
             username_registry,
             identity_cache,
+            identity_path: identity_path.to_path_buf(),
         })
     }
 
@@ -267,6 +271,9 @@ impl AppState {
                         // No response channel, nothing to do
                     }
                     variance_p2p::NodeCommand::UpdateOneTimeKeys { .. } => {
+                        // No response channel, nothing to do
+                    }
+                    variance_p2p::NodeCommand::SetLocalUsername { .. } => {
                         // No response channel, nothing to do
                     }
                     variance_p2p::NodeCommand::ResolveIdentityByDid { response_tx, .. } => {
@@ -337,6 +344,7 @@ impl AppState {
                 MultiLayerCache::new(&temp_dir_path.to_string_lossy())
                     .expect("Failed to create test identity cache")
             }),
+            identity_path: PathBuf::from("/tmp/test-identity.json"),
         }
     }
 }

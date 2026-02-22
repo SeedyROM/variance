@@ -73,7 +73,12 @@ impl Node {
         )));
 
         let store = kad::store::MemoryStore::new(peer_id);
-        let kad = kad::Behaviour::with_config(peer_id, store, kad_config);
+        let mut kad = kad::Behaviour::with_config(peer_id, store, kad_config);
+        // libp2p 0.55+ defaults to client mode; nodes must explicitly opt into server mode
+        // so they accept and serve incoming Kademlia requests (provider record queries).
+        // Without this, /ipfs/kad/1.0.0 is rejected and get_providers can never find peers
+        // that registered via start_providing.
+        kad.set_mode(Some(kad::Mode::Server));
 
         // Build GossipSub
         let gossipsub_config = gossipsub::ConfigBuilder::default()
@@ -410,6 +415,15 @@ impl Node {
                     handler.update_one_time_keys(one_time_keys).await;
                 });
             }
+            NodeCommand::SetLocalUsername {
+                username,
+                discriminator,
+            } => {
+                let handler = self.identity_handler.clone();
+                tokio::spawn(async move {
+                    handler.set_local_username(username, discriminator).await;
+                });
+            }
             NodeCommand::ResolveIdentityByDid { did, response_tx } => {
                 // Collect currently connected peers
                 let peers: Vec<PeerId> = self.swarm.connected_peers().cloned().collect();
@@ -730,6 +744,16 @@ impl Node {
                                 "Identity request {:?} to {} failed: {}",
                                 request_id, peer, error
                             );
+                            // Resolve pending point-to-point requests with an error so callers
+                            // don't wait forever when the peer is unreachable.
+                            if let Some(tx) = self.pending_identity_requests.remove(&request_id) {
+                                let _ = tx.send(Err(Error::Protocol {
+                                    message: format!(
+                                        "Identity request to {} failed: {}",
+                                        peer, error
+                                    ),
+                                }));
+                            }
                             // Decrement broadcast counter on outbound failure
                             if let Some(did) = self.pending_resolve_requests.remove(&request_id) {
                                 if let Some((remaining, _)) =

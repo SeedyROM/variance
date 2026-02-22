@@ -246,6 +246,25 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         tracing::warn!("Failed to register local identity with P2P handler: {}", e);
     }
 
+    // If a username was persisted from a previous session, restore it in the P2P
+    // identity handler (so responses include the discriminator) and re-announce
+    // to the DHT so other peers can find us by username after a restart.
+    if let Some((username, disc)) = app_state
+        .username_registry
+        .get_username(&app_state.local_did)
+    {
+        if let Err(e) = app_state
+            .node_handle
+            .set_local_username(username.clone(), disc)
+            .await
+        {
+            tracing::warn!("Failed to set local username in P2P handler: {}", e);
+        }
+        if let Err(e) = app_state.node_handle.provide_username(&username).await {
+            tracing::warn!("Failed to re-publish username to DHT on startup: {}", e);
+        }
+    }
+
     // Spawn a background task to periodically clean up expired offline messages.
     // Without this they accumulate in sled indefinitely (30-day TTL is not self-enforcing).
     let cleanup_storage = app_state.storage.clone();
