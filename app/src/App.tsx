@@ -48,8 +48,11 @@ function MainShell() {
     queryFn: async () => {
       const id = await identityApi.get();
       setIdentity(id.did, id.verifying_key, id.created_at);
-      if (id.username && id.discriminator !== undefined && id.display_name) {
+      if (id.username && id.discriminator != null && id.display_name) {
         setUsernameStore(id.username, id.discriminator, id.display_name);
+      } else {
+        // Clear stale username data from a previous session
+        useIdentityStore.getState().clearUsername();
       }
       return id;
     },

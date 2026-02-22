@@ -49,6 +49,16 @@ export const useIdentityStore = create<IdentityStore>()(
           displayName: null,
         }),
     }),
-    { name: "variance-identity" }
+    {
+      name: "variance-identity",
+      // Only persist onboarding + identity path — NOT username/discriminator.
+      // Username comes from the backend identity file (unique per data dir).
+      // Persisting it here would leak across Tauri instances sharing the same
+      // WebView origin (tauri://localhost).
+      partialize: (state) => ({
+        identityPath: state.identityPath,
+        isOnboarded: state.isOnboarded,
+      }),
+    }
   )
 );

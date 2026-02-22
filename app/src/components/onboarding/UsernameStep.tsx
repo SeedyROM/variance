@@ -20,6 +20,7 @@ export function UsernameStep({ onComplete }: UsernameStepProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const setUsernameStore = useIdentityStore((s) => s.setUsername);
+  const setIsOnboarded = useIdentityStore((s) => s.setIsOnboarded);
 
   const isValid = /^[a-zA-Z][a-zA-Z0-9_-]{2,19}$/.test(username);
 
@@ -29,6 +30,7 @@ export function UsernameStep({ onComplete }: UsernameStepProps) {
     try {
       const result = await identityApi.registerUsername(username);
       setUsernameStore(result.username, result.discriminator, result.display_name);
+      setIsOnboarded(true);
       onComplete();
     } catch (e) {
       setError(String(e));
@@ -84,7 +86,14 @@ export function UsernameStep({ onComplete }: UsernameStepProps) {
       )}
 
       <div className="mt-6 flex gap-3">
-        <Button variant="secondary" className="flex-1" onClick={onComplete}>
+        <Button
+          variant="secondary"
+          className="flex-1"
+          onClick={() => {
+            setIsOnboarded(true);
+            onComplete();
+          }}
+        >
           Skip for now
         </Button>
         <Button className="flex-1" disabled={!isValid} loading={loading} onClick={handleRegister}>

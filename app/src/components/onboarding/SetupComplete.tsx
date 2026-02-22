@@ -16,7 +16,6 @@ export function SetupComplete({ did, onStart }: SetupCompleteProps) {
   const [error, setError] = useState<string | null>(null);
   const setNodeStatus = useAppStore((s) => s.setNodeStatus);
   const setApiPort = useAppStore((s) => s.setApiPort);
-  const setIsOnboarded = useIdentityStore((s) => s.setIsOnboarded);
   const identityPath = useIdentityStore((s) => s.identityPath);
 
   const handleStart = async () => {
@@ -30,7 +29,8 @@ export function SetupComplete({ did, onStart }: SetupCompleteProps) {
       setApiPort(port);
       resetApiBase();
       setNodeStatus("running");
-      setIsOnboarded(true);
+      // Don't mark onboarded yet — the username step (next) does that so it
+      // has a chance to render before App switches away to MainShell.
       onStart();
     } catch (e) {
       setNodeStatus("error");
