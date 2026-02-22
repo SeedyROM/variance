@@ -15,12 +15,15 @@ variance/
 │   ├── variance-p2p/            # libp2p core + protocol handlers
 │   │   ├── behaviour.rs         # NetworkBehaviour composite
 │   │   ├── node.rs              # Swarm management + handler integration
-│   │   ├── events.rs            # Event channel system (NEW)
+│   │   ├── events.rs            # Event channel system
+│   │   ├── commands.rs          # Command interface for swarm control
+│   │   ├── config.rs            # P2P configuration
+│   │   ├── error.rs             # Error types
 │   │   ├── protocols/           # Protocol codecs (libp2p layer)
 │   │   │   ├── identity.rs      # Identity request/response codec
 │   │   │   ├── messaging.rs     # Offline message codec
 │   │   │   └── media.rs         # Signaling codec
-│   │   └── handlers/            # Business logic handlers (NEW)
+│   │   └── handlers/            # Business logic handlers
 │   │       ├── identity.rs      # DID resolution handler
 │   │       ├── offline.rs       # Offline message relay handler
 │   │       └── signaling.rs     # WebRTC signaling handler
@@ -29,7 +32,10 @@ variance/
 │   │   ├── did.rs               # DID generation, IPNS
 │   │   ├── cache.rs             # Multi-layer caching
 │   │   ├── protocol.rs          # Identity request/response
-│   │   └── username.rs          # Registration, lookup
+│   │   ├── username.rs          # Registration, lookup
+│   │   ├── storage.rs           # IPFS/IPNS storage backend
+│   │   ├── config.rs            # Identity configuration
+│   │   └── error.rs             # Error types
 │   │
 │   ├── variance-messaging/      # Chat system
 │   │   ├── direct.rs            # 1-on-1 (Olm Double Ratchet via vodozemac)
@@ -37,11 +43,16 @@ variance/
 │   │   ├── offline.rs           # Relay integration
 │   │   ├── storage.rs           # Local persistence (sled, ULID-sorted)
 │   │   ├── receipts.rs          # Read/delivery receipt tracking
-│   │   └── typing.rs            # Typing indicator broadcasts
+│   │   ├── typing.rs            # Typing indicator broadcasts
+│   │   ├── protocol.rs          # Message protocol types
+│   │   └── error.rs             # Error types
 │   │
 │   ├── variance-media/          # WebRTC
 │   │   ├── signaling.rs         # SDP/ICE exchange via libp2p
-│   │   └── call.rs              # Call state management
+│   │   ├── call.rs              # Call state management
+│   │   ├── protocol.rs          # Media protocol types
+│   │   ├── config.rs            # STUN/TURN configuration
+│   │   └── error.rs             # Error types
 │   │
 │   ├── variance-app/            # Application logic
 │   │   ├── api.rs               # HTTP routes (axum) — all endpoints
@@ -50,26 +61,33 @@ variance/
 │   │   ├── event_router.rs      # Routes P2P events to WebSocket subscribers
 │   │   ├── node.rs              # Node startup and lifecycle
 │   │   ├── identity_gen.rs      # BIP39 mnemonic generation/recovery
-│   │   └── config.rs            # TOML config loading
+│   │   ├── config.rs            # TOML config loading
+│   │   └── error.rs             # Error types
 │   │
-│   └── variance-cli/            # Binary
+│   └── variance-cli/            # Standalone CLI (headless/debugging only)
 │       └── main.rs              # CLI entry point (clap)
 │
-├── app/                         # Tauri desktop application
+├── app/                         # Tauri desktop app (primary runtime)
 │   ├── src/                     # React/TypeScript UI
-│   │   ├── components/onboarding/   # Identity generation & recovery flow
-│   │   ├── components/conversations/ # Conversation list & modals
-│   │   ├── components/messages/      # Message view, bubbles, typing
-│   │   └── api/                     # HTTP client, WebSocket, types
-│   └── src-tauri/               # Tauri host (embeds variance_app in-process)
+│   │   ├── components/
+│   │   │   ├── onboarding/      # Identity generation & recovery flow
+│   │   │   ├── conversations/   # Conversation list, items, modals
+│   │   │   ├── messages/        # Message view, bubbles, typing, input
+│   │   │   └── ui/              # Shared UI primitives (Button, Dialog, etc.)
+│   │   ├── api/                 # HTTP client, WebSocket, types
+│   │   ├── stores/              # Zustand state (app, identity, messaging)
+│   │   ├── hooks/               # React hooks (theme, presence, WebSocket, etc.)
+│   │   └── utils/               # Helpers (cn, time formatting)
+│   └── src-tauri/               # Tauri host (embeds node in-process via FFI, no sidecar)
+│       └── src/                 # Rust: commands, state, lib
 │
 ├── docs/
 │   ├── ARCHITECTURE-CORRECTIONS.md  # Read this first!
 │   ├── QUICK-REFERENCE.md           # This file
 │   ├── PROTOCOL-GUIDE.md            # Protobuf usage
-│   ├── CLI-USAGE.md                 # CLI command reference
-│   └── CHANGELOG.md                 # Implementation progress
+│   └── CLI-USAGE.md                 # CLI command reference
 │
+├── justfile                     # Task runner recipes (test, clippy, dev, etc.)
 └── Cargo.toml                   # Workspace manifest
 ```
 
@@ -78,14 +96,19 @@ variance/
 ```
 variance-cli
     └── variance-app
-            └── variance-p2p (protocols + handlers + events)
-                    ├── variance-identity (business logic)
-                    ├── variance-messaging (business logic)
-                    ├── variance-media (business logic)
-                    └── variance-proto (schemas)
+            ├── variance-p2p (protocols + handlers + events)
+            │       ├── variance-identity (business logic)
+            │       ├── variance-messaging (business logic)
+            │       ├── variance-media (business logic)
+            │       └── variance-proto (schemas)
+            ├── variance-identity (direct access)
+            ├── variance-messaging (direct access)
+            └── variance-media (direct access)
 ```
 
-**Note:** The dependency flow was recently corrected. Business logic crates (`variance-identity`, `variance-messaging`, `variance-media`) no longer depend on `variance-p2p`. Instead, `variance-p2p` depends on them to wire up protocol handlers.
+**Architecture:** The Tauri desktop app (`variance-desktop`) embeds `variance-app` in-process — no sidecar process. The React frontend communicates with the node via Tauri commands (FFI). `variance-cli` is a separate binary for headless operation, debugging, and testing.
+
+**Note:** `variance-p2p` depends on the business logic crates to wire up protocol handlers. `variance-app` also depends on them directly for HTTP API handlers that need business logic access.
 
 ## Key Design Patterns
 

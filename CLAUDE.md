@@ -132,15 +132,23 @@ Auto-generated via `prost-build` in build.rs.
 ```
 crates/
 ├── variance-proto/      # Protobuf schemas (foundation)
-├── variance-p2p/        # libp2p core
+├── variance-p2p/        # libp2p core + protocol handlers
 ├── variance-identity/   # DID & identity (uses IPFS/IPNS)
 ├── variance-messaging/  # Chat (Direct + GossipSub)
 ├── variance-media/      # WebRTC signaling
 ├── variance-app/        # HTTP API & state (axum)
-└── variance-cli/        # Binary entry point
+└── variance-cli/        # Standalone CLI (headless/debugging only)
+app/
+├── src/                 # React/TypeScript UI
+└── src-tauri/           # Tauri desktop host (workspace member: variance-desktop)
 ```
 
-**Dependency flow:** cli → app → (messaging, media, identity) → p2p → proto
+**Primary runtime:** The Tauri desktop app (`variance-desktop`) embeds `variance-app` in-process — no sidecar process. The React frontend communicates with the node via Tauri commands (FFI), which call into the Rust node directly.
+
+**`variance-cli`** exists for headless operation, debugging, and testing (e.g. `identity generate`, running a second node). It is not the normal way users interact with Variance.
+
+**Dependency flow:** cli → app → p2p → (identity, messaging, media) → proto
+*(app also depends directly on identity, messaging, media for business logic access)*
 
 ## Common Patterns
 
@@ -185,6 +193,13 @@ cargo check -p variance-identity
 
 # Run with debug logs
 RUST_LOG=variance=debug cargo run --bin variance -- start
+
+# Use justfile recipes (requires `just`)
+just test        # Run all tests
+just clippy      # Lint
+just dev         # Dev server
+just dev-two     # Two instances for P2P testing
+just tauri-build # Build Tauri desktop app
 ```
 
 ## Key Differences from Go Implementation

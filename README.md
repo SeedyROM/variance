@@ -22,10 +22,10 @@ variance/
 │   ├── variance-messaging/  # Chat and messaging
 │   ├── variance-media/      # WebRTC media handling
 │   ├── variance-app/        # Application logic & HTTP API
-│   └── variance-cli/        # CLI binary
+│   └── variance-cli/        # Standalone CLI (headless/debugging only)
 ├── app/                     # Tauri desktop application (React/TypeScript)
 │   ├── src/                 # UI components (onboarding, conversations, messages)
-│   └── src-tauri/          # Tauri host (embeds variance_app in-process, manages state)
+│   └── src-tauri/          # Tauri host (embeds variance_app in-process via FFI)
 ├── docs/                    # Architecture documentation
 └── Cargo.toml              # Workspace manifest
 ```
@@ -39,8 +39,11 @@ variance/
 | `variance-identity` | DID & identity logic | variance-proto, ed25519-dalek |
 | `variance-messaging` | Messaging logic | variance-proto, variance-identity, ulid |
 | `variance-media` | WebRTC signaling logic | variance-proto, ed25519-dalek |
-| `variance-app` | HTTP API & state | axum, variance-p2p |
-| `variance-cli` | CLI entry point | variance-app, clap |
+| `variance-app` | HTTP API & state | axum, variance-p2p, variance-{identity,messaging,media} |
+| `variance-cli` | Standalone CLI (headless/debugging) | variance-app, clap |
+| `variance-desktop` | Tauri desktop host (primary runtime) | tauri, variance-app |
+
+**Architecture note:** The Tauri desktop app embeds `variance-app` in-process — there is no sidecar. The React frontend talks to the Rust node directly via Tauri commands (FFI). `variance-cli` exists for headless operation, debugging, and testing only.
 
 **Note:** As of 2026-02-15, the dependency flow was corrected. `variance-p2p` now depends on the business logic crates (not vice versa) to wire up protocol handlers.
 
@@ -55,6 +58,9 @@ variance/
 - **Errors**: snafu
 - **Crypto**: ed25519-dalek, vodozemac 0.9 (Olm/Double Ratchet for DMs), AES-256-GCM (group messages)
 - **Storage**: sled (embedded KV store)
+- **Desktop**: Tauri 2.x (React/TypeScript frontend)
+- **Identity**: BIP39 (mnemonic recovery), IPFS/IPNS (storage)
+- **IDs**: ULID (messages, calls), chrono (timestamps)
 
 ## Getting Started
 
@@ -88,7 +94,7 @@ choco install protoc
 cargo build
 
 # Build specific crate
-cargo build -p variance-cli
+cargo build -p variance-app
 
 # Build release
 cargo build --release
@@ -96,48 +102,43 @@ cargo build --release
 
 ### Run
 
+The primary way to use Variance is through the **Tauri desktop app**, which embeds the node in-process.
+
+Using the justfile (recommended):
 ```bash
-# Generate an identity first (saves to .variance/identity.json)
-# ⚠️ IMPORTANT: Write down the 12-word recovery phrase shown!
+just dev          # Run the desktop app in dev mode
+just tauri-build  # Build a release bundle
+just frontend-dev # Run just the frontend (no Tauri/node)
+just dev-two      # Run two instances for P2P testing
+```
+
+Or directly via pnpm in the `app/` directory:
+```bash
+cd app
+pnpm install      # First time only
+pnpm run tauri:dev   # Dev mode with hot reload
+pnpm run tauri:build # Release bundle
+pnpm run dev         # Frontend only (Vite dev server, no Tauri)
+```
+
+The desktop app handles identity generation, configuration, and node startup automatically through its onboarding flow.
+
+### CLI (Debugging & Testing Only)
+
+The `variance` CLI exists for headless operation, debugging, and testing (e.g. generating identities without the UI, running a second node for P2P testing):
+
+```bash
+# Generate an identity
 cargo run --bin variance -- identity generate
 
-# Initialize configuration (optional)
-cargo run --bin variance -- config init
-
-# Start the node (automatically loads identity from .variance/identity.json)
+# Start a headless node
 cargo run --bin variance -- start
+
+# Show identity info
+cargo run --bin variance -- identity show
 ```
 
-**Recovery:** If you lose your identity file, you can recover it using:
-```bash
-cargo run --bin variance -- identity recover
-```
-
-For detailed CLI usage, see [docs/CLI-USAGE.md](docs/CLI-USAGE.md).
-
-## CLI Commands
-
-The `variance` CLI provides three main command groups:
-
-### Identity Management
-```bash
-variance identity generate  # Create new DID with 12-word recovery phrase
-variance identity recover   # Recover identity from recovery phrase
-variance identity show      # Display identity information
-```
-
-### Configuration Management
-```bash
-variance config init  # Create default configuration file
-variance config show  # Display current configuration
-```
-
-### Node Operations
-```bash
-variance start  # Start the node (auto-loads identity from .variance/identity.json)
-```
-
-**See [docs/CLI-USAGE.md](docs/CLI-USAGE.md) for complete command reference, options, and examples.**
+See [docs/CLI-USAGE.md](docs/CLI-USAGE.md) for the full command reference.
 
 ## Development
 
@@ -223,16 +224,17 @@ cargo build -p variance-proto
 
 ### Logging
 
-Set log level via `RUST_LOG`:
-```bash
-# Info level (default)
-RUST_LOG=variance=info cargo run --bin variance -- start
+`RUST_LOG` controls log verbosity for both the desktop app and the CLI — the node is the same code either way:
 
-# Debug level
+```bash
+# Desktop app
+RUST_LOG=variance=debug just dev
+
+# CLI (headless)
 RUST_LOG=variance=debug cargo run --bin variance -- start
 
-# Trace level with libp2p debug
-RUST_LOG=variance=trace,libp2p=debug cargo run --bin variance -- start
+# Trace level with libp2p internals
+RUST_LOG=variance=trace,libp2p=debug just dev
 ```
 
 ## Key Design Decisions
@@ -252,26 +254,8 @@ See [docs/ARCHITECTURE-CORRECTIONS.md](docs/ARCHITECTURE-CORRECTIONS.md) for the
 - [ARCHITECTURE-CORRECTIONS.md](docs/ARCHITECTURE-CORRECTIONS.md) - **Read this first!** Explains why the Go design was wrong and how we fix it
 - [variance-go](https://github.com/SeedyROM/variance-go) - Original broken implementation (for reference)
 
-### Usage
-- [CLI-USAGE.md](docs/CLI-USAGE.md) - Complete command-line interface reference
-
-## Project Status
-
-**Phase**: Core Protocol Implementation
-
-**Recently Completed (2026-02-20):**
-- ✅ Real-time message delivery fixed — WebSocket inbound tick + `IntersectionObserver`-based infinite scroll
-- ✅ Cursor-based message pagination — reverse storage scan (newest-first), `?before=<ts>` API param, scroll-to-top loads older pages
-- ✅ TOCTOU session init race fixed — `session_init_lock: Mutex<()>` in `DirectMessageHandler` serializes concurrent session creation
-- ✅ Conversation switching — `key={activePeerDid}` forces component remount; `refetchOnMount: "always"` ensures fresh fetch
-- ✅ Large enum variants boxed — `Box<IdentityRequest>`, `Box<IdentityResponse>`, `Box<DirectMessage>` in P2P event types
-
-**Previously Completed (2026-02-17):**
-- ✅ vodozemac 0.9 migration (replaces unmaintained double-ratchet-2)
-- ✅ Complete messaging stack: receipts, typing indicators, message storage
-- ✅ Full HTTP REST API (identity, messages, calls, signaling, receipts, typing)
-- ✅ WebSocket event delivery for Tauri frontend
-- ✅ 232 tests passing across all crates
+### Usage as standalone node (debugging/testing only)
+- [CLI-USAGE.md](docs/CLI-USAGE.md) - CLI reference (debugging/testing only)
 
 ### Implementation Checklist
 
@@ -309,7 +293,7 @@ See [docs/ARCHITECTURE-CORRECTIONS.md](docs/ARCHITECTURE-CORRECTIONS.md) for the
 
 **Application Layer:**
 - [x] HTTP API framework (axum)
-- [x] Complete REST API endpoints (identity, messages, calls, signaling, receipts, typing)
+- [x] Complete REST API endpoints (identity, messages, groups, calls, signaling, receipts, typing, presence)
 - [x] Cursor-based message pagination (`?before=<ts>`, newest-first storage scan)
 - [x] WebSocket event delivery for Tauri frontend
 - [x] Real-time message delivery (inbound tick → component `refetch()`)
@@ -317,12 +301,14 @@ See [docs/ARCHITECTURE-CORRECTIONS.md](docs/ARCHITECTURE-CORRECTIONS.md) for the
 - [x] CLI with identity management
 - [x] Tauri desktop app (onboarding, identity generation/recovery, conversations, messages UI)
 - [x] Infinite scroll (scroll-to-top loads older message pages via `IntersectionObserver`)
+- [x] Group management API (create, invite, join, leave, list members)
+- [x] Presence status endpoint
+- [x] Username resolution endpoint
 
 **Testing & Documentation:**
 - [x] Unit tests for all handlers
 - [x] Integration tests for protocol flows
 - [x] Architecture documentation
-- [x] CHANGELOG tracking progress
 
 ### Next Priorities
 
@@ -344,7 +330,6 @@ Key areas for future work:
 - WebRTC peer connection and STUN/TURN
 - Relay node selection and failover
 - Mobile support (iOS/Android)
-- Browser extension
 
 ---
 

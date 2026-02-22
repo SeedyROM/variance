@@ -1,6 +1,6 @@
 # Variance CLI Usage Guide
 
-Quick reference for using the `variance` command-line tool.
+#### *This is only used for debugging/testing purposes. The primary user interface is the Tauri desktop app which embeds the [`variance-app`](../crates/variance-app) internally.*
 
 ## Installation
 

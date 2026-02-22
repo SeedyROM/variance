@@ -46,11 +46,6 @@ This Rust implementation corrects critical architectural flaws from the Go desig
    - How data flows between components
    - IPC between Tauri app and P2P backend
 
-4. **[CHANGELOG.md](./CHANGELOG.md)** 🆕
-   - Recent implementation progress
-   - Protocol handlers & event system (2026-02-15)
-   - Breaking changes and migration guides
-
 ## Original Go Docs (Reference Only)
 
 See [variance-go](https://github.com/SeedyROM/variance-go) for the original design:
