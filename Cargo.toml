@@ -70,6 +70,8 @@ hex = "0.4"
 bip39 = "2.1"
 
 # Storage
+# TODO: migrate from sled (unmaintained) to fjall when stabilizing
+# https://github.com/fjall-rs/fjall
 sled = "0.34"
 
 # Utilities
