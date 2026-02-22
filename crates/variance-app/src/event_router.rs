@@ -6,6 +6,7 @@
 use crate::websocket::{WebSocketManager, WsMessage};
 use std::sync::Arc;
 use tracing::{debug, warn};
+use variance_identity::username::UsernameRegistry;
 use variance_media::{CallManager, SignalingHandler};
 use variance_messaging::{direct::DirectMessageHandler, group::GroupMessageHandler};
 use variance_p2p::{EventChannels, IdentityEvent, NodeHandle, OfflineMessageEvent, SignalingEvent};
@@ -18,6 +19,7 @@ pub struct EventRouter {
     call_manager: Arc<CallManager>,
     signaling: Arc<SignalingHandler>,
     node_handle: NodeHandle,
+    username_registry: Arc<UsernameRegistry>,
 }
 
 impl EventRouter {
@@ -28,6 +30,7 @@ impl EventRouter {
         call_manager: Arc<CallManager>,
         signaling: Arc<SignalingHandler>,
         node_handle: NodeHandle,
+        username_registry: Arc<UsernameRegistry>,
     ) -> Self {
         Self {
             ws_manager,
@@ -36,6 +39,7 @@ impl EventRouter {
             call_manager,
             signaling,
             node_handle,
+            username_registry,
         }
     }
 
@@ -316,6 +320,7 @@ impl EventRouter {
         let ws_manager = self.ws_manager;
         let direct_messaging = self.direct_messaging;
         let node_handle = self.node_handle;
+        let username_registry = self.username_registry;
         tokio::spawn(async move {
             let mut rx = events.subscribe_identity();
             debug!("EventRouter: Started identity event listener");
@@ -324,14 +329,50 @@ impl EventRouter {
                 debug!("EventRouter: Received identity event: {:?}", event);
 
                 match event {
+                    // When we receive a full identity response, extract and cache
+                    // the peer's username so it's available for conversation lists.
+                    IdentityEvent::ResponseReceived { response, .. } => {
+                        if let Some(
+                            variance_proto::identity_proto::identity_response::Result::Found(
+                                ref found,
+                            ),
+                        ) = response.result
+                        {
+                            if let Some(ref doc) = found.did_document {
+                                if let Some(ref display_name) = doc.display_name {
+                                    // Parse "name#0042" → ("name", 42)
+                                    if let Some((name, disc_str)) = display_name.rsplit_once('#') {
+                                        if let Ok(disc) = disc_str.parse::<u32>() {
+                                            debug!(
+                                                "EventRouter: Caching username {} for {}",
+                                                display_name, doc.id
+                                            );
+                                            username_registry.cache_mapping(
+                                                name.to_string(),
+                                                disc,
+                                                doc.id.clone(),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     IdentityEvent::PeerOffline { did } => {
-                        ws_manager.broadcast(WsMessage::PresenceUpdated { did, online: false });
+                        let display_name = username_registry.get_display_name(&did);
+                        ws_manager.broadcast(WsMessage::PresenceUpdated {
+                            did,
+                            online: false,
+                            display_name,
+                        });
                     }
                     IdentityEvent::DidCached { did } => {
-                        // Broadcast presence update
+                        // Broadcast presence update (include cached display_name if available)
+                        let display_name = username_registry.get_display_name(&did);
                         let msg = WsMessage::PresenceUpdated {
                             did: did.clone(),
                             online: true,
+                            display_name,
                         };
                         ws_manager.broadcast(msg);
 
@@ -409,6 +450,7 @@ mod tests {
             state.calls.clone(),
             state.signaling.clone(),
             state.node_handle.clone(),
+            state.username_registry.clone(),
         )
     }
 
@@ -459,6 +501,7 @@ mod tests {
             state.calls.clone(),
             state.signaling.clone(),
             state.node_handle.clone(),
+            state.username_registry.clone(),
         );
         let events = EventChannels::default();
 

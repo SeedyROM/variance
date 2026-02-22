@@ -55,7 +55,13 @@ export class VarianceWebSocket {
 
     ws.onmessage = (e) => {
       try {
-        const event = JSON.parse(e.data as string) as WsEvent;
+        const raw = JSON.parse(e.data as string) as {
+          type: string;
+          data?: Record<string, unknown>;
+        };
+        // Backend uses serde adjacently-tagged enums: { "type": "...", "data": { ... } }
+        // Flatten into { type, ...data } so the rest of the app can access fields directly.
+        const event = { type: raw.type, ...(raw.data ?? {}) } as WsEvent;
         this.handlers.forEach((h) => h(event));
       } catch {
         // Ignore malformed messages

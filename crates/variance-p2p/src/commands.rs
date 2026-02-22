@@ -99,6 +99,14 @@ pub enum NodeCommand {
         did: String,
         response_tx: oneshot::Sender<Result<IdentityFound>>,
     },
+
+    /// Return the list of DIDs for all currently connected peers.
+    ///
+    /// Used by the app layer to provide accurate initial presence state
+    /// when a WebSocket client connects or to serve presence polling.
+    GetConnectedDids {
+        response_tx: oneshot::Sender<Vec<String>>,
+    },
 }
 
 /// Construct the DHT record key for a username, e.g. "alice#0001".
@@ -351,6 +359,26 @@ impl NodeHandle {
             .map_err(|_| crate::error::Error::Protocol {
                 message: "Failed to receive response from node".to_string(),
             })?
+    }
+
+    /// Get the list of DIDs for all currently connected peers.
+    ///
+    /// Returns the DIDs tracked in the node's `did_to_peer` map.
+    pub async fn get_connected_dids(&self) -> Result<Vec<String>> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(NodeCommand::GetConnectedDids { response_tx })
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to send command to node".to_string(),
+            })?;
+
+        response_rx
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to receive response from node".to_string(),
+            })
     }
 
     /// Find peers that provide the given username

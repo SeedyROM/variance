@@ -4,6 +4,7 @@ import { OnboardingShell } from "./components/onboarding/OnboardingShell";
 import { ConversationList } from "./components/conversations/ConversationList";
 import { MessageView } from "./components/messages/MessageView";
 import { useWebSocket } from "./hooks/useWebSocket";
+import { usePresencePolling } from "./hooks/usePresencePolling";
 import { useNodeReady } from "./hooks/useNodeReady";
 import { useIdentityStore } from "./stores/identityStore";
 import { useAppStore } from "./stores/appStore";
@@ -60,6 +61,9 @@ function MainShell() {
 
   // Wire up WebSocket
   useWebSocket();
+
+  // Poll presence as a fallback (WS events are primary)
+  usePresencePolling();
 
   // Fetch conversations
   const { data: conversations = [] } = useQuery({

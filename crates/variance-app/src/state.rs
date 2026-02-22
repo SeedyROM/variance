@@ -287,6 +287,9 @@ impl AppState {
                                 one_time_keys: vec![],
                             }));
                     }
+                    variance_p2p::NodeCommand::GetConnectedDids { response_tx } => {
+                        let _ = response_tx.send(vec![]);
+                    }
                 }
             }
         });

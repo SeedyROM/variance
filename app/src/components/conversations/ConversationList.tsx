@@ -84,7 +84,7 @@ export function ConversationList() {
           >
             {did && <Avatar did={did} size="sm" />}
             {displayName ? (
-              <span className="text-xs font-medium text-surface-700 dark:text-surface-300 max-w-[100px] truncate">
+              <span className="text-xs font-medium text-surface-700 dark:text-surface-300 max-w-25 truncate">
                 {displayName}
               </span>
             ) : (

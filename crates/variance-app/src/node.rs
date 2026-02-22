@@ -298,6 +298,7 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         app_state.calls.clone(),
         app_state.signaling.clone(),
         app_state.node_handle.clone(),
+        app_state.username_registry.clone(),
     );
     event_router.start((*event_channels).clone());
     tracing::debug!("EventRouter started");

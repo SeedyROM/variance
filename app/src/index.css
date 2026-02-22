@@ -50,3 +50,14 @@ html[data-theme="dark"] {
   background-color: oklch(0.7 0 0 / 0.4);
   border-radius: 3px;
 }
+
+/* Tooltip animation — only animate opacity to avoid conflicting with
+   the positioning transform (e.g. translateY(-50%)) set via inline style. */
+@keyframes tooltip-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

@@ -134,7 +134,12 @@ impl IdentityHandler {
             if local_id.did == did {
                 debug!("Responding to self-DID query with Olm keys");
 
-                // Create minimal DID document with just the DID identifier
+                // Build display_name from registered username+discriminator (e.g. "alice#0042")
+                let display_name = match (&local_id.username, local_id.discriminator) {
+                    (Some(name), Some(disc)) => Some(format!("{}#{:04}", name, disc)),
+                    _ => None,
+                };
+
                 let did_doc = variance_proto::identity_proto::DidDocument {
                     id: local_id.did.clone(),
                     authentication: vec![],
@@ -142,7 +147,7 @@ impl IdentityHandler {
                     service: vec![],
                     created_at: 0,
                     updated_at: 0,
-                    display_name: None,
+                    display_name,
                     avatar_cid: None,
                     bio: None,
                 };

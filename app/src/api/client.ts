@@ -115,3 +115,10 @@ export const typingApi = {
 
   get: (recipient: string) => request<TypingUsers>(`/typing/${encodeURIComponent(recipient)}`),
 };
+
+// ===== Presence =====
+
+export const presenceApi = {
+  /** Get the list of currently connected peer DIDs. */
+  get: () => request<{ online: string[] }>("/presence"),
+};

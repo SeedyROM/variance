@@ -24,6 +24,7 @@ export interface Conversation {
   id: string;
   peer_did: string;
   last_message_timestamp: number;
+  peer_username?: string;
 }
 
 export interface StartConversationRequest {
@@ -116,7 +117,8 @@ export type WsEvent =
   | { type: "ReceiptDelivered"; message_id: string }
   | { type: "ReceiptRead"; message_id: string }
   | { type: "CallIncoming"; call_id: string; from: string; call_type: string }
-  | { type: "CallEnded"; call_id: string };
+  | { type: "CallEnded"; call_id: string }
+  | { type: "PresenceUpdated"; did: string; online: boolean; display_name?: string };
 
 // ===== Tauri Commands =====
 

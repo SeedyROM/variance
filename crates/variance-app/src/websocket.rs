@@ -111,6 +111,8 @@ pub enum WsMessage {
     PresenceUpdated {
         did: String,
         online: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        display_name: Option<String>,
     },
 
     // Connection management
@@ -221,9 +223,11 @@ async fn handle_client_message(client_id: &str, msg: ClientMessage, state: &AppS
                 debug!("Client {} authenticated as {}", client_id, did);
 
                 // Send confirmation
-                let _ = client
-                    .tx
-                    .send(WsMessage::PresenceUpdated { did, online: true });
+                let _ = client.tx.send(WsMessage::PresenceUpdated {
+                    did,
+                    online: true,
+                    display_name: None,
+                });
             }
         }
         ClientMessage::Subscribe {
@@ -391,6 +395,26 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     };
     if let Ok(json) = serde_json::to_string(&welcome) {
         let _ = sender.send(Message::Text(json.into())).await;
+    }
+
+    // Send current presence state for all known connected peers so the client
+    // doesn't start with everyone showing as offline.
+    if let Ok(connected_dids) = state.node_handle.get_connected_dids().await {
+        for did in connected_dids {
+            let display_name = state.username_registry.get_display_name(&did);
+            let msg = WsMessage::PresenceUpdated {
+                did,
+                online: true,
+                display_name,
+            };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                if sender.send(Message::Text(json.into())).await.is_err() {
+                    debug!("Client disconnected during initial presence sync");
+                    state.ws_manager.unregister(&client_id);
+                    return;
+                }
+            }
+        }
     }
 
     // Spawn task to forward messages to WebSocket
@@ -567,7 +591,7 @@ mod tests {
 
         // Check confirmation was sent
         match rx.try_recv() {
-            Ok(WsMessage::PresenceUpdated { did, online }) => {
+            Ok(WsMessage::PresenceUpdated { did, online, .. }) => {
                 assert_eq!(did, "did:variance:alice");
                 assert!(online);
             }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Avatar } from "../ui/Avatar";
 import { ScrollArea } from "../ui/ScrollArea";
+import { StatusDot, StatusLabel } from "../ui/StatusIndicator";
 import { MessageBubble } from "./MessageBubble";
 import { MessageInput } from "./MessageInput";
 import { TypingIndicator } from "./TypingIndicator";
@@ -133,21 +134,30 @@ export function MessageView({ peerDid }: MessageViewProps) {
     bottomRef.current?.scrollIntoView();
   }, []);
 
-  // Try to get the peer's username from messages (sender_username on received messages)
-  const peerUsername = sortedMessages.find(
+  // Try to get the peer's display name: WS-cached name → message sender_username → truncated DID
+  const peerNames = useMessagingStore((s) => s.peerNames);
+  const messageUsername = sortedMessages.find(
     (m) => m.sender_did === peerDid && m.sender_username
   )?.sender_username;
+  const peerUsername = peerNames.get(peerDid) ?? messageUsername;
+
+  const presenceMap = useMessagingStore((s) => s.presenceMap);
+  const isOnline = presenceMap.get(peerDid) ?? false;
 
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="flex items-center gap-3 border-b border-surface-200 px-4 py-3 dark:border-surface-800">
         <Avatar did={peerDid} size="md" />
-        <div className="cursor-default">
-          <p className="text-sm font-semibold text-surface-900 dark:text-surface-50">
-            {peerUsername ?? peerDid.slice(-16)}
-          </p>
-          <p className="text-xs text-surface-500 font-mono">{peerDid}</p>
+        <div className="cursor-default min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-semibold text-surface-900 dark:text-surface-50 truncate">
+              {peerUsername ?? peerDid.slice(-16)}
+            </p>
+            <StatusDot online={isOnline} />
+            <StatusLabel online={isOnline} />
+          </div>
+          <p className="text-xs text-surface-500 font-mono truncate">{peerDid}</p>
         </div>
       </div>
 

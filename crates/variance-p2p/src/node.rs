@@ -490,6 +490,11 @@ impl Node {
                     }));
                 }
             }
+            NodeCommand::GetConnectedDids { response_tx } => {
+                let did_to_peer = self.did_to_peer.read().await;
+                let dids: Vec<String> = did_to_peer.keys().cloned().collect();
+                let _ = response_tx.send(dids);
+            }
         }
     }
 

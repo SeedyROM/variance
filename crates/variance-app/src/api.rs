@@ -8,6 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::trace::TraceLayer;
 use variance_media::Call;
 use variance_messaging::storage::MessageStorage;
 use variance_p2p::events::{DirectMessageEvent, GroupMessageEvent};
@@ -74,7 +75,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/typing/start", post(start_typing))
         .route("/typing/stop", post(stop_typing))
         .route("/typing/{recipient}", get(get_typing_users))
+        // Presence endpoint
+        .route("/presence", get(get_presence))
         .layer(cors)
+        .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
 
@@ -225,6 +229,7 @@ pub struct ConversationResponse {
     pub id: String,
     pub peer_did: String,
     pub last_message_timestamp: i64,
+    pub peer_username: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -608,10 +613,12 @@ async fn list_conversations(
         .into_iter()
         .map(|(peer_did, last_message_timestamp)| {
             let id = conversation_id(&state.local_did, &peer_did);
+            let peer_username = state.username_registry.get_display_name(&peer_did);
             ConversationResponse {
                 id,
                 peer_did,
                 last_message_timestamp,
+                peer_username,
             }
         })
         .collect();
@@ -623,6 +630,72 @@ async fn start_conversation(
     State(state): State<AppState>,
     Json(req): Json<StartConversationRequest>,
 ) -> Result<Json<StartConversationResponse>> {
+    // If a conversation already exists (we have messages with this peer),
+    // skip Olm session setup entirely — just send via the existing session.
+    // Re-establishing a session when one exists can overwrite the old one,
+    // making the peer unable to decrypt prior messages.
+    let existing = state
+        .storage
+        .list_direct_conversations(&state.local_did)
+        .await
+        .unwrap_or_default();
+    let conversation_exists = existing.iter().any(|(did, _)| did == &req.recipient_did);
+
+    if conversation_exists && state.direct_messaging.has_session(&req.recipient_did).await {
+        tracing::debug!(
+            "Conversation with {} already exists, sending via existing session",
+            req.recipient_did
+        );
+
+        let content = variance_proto::messaging_proto::MessageContent {
+            text: req.text,
+            attachments: vec![],
+            mentions: vec![],
+            reply_to: None,
+            metadata: Default::default(),
+        };
+
+        let message = state
+            .direct_messaging
+            .send_message(req.recipient_did.clone(), content)
+            .await
+            .map_err(|e| Error::App {
+                message: format!("Failed to send message: {}", e),
+            })?;
+
+        // Transmit over P2P (queue if peer offline)
+        if let Err(e) = state
+            .node_handle
+            .send_direct_message(req.recipient_did.clone(), message.clone())
+            .await
+        {
+            let err_msg = e.to_string();
+            if err_msg.contains("Unknown peer DID") {
+                tracing::debug!(
+                    "Peer {} is offline, queuing message for later delivery",
+                    req.recipient_did
+                );
+                let _ = state
+                    .direct_messaging
+                    .queue_pending_message(&req.recipient_did, message.clone())
+                    .await;
+            }
+        }
+
+        if let Some(ref channels) = state.event_channels {
+            channels.send_direct_message(variance_p2p::events::DirectMessageEvent::MessageSent {
+                message_id: message.id.clone(),
+                recipient: req.recipient_did.clone(),
+            });
+        }
+
+        let conversation_id = conversation_id(&state.local_did, &req.recipient_did);
+        return Ok(Json(StartConversationResponse {
+            conversation_id,
+            message_id: message.id,
+        }));
+    }
+
     // Skip Olm session setup for self-messaging (messages to yourself are unencrypted)
     let is_self_message = req.recipient_did == state.local_did;
 
@@ -1699,6 +1772,28 @@ async fn get_typing_users(
     };
 
     Json(TypingUsersResponse { users })
+}
+
+// ===== Presence =====
+
+/// Response for the /presence endpoint
+#[derive(Debug, Serialize)]
+struct PresenceResponse {
+    /// DIDs of all currently connected peers
+    online: Vec<String>,
+}
+
+/// Returns the list of peer DIDs that are currently connected via P2P.
+async fn get_presence(State(state): State<AppState>) -> Result<Json<PresenceResponse>> {
+    let online = state
+        .node_handle
+        .get_connected_dids()
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to get connected peers: {}", e),
+        })?;
+
+    Ok(Json(PresenceResponse { online }))
 }
 
 // ===== Helper Functions =====

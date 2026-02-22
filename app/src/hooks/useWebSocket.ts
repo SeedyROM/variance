@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAppStore } from "../stores/appStore";
+import { useIdentityStore } from "../stores/identityStore";
 import { useMessagingStore } from "../stores/messagingStore";
 import { variantWs } from "../api/websocket";
 import type { WsEvent } from "../api/types";
@@ -15,8 +16,13 @@ import type { WsEvent } from "../api/types";
  */
 export function useWebSocket() {
   const nodeStatus = useAppStore((s) => s.nodeStatus);
+  const localDid = useIdentityStore((s) => s.did);
   const queryClient = useQueryClient();
   const tickInboundMessage = useMessagingStore((s) => s.tickInboundMessage);
+  const setPresence = useMessagingStore((s) => s.setPresence);
+  const setPeerName = useMessagingStore((s) => s.setPeerName);
+  const markUnread = useMessagingStore((s) => s.markUnread);
+  const activeConversationId = useMessagingStore((s) => s.activeConversationId);
 
   useEffect(() => {
     if (nodeStatus !== "running") return;
@@ -34,6 +40,15 @@ export function useWebSocket() {
           tickInboundMessage();
           // Update the conversation list (timestamp, ordering).
           void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+          // Mark conversation as unread if it's not the active one
+          // Generate conversation ID matching backend: sorted DIDs joined with ":"
+          if (localDid) {
+            const dids = [localDid, event.from].sort();
+            const conversationId = `${dids[0]}:${dids[1]}`;
+            if (conversationId !== activeConversationId) {
+              markUnread(conversationId);
+            }
+          }
           break;
         }
 
@@ -56,6 +71,19 @@ export function useWebSocket() {
           void queryClient.invalidateQueries({ queryKey: ["receipts"] });
           break;
 
+        case "PresenceUpdated":
+          console.log(
+            `[WebSocket] Presence update: ${event.did} is ${event.online ? "online" : "offline"}`,
+            event.display_name ? `(${event.display_name})` : "(no username)"
+          );
+          setPresence(event.did, event.online);
+          if (event.display_name) {
+            setPeerName(event.did, event.display_name);
+          }
+          // Refresh conversation list so peer_username from backend is up to date
+          void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+          break;
+
         default:
           break;
       }
@@ -65,5 +93,14 @@ export function useWebSocket() {
       off();
       variantWs.disconnect();
     };
-  }, [nodeStatus, queryClient, tickInboundMessage]);
+  }, [
+    nodeStatus,
+    queryClient,
+    tickInboundMessage,
+    setPresence,
+    setPeerName,
+    markUnread,
+    activeConversationId,
+    localDid,
+  ]);
 }
