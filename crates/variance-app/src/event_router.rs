@@ -8,8 +8,24 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 use variance_identity::username::UsernameRegistry;
 use variance_media::{CallManager, SignalingHandler};
-use variance_messaging::{direct::DirectMessageHandler, group::GroupMessageHandler, typing::TypingHandler};
-use variance_p2p::{EventChannels, IdentityEvent, NodeHandle, OfflineMessageEvent, SignalingEvent, TypingEvent};
+use variance_messaging::{
+    direct::DirectMessageHandler, group::GroupMessageHandler, typing::TypingHandler,
+};
+use variance_p2p::{
+    EventChannels, IdentityEvent, NodeHandle, OfflineMessageEvent, SignalingEvent, TypingEvent,
+};
+
+/// All dependencies needed by the EventRouter, grouped to avoid too-many-arguments.
+pub struct EventRouterDeps {
+    pub ws_manager: WebSocketManager,
+    pub direct_messaging: Arc<DirectMessageHandler>,
+    pub group_messaging: Arc<GroupMessageHandler>,
+    pub call_manager: Arc<CallManager>,
+    pub signaling: Arc<SignalingHandler>,
+    pub node_handle: NodeHandle,
+    pub username_registry: Arc<UsernameRegistry>,
+    pub typing: Arc<TypingHandler>,
+}
 
 /// Bridges P2P events to WebSocket clients
 pub struct EventRouter {
@@ -24,16 +40,18 @@ pub struct EventRouter {
 }
 
 impl EventRouter {
-    pub fn new(
-        ws_manager: WebSocketManager,
-        direct_messaging: Arc<DirectMessageHandler>,
-        group_messaging: Arc<GroupMessageHandler>,
-        call_manager: Arc<CallManager>,
-        signaling: Arc<SignalingHandler>,
-        node_handle: NodeHandle,
-        username_registry: Arc<UsernameRegistry>,
-        typing: Arc<TypingHandler>,
-    ) -> Self {
+    pub fn new(deps: EventRouterDeps) -> Self {
+        let EventRouterDeps {
+            ws_manager,
+            direct_messaging,
+            group_messaging,
+            call_manager,
+            signaling,
+            node_handle,
+            username_registry,
+            typing,
+        } = deps;
+
         Self {
             ws_manager,
             direct_messaging,
@@ -333,27 +351,35 @@ impl EventRouter {
                 is_typing,
             }) = rx.recv().await
             {
-                    // Update the local typing state so the polling endpoint also works
-                    use variance_proto::messaging_proto::{typing_indicator::Recipient, TypingIndicator};
-                    let indicator = TypingIndicator {
-                        sender_did: sender_did.clone(),
-                        recipient: Some(if recipient.starts_with("group:") {
-                            Recipient::GroupId(recipient[6..].to_string())
-                        } else {
-                            Recipient::RecipientDid(recipient.clone())
-                        }),
-                        is_typing,
-                        timestamp: chrono::Utc::now().timestamp_millis(),
-                    };
-                    typing.receive_indicator(indicator);
-
-                    // Push to WebSocket clients for immediate UI update
-                    let msg = if is_typing {
-                        WsMessage::TypingStarted { from: sender_did, recipient }
+                // Update the local typing state so the polling endpoint also works
+                use variance_proto::messaging_proto::{
+                    typing_indicator::Recipient, TypingIndicator,
+                };
+                let indicator = TypingIndicator {
+                    sender_did: sender_did.clone(),
+                    recipient: Some(if let Some(group_id) = recipient.strip_prefix("group:") {
+                        Recipient::GroupId(group_id.to_string())
                     } else {
-                        WsMessage::TypingStopped { from: sender_did, recipient }
-                    };
-                    ws_manager_typing.broadcast(msg);
+                        Recipient::RecipientDid(recipient.clone())
+                    }),
+                    is_typing,
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                };
+                typing.receive_indicator(indicator);
+
+                // Push to WebSocket clients for immediate UI update
+                let msg = if is_typing {
+                    WsMessage::TypingStarted {
+                        from: sender_did,
+                        recipient,
+                    }
+                } else {
+                    WsMessage::TypingStopped {
+                        from: sender_did,
+                        recipient,
+                    }
+                };
+                ws_manager_typing.broadcast(msg);
             }
 
             warn!("EventRouter: Typing event listener ended");
@@ -486,16 +512,16 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let state =
             AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
-        EventRouter::new(
-            state.ws_manager.clone(),
-            state.direct_messaging.clone(),
-            state.group_messaging.clone(),
-            state.calls.clone(),
-            state.signaling.clone(),
-            state.node_handle.clone(),
-            state.username_registry.clone(),
-            state.typing.clone(),
-        )
+        EventRouter::new(EventRouterDeps {
+            ws_manager: state.ws_manager.clone(),
+            direct_messaging: state.direct_messaging.clone(),
+            group_messaging: state.group_messaging.clone(),
+            call_manager: state.calls.clone(),
+            signaling: state.signaling.clone(),
+            node_handle: state.node_handle.clone(),
+            username_registry: state.username_registry.clone(),
+            typing: state.typing.clone(),
+        })
     }
 
     #[tokio::test]
@@ -538,16 +564,16 @@ mod tests {
             },
         );
 
-        let router = EventRouter::new(
-            ws_manager.clone(),
-            state.direct_messaging.clone(),
-            state.group_messaging.clone(),
-            state.calls.clone(),
-            state.signaling.clone(),
-            state.node_handle.clone(),
-            state.username_registry.clone(),
-            state.typing.clone(),
-        );
+        let router = EventRouter::new(EventRouterDeps {
+            ws_manager: ws_manager.clone(),
+            direct_messaging: state.direct_messaging.clone(),
+            group_messaging: state.group_messaging.clone(),
+            call_manager: state.calls.clone(),
+            signaling: state.signaling.clone(),
+            node_handle: state.node_handle.clone(),
+            username_registry: state.username_registry.clone(),
+            typing: state.typing.clone(),
+        });
         let events = EventChannels::default();
 
         // Start router

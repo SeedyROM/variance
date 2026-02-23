@@ -3,6 +3,7 @@
 //! Provides a unified API for starting Variance nodes that is used by both
 //! the CLI (standalone server) and desktop app (embedded in Tauri).
 
+use crate::event_router::EventRouterDeps;
 use crate::{create_router, AppConfig, AppState, EventRouter, Result};
 use axum::Router;
 use std::path::Path;
@@ -291,16 +292,16 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
     });
 
     // Start event router to bridge P2P events to WebSocket clients
-    let event_router = EventRouter::new(
-        app_state.ws_manager.clone(),
-        app_state.direct_messaging.clone(),
-        app_state.group_messaging.clone(),
-        app_state.calls.clone(),
-        app_state.signaling.clone(),
-        app_state.node_handle.clone(),
-        app_state.username_registry.clone(),
-        app_state.typing.clone(),
-    );
+    let event_router = EventRouter::new(EventRouterDeps {
+        ws_manager: app_state.ws_manager.clone(),
+        direct_messaging: app_state.direct_messaging.clone(),
+        group_messaging: app_state.group_messaging.clone(),
+        call_manager: app_state.calls.clone(),
+        signaling: app_state.signaling.clone(),
+        node_handle: app_state.node_handle.clone(),
+        username_registry: app_state.username_registry.clone(),
+        typing: app_state.typing.clone(),
+    });
     event_router.start((*event_channels).clone());
     tracing::debug!("EventRouter started");
 
