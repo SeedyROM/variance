@@ -274,7 +274,10 @@ mod tests {
     fn test_protocol_names() {
         assert_eq!(OFFLINE_MESSAGE_PROTOCOL, "/variance/offline-messages/1.0.0");
         assert_eq!(DIRECT_MESSAGE_PROTOCOL, "/variance/direct-messages/1.0.0");
-        assert_eq!(TYPING_INDICATOR_PROTOCOL, "/variance/typing-indicators/1.0.0");
+        assert_eq!(
+            TYPING_INDICATOR_PROTOCOL,
+            "/variance/typing-indicators/1.0.0"
+        );
     }
 
     #[test]

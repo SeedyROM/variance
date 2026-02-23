@@ -7,11 +7,11 @@ interface TypingIndicatorProps {
 /** Three animated dots used in both the message view and conversation list. */
 export function TypingDots({ className = "" }: { className?: string }) {
   return (
-    <span className={`inline-flex items-center gap-[3px] ${className}`}>
+    <span className={`inline-flex items-center gap-0.75 ${className}`}>
       {[0, 1, 2].map((i) => (
         <span
           key={i}
-          className="h-[5px] w-[5px] rounded-full bg-current"
+          className="h-1.25 w-1.25 rounded-full bg-current"
           style={{
             animation: "typing-dot 1.4s ease-in-out infinite",
             animationDelay: `${i * 160}ms`,

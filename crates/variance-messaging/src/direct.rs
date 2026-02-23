@@ -476,9 +476,11 @@ impl DirectMessageHandler {
                 // messages (encrypted at positions 1, 2, …) undecryptable.
                 let existing = {
                     let mut sessions = self.sessions.write().await;
-                    sessions.get_mut(&message.sender_did).map(|session| session.decrypt(&olm_message).map_err(|e| Error::Crypto {
+                    sessions.get_mut(&message.sender_did).map(|session| {
+                        session.decrypt(&olm_message).map_err(|e| Error::Crypto {
                             message: format!("Decryption failure: {}", e),
-                        }))
+                        })
+                    })
                 }; // sessions write lock released here
 
                 if let Some(result) = existing {

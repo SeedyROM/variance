@@ -397,7 +397,10 @@ impl NodeHandle {
         indicator: TypingIndicator,
     ) -> Result<()> {
         self.command_tx
-            .send(NodeCommand::SendTypingIndicator { peer_did, indicator })
+            .send(NodeCommand::SendTypingIndicator {
+                peer_did,
+                indicator,
+            })
             .await
             .map_err(|_| crate::error::Error::Protocol {
                 message: "Failed to send command to node".to_string(),

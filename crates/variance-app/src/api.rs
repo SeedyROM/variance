@@ -1759,7 +1759,9 @@ async fn stop_typing(
     let indicator = if req.is_group {
         state.typing.send_typing_group(req.recipient.clone(), false)
     } else {
-        state.typing.send_typing_direct(req.recipient.clone(), false)
+        state
+            .typing
+            .send_typing_direct(req.recipient.clone(), false)
     };
 
     if let Err(e) = state
