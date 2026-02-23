@@ -8,8 +8,8 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 use variance_identity::username::UsernameRegistry;
 use variance_media::{CallManager, SignalingHandler};
-use variance_messaging::{direct::DirectMessageHandler, group::GroupMessageHandler};
-use variance_p2p::{EventChannels, IdentityEvent, NodeHandle, OfflineMessageEvent, SignalingEvent};
+use variance_messaging::{direct::DirectMessageHandler, group::GroupMessageHandler, typing::TypingHandler};
+use variance_p2p::{EventChannels, IdentityEvent, NodeHandle, OfflineMessageEvent, SignalingEvent, TypingEvent};
 
 /// Bridges P2P events to WebSocket clients
 pub struct EventRouter {
@@ -20,6 +20,7 @@ pub struct EventRouter {
     signaling: Arc<SignalingHandler>,
     node_handle: NodeHandle,
     username_registry: Arc<UsernameRegistry>,
+    typing: Arc<TypingHandler>,
 }
 
 impl EventRouter {
@@ -31,6 +32,7 @@ impl EventRouter {
         signaling: Arc<SignalingHandler>,
         node_handle: NodeHandle,
         username_registry: Arc<UsernameRegistry>,
+        typing: Arc<TypingHandler>,
     ) -> Self {
         Self {
             ws_manager,
@@ -40,6 +42,7 @@ impl EventRouter {
             signaling,
             node_handle,
             username_registry,
+            typing,
         }
     }
 
@@ -316,6 +319,46 @@ impl EventRouter {
             warn!("EventRouter: Group message event listener ended");
         });
 
+        // Spawn task for typing events
+        let ws_manager_typing = self.ws_manager.clone();
+        let typing = self.typing;
+        let events_clone = events.clone();
+        tokio::spawn(async move {
+            let mut rx = events_clone.subscribe_typing();
+            debug!("EventRouter: Started typing event listener");
+
+            while let Ok(TypingEvent::IndicatorReceived {
+                sender_did,
+                recipient,
+                is_typing,
+            }) = rx.recv().await
+            {
+                    // Update the local typing state so the polling endpoint also works
+                    use variance_proto::messaging_proto::{typing_indicator::Recipient, TypingIndicator};
+                    let indicator = TypingIndicator {
+                        sender_did: sender_did.clone(),
+                        recipient: Some(if recipient.starts_with("group:") {
+                            Recipient::GroupId(recipient[6..].to_string())
+                        } else {
+                            Recipient::RecipientDid(recipient.clone())
+                        }),
+                        is_typing,
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                    };
+                    typing.receive_indicator(indicator);
+
+                    // Push to WebSocket clients for immediate UI update
+                    let msg = if is_typing {
+                        WsMessage::TypingStarted { from: sender_did, recipient }
+                    } else {
+                        WsMessage::TypingStopped { from: sender_did, recipient }
+                    };
+                    ws_manager_typing.broadcast(msg);
+            }
+
+            warn!("EventRouter: Typing event listener ended");
+        });
+
         // Spawn task for identity events (presence tracking + pending message flush)
         let ws_manager = self.ws_manager;
         let direct_messaging = self.direct_messaging;
@@ -451,6 +494,7 @@ mod tests {
             state.signaling.clone(),
             state.node_handle.clone(),
             state.username_registry.clone(),
+            state.typing.clone(),
         )
     }
 
@@ -502,6 +546,7 @@ mod tests {
             state.signaling.clone(),
             state.node_handle.clone(),
             state.username_registry.clone(),
+            state.typing.clone(),
         );
         let events = EventChannels::default();
 

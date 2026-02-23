@@ -1732,10 +1732,18 @@ async fn start_typing(
     State(state): State<AppState>,
     Json(req): Json<TypingRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    if req.is_group {
-        state.typing.send_typing_group(req.recipient, true);
+    let indicator = if req.is_group {
+        state.typing.send_typing_group(req.recipient.clone(), true)
     } else {
-        state.typing.send_typing_direct(req.recipient, true);
+        state.typing.send_typing_direct(req.recipient.clone(), true)
+    };
+
+    if let Err(e) = state
+        .node_handle
+        .send_typing_indicator(req.recipient, indicator)
+        .await
+    {
+        tracing::debug!("Failed to deliver typing indicator (best-effort): {}", e);
     }
 
     Ok(Json(serde_json::json!({
@@ -1748,10 +1756,18 @@ async fn stop_typing(
     State(state): State<AppState>,
     Json(req): Json<TypingRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    if req.is_group {
-        state.typing.send_typing_group(req.recipient, false);
+    let indicator = if req.is_group {
+        state.typing.send_typing_group(req.recipient.clone(), false)
     } else {
-        state.typing.send_typing_direct(req.recipient, false);
+        state.typing.send_typing_direct(req.recipient.clone(), false)
+    };
+
+    if let Err(e) = state
+        .node_handle
+        .send_typing_indicator(req.recipient, indicator)
+        .await
+    {
+        tracing::debug!("Failed to deliver typing stop (best-effort): {}", e);
     }
 
     Ok(Json(serde_json::json!({

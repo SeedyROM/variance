@@ -31,4 +31,8 @@ pub struct VarianceBehaviour {
     /// Custom protocol: Direct messages (Double Ratchet encrypted)
     pub direct_messages:
         request_response::Behaviour<crate::protocols::messaging::DirectMessageCodec>,
+
+    /// Custom protocol: Typing indicators (fire-and-forget)
+    pub typing_indicators:
+        request_response::Behaviour<crate::protocols::messaging::TypingIndicatorCodec>,
 }

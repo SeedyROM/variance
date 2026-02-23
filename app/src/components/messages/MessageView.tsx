@@ -7,7 +7,7 @@ import { MessageBubble } from "./MessageBubble";
 import { MessageInput } from "./MessageInput";
 import { TypingIndicator } from "./TypingIndicator";
 import { DateDivider } from "./DateDivider";
-import { messagesApi, typingApi } from "../../api/client";
+import { messagesApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { isDifferentDay } from "../../utils/time";
@@ -51,11 +51,8 @@ export function MessageView({ peerDid }: MessageViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inboundTick]);
 
-  const { data: typingData } = useQuery({
-    queryKey: ["typing", peerDid],
-    queryFn: () => typingApi.get(peerDid),
-    refetchInterval: 2000,
-  });
+  const typingUsersSet = useMessagingStore((s) => s.typingUsers.get(peerDid));
+  const typingUsers = typingUsersSet ? Array.from(typingUsersSet) : [];
 
   // Merge older pages with the current page, deduplicate, sort chronologically.
   const sortedMessages = [...olderMessages, ...messages]
@@ -194,7 +191,7 @@ export function MessageView({ peerDid }: MessageViewProps) {
       </ScrollArea>
 
       {/* Typing indicator */}
-      <TypingIndicator users={typingData?.users ?? []} />
+      <TypingIndicator users={typingUsers} />
 
       {/* Input */}
       <MessageInput peerDid={peerDid} />

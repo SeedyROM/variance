@@ -23,6 +23,7 @@ export function useWebSocket() {
   const setPeerName = useMessagingStore((s) => s.setPeerName);
   const markUnread = useMessagingStore((s) => s.markUnread);
   const activeConversationId = useMessagingStore((s) => s.activeConversationId);
+  const setTyping = useMessagingStore((s) => s.setTyping);
 
   useEffect(() => {
     if (nodeStatus !== "running") return;
@@ -36,6 +37,8 @@ export function useWebSocket() {
       switch (event.type) {
         case "DirectMessageReceived": {
           console.log("[WebSocket] Processing DirectMessageReceived:", event.message_id);
+          // They sent a message, so they're no longer typing.
+          setTyping(event.from, event.from, false);
           // Bump the tick — MessageView will call refetch() in response.
           tickInboundMessage();
           // Update the conversation list (timestamp, ordering).
@@ -71,6 +74,17 @@ export function useWebSocket() {
           void queryClient.invalidateQueries({ queryKey: ["receipts"] });
           break;
 
+        case "TypingStarted":
+          // Key by the sender (the person typing), not recipient (us).
+          // The UI looks up typingUsers.get(peerDid) where peerDid is the
+          // other person in the conversation.
+          setTyping(event.from, event.from, true);
+          break;
+
+        case "TypingStopped":
+          setTyping(event.from, event.from, false);
+          break;
+
         case "PresenceUpdated":
           console.log(
             `[WebSocket] Presence update: ${event.did} is ${event.online ? "online" : "offline"}`,
@@ -102,5 +116,6 @@ export function useWebSocket() {
     markUnread,
     activeConversationId,
     localDid,
+    setTyping,
   ]);
 }

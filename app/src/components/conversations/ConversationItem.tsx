@@ -1,5 +1,6 @@
 import { Avatar } from "../ui/Avatar";
 import { StatusDot, StatusIndicator } from "../ui/StatusIndicator";
+import { TypingDots } from "../messages/TypingIndicator";
 import { Tooltip } from "../ui/Tooltip";
 import { cn } from "../../utils/cn";
 import { relativeTime } from "../../utils/time";
@@ -23,6 +24,8 @@ export function ConversationItem({
   const peerNames = useMessagingStore((s) => s.peerNames);
   const unreadConversations = useMessagingStore((s) => s.unreadConversations);
   const markRead = useMessagingStore((s) => s.markRead);
+  const typingUsersSet = useMessagingStore((s) => s.typingUsers.get(conversation.peer_did));
+  const isTyping = typingUsersSet !== undefined && typingUsersSet.size > 0;
 
   const isOnline = presenceMap.get(conversation.peer_did) ?? false;
   const hasUnread = unreadConversations.has(conversation.id);
@@ -94,9 +97,16 @@ export function ConversationItem({
             </p>
             {hasUnread && <div className="shrink-0 w-2 h-2 rounded-full bg-primary-500" />}
           </div>
-          <p className="truncate text-xs text-surface-500">
-            {relativeTime(conversation.last_message_timestamp)}
-          </p>
+          {isTyping ? (
+            <span className="flex items-center gap-1.5 text-xs text-primary-500">
+              <TypingDots className="text-primary-500" />
+              <span>typing</span>
+            </span>
+          ) : (
+            <p className="truncate text-xs text-surface-500">
+              {relativeTime(conversation.last_message_timestamp)}
+            </p>
+          )}
         </div>
       </button>
     </Tooltip>

@@ -51,6 +51,20 @@ html[data-theme="dark"] {
   border-radius: 3px;
 }
 
+/* Typing indicator dots — staggered scaling pulse that feels like iMessage/Discord. */
+@keyframes typing-dot {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
 /* Tooltip animation — only animate opacity to avoid conflicting with
    the positioning transform (e.g. translateY(-50%)) set via inline style. */
 @keyframes tooltip-in {

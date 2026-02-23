@@ -8,7 +8,7 @@ use libp2p::PeerId;
 use tokio::sync::oneshot;
 use variance_proto::identity_proto::{IdentityFound, IdentityRequest, IdentityResponse};
 use variance_proto::media_proto::SignalingMessage;
-use variance_proto::messaging_proto::{DirectMessage, GroupMessage};
+use variance_proto::messaging_proto::{DirectMessage, GroupMessage, TypingIndicator};
 
 use crate::error::Result;
 
@@ -106,6 +106,12 @@ pub enum NodeCommand {
     /// when a WebSocket client connects or to serve presence polling.
     GetConnectedDids {
         response_tx: oneshot::Sender<Vec<String>>,
+    },
+
+    /// Send a typing indicator to a peer (fire-and-forget, no ack expected).
+    SendTypingIndicator {
+        peer_did: String,
+        indicator: TypingIndicator,
     },
 }
 
@@ -378,6 +384,23 @@ impl NodeHandle {
             .await
             .map_err(|_| crate::error::Error::Protocol {
                 message: "Failed to receive response from node".to_string(),
+            })
+    }
+
+    /// Send a typing indicator to a peer (fire-and-forget).
+    ///
+    /// Failures are silently dropped — typing indicators are ephemeral and
+    /// it is not worth surfacing errors for a best-effort signal.
+    pub async fn send_typing_indicator(
+        &self,
+        peer_did: String,
+        indicator: TypingIndicator,
+    ) -> Result<()> {
+        self.command_tx
+            .send(NodeCommand::SendTypingIndicator { peer_did, indicator })
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to send command to node".to_string(),
             })
     }
 

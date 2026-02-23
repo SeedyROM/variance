@@ -290,6 +290,9 @@ impl AppState {
                     variance_p2p::NodeCommand::GetConnectedDids { response_tx } => {
                         let _ = response_tx.send(vec![]);
                     }
+                    variance_p2p::NodeCommand::SendTypingIndicator { .. } => {
+                        // Fire-and-forget, no response channel
+                    }
                 }
             }
         });

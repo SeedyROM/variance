@@ -107,6 +107,16 @@ pub enum WsMessage {
         count: usize,
     },
 
+    // Typing indicators
+    TypingStarted {
+        from: String,
+        recipient: String,
+    },
+    TypingStopped {
+        from: String,
+        recipient: String,
+    },
+
     // Presence/identity
     PresenceUpdated {
         did: String,

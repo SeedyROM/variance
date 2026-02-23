@@ -68,6 +68,11 @@ export function MessageInput({ peerDid }: MessageInputProps) {
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
+
+    // Cancel any pending typing-stop timer and immediately signal stop
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    void typingApi.stop({ recipient: peerDid, is_group: false });
+
     sendMutation.mutate(trimmed);
   };
 

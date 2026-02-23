@@ -1,5 +1,13 @@
 use crate::{
-    behaviour::VarianceBehaviour, commands::*, config::Config, error::*, events::*, handlers,
+    behaviour::VarianceBehaviour,
+    commands::*,
+    config::Config,
+    error::*,
+    events::{
+        DirectMessageEvent, EventChannels, GroupMessageEvent, IdentityEvent, OfflineMessageEvent,
+        SignalingEvent, TypingEvent,
+    },
+    handlers,
 };
 use futures::StreamExt;
 use libp2p::swarm::SwarmEvent;
@@ -15,7 +23,7 @@ use tokio::select;
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 use variance_proto::identity_proto::{IdentityFound, IdentityResponse};
-use variance_proto::messaging_proto::{DirectMessageAck, GroupMessage};
+use variance_proto::messaging_proto::{DirectMessageAck, GroupMessage, TypingIndicator};
 
 type ProviderQueryResult = (Vec<PeerId>, oneshot::Sender<Result<Vec<PeerId>>>);
 
@@ -121,6 +129,7 @@ impl Node {
         let offline_messages = crate::protocols::messaging::create_offline_message_behaviour();
         let signaling = crate::protocols::media::create_signaling_behaviour();
         let direct_messages = crate::protocols::messaging::create_direct_message_behaviour();
+        let typing_indicators = crate::protocols::messaging::create_typing_indicator_behaviour();
 
         // Combine into VarianceBehaviour
         let behaviour = VarianceBehaviour {
@@ -133,6 +142,7 @@ impl Node {
             offline_messages,
             signaling,
             direct_messages,
+            typing_indicators,
         };
 
         // Build Swarm
@@ -494,6 +504,20 @@ impl Node {
                 let did_to_peer = self.did_to_peer.read().await;
                 let dids: Vec<String> = did_to_peer.keys().cloned().collect();
                 let _ = response_tx.send(dids);
+            }
+            NodeCommand::SendTypingIndicator { peer_did, indicator } => {
+                let did_to_peer = self.did_to_peer.read().await;
+                if let Some(peer) = did_to_peer.get(&peer_did) {
+                    self.swarm
+                        .behaviour_mut()
+                        .typing_indicators
+                        .send_request(peer, indicator);
+                } else {
+                    debug!(
+                        "Cannot send typing indicator: unknown peer DID {}",
+                        peer_did
+                    );
+                }
             }
         }
     }
@@ -1129,6 +1153,54 @@ impl Node {
                         } => {
                             debug!("Direct message ACK {:?} sent to {}", request_id, peer);
                         }
+                    }
+                }
+                crate::behaviour::VarianceBehaviourEvent::TypingIndicators(typing_event) => {
+                    use libp2p::request_response::{Event, Message};
+                    use variance_proto::messaging_proto::typing_indicator::Recipient;
+
+                    match typing_event {
+                        Event::Message { peer: _, message, .. } => {
+                            if let Message::Request { request, channel, .. } = message {
+                                let sender_did = request.sender_did.clone();
+                                let is_typing = request.is_typing;
+                                let recipient = match &request.recipient {
+                                    Some(Recipient::RecipientDid(did)) => did.clone(),
+                                    Some(Recipient::GroupId(id)) => format!("group:{}", id),
+                                    None => sender_did.clone(),
+                                };
+
+                                debug!(
+                                    "Received typing indicator from {}: is_typing={}",
+                                    sender_did, is_typing
+                                );
+
+                                self.events.send_typing(TypingEvent::IndicatorReceived {
+                                    sender_did,
+                                    recipient,
+                                    is_typing,
+                                });
+
+                                // Ack with an empty indicator — sender ignores it
+                                let _ = self
+                                    .swarm
+                                    .behaviour_mut()
+                                    .typing_indicators
+                                    .send_response(channel, TypingIndicator::default());
+                            }
+                        }
+                        Event::OutboundFailure {
+                            peer,
+                            request_id,
+                            error,
+                            ..
+                        } => {
+                            debug!(
+                                "Typing indicator {:?} to {} failed (best-effort): {}",
+                                request_id, peer, error
+                            );
+                        }
+                        _ => {}
                     }
                 }
             },

@@ -120,6 +120,18 @@ pub enum GroupMessageEvent {
     },
 }
 
+/// Events from typing indicators
+#[derive(Debug, Clone)]
+pub enum TypingEvent {
+    /// Received a typing indicator from a peer
+    IndicatorReceived {
+        sender_did: String,
+        /// Peer DID for direct messages, or "group:{id}" for group chats
+        recipient: String,
+        is_typing: bool,
+    },
+}
+
 /// Combined event type for all protocols
 #[derive(Debug, Clone)]
 pub enum P2pEvent {
@@ -128,6 +140,7 @@ pub enum P2pEvent {
     Signaling(SignalingEvent),
     DirectMessage(DirectMessageEvent),
     GroupMessage(GroupMessageEvent),
+    Typing(TypingEvent),
 }
 
 /// Event channels for protocol events
@@ -138,6 +151,7 @@ pub struct EventChannels {
     pub signaling: broadcast::Sender<SignalingEvent>,
     pub direct_messages: broadcast::Sender<DirectMessageEvent>,
     pub group_messages: broadcast::Sender<GroupMessageEvent>,
+    pub typing: broadcast::Sender<TypingEvent>,
 }
 
 impl EventChannels {
@@ -148,6 +162,7 @@ impl EventChannels {
         let (signaling_tx, _) = broadcast::channel(buffer_size);
         let (direct_tx, _) = broadcast::channel(buffer_size);
         let (group_tx, _) = broadcast::channel(buffer_size);
+        let (typing_tx, _) = broadcast::channel(buffer_size);
 
         Self {
             identity: identity_tx,
@@ -155,6 +170,7 @@ impl EventChannels {
             signaling: signaling_tx,
             direct_messages: direct_tx,
             group_messages: group_tx,
+            typing: typing_tx,
         }
     }
 
@@ -183,6 +199,11 @@ impl EventChannels {
         self.group_messages.subscribe()
     }
 
+    /// Subscribe to typing events
+    pub fn subscribe_typing(&self) -> broadcast::Receiver<TypingEvent> {
+        self.typing.subscribe()
+    }
+
     /// Send an identity event
     pub fn send_identity(&self, event: IdentityEvent) {
         let _ = self.identity.send(event);
@@ -206,6 +227,11 @@ impl EventChannels {
     /// Send a group message event
     pub fn send_group_message(&self, event: GroupMessageEvent) {
         let _ = self.group_messages.send(event);
+    }
+
+    /// Send a typing event
+    pub fn send_typing(&self, event: TypingEvent) {
+        let _ = self.typing.send(event);
     }
 }
 

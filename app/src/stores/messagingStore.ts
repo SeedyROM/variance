@@ -22,6 +22,10 @@ interface MessagingStore {
   unreadConversations: Set<string>;
   markUnread: (conversationId: string) => void;
   markRead: (conversationId: string) => void;
+  // Typing indicators: Map from conversation key (peer DID or "group:{id}") to
+  // the set of DIDs that are currently typing in that conversation.
+  typingUsers: Map<string, Set<string>>;
+  setTyping: (from: string, recipient: string, isTyping: boolean) => void;
 }
 
 export const useMessagingStore = create<MessagingStore>((set) => ({
@@ -69,5 +73,22 @@ export const useMessagingStore = create<MessagingStore>((set) => ({
       const newSet = new Set(s.unreadConversations);
       newSet.delete(conversationId);
       return { unreadConversations: newSet };
+    }),
+  typingUsers: new Map(),
+  setTyping: (from, recipient, isTyping) =>
+    set((s) => {
+      const newMap = new Map(s.typingUsers);
+      const current = new Set(newMap.get(recipient) ?? []);
+      if (isTyping) {
+        current.add(from);
+      } else {
+        current.delete(from);
+      }
+      if (current.size === 0) {
+        newMap.delete(recipient);
+      } else {
+        newMap.set(recipient, current);
+      }
+      return { typingUsers: newMap };
     }),
 }));
