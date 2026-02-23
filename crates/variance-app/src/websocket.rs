@@ -97,6 +97,11 @@ pub enum WsMessage {
         timestamp: i64,
         reply_to: Option<String>,
     },
+    /// The remote peer rejected our message (e.g. rate limited). Frontend should retry.
+    DirectMessageNack {
+        message_id: String,
+        error: String,
+    },
     GroupMessageReceived {
         group_id: String,
         from: String,

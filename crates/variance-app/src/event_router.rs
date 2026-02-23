@@ -290,6 +290,18 @@ impl EventRouter {
                         // DirectMessageSent is now broadcast directly from the API layer
                         // with full message content, so we don't handle it here
                     }
+                    DirectMessageEvent::DeliveryNack {
+                        peer: _,
+                        message_id,
+                        error,
+                    } => {
+                        warn!(
+                            "EventRouter: Message {} NACK'd ({}), sender should retry",
+                            message_id, error
+                        );
+                        let msg = WsMessage::DirectMessageNack { message_id, error };
+                        ws_manager.broadcast(msg);
+                    }
                 }
             }
 

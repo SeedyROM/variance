@@ -105,6 +105,13 @@ pub enum DirectMessageEvent {
         message_id: String,
         recipient: String,
     },
+
+    /// Remote peer rejected delivery (e.g. rate limited). Sender should retry.
+    DeliveryNack {
+        peer: PeerId,
+        message_id: String,
+        error: String,
+    },
 }
 
 /// Events from group messaging

@@ -161,9 +161,13 @@ message GroupInvitation {
   repeated GroupMember members = 8;
 }
 
-// ACK for direct message delivery confirmation
+// ACK for direct message delivery confirmation.
+// When error is set, the message was NOT delivered and the sender should retry
+// (e.g. backpressure from rate limiting).
 message DirectMessageAck {
   string message_id = 1;
+  // Empty on success. Set to an error code (e.g. "rate_limited") on failure.
+  optional string error = 2;
 }
 
 // Offline message relay

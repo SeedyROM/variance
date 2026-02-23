@@ -246,6 +246,22 @@ impl Node {
                             "Rate-limited identity request {:?} from {}",
                             request_id, peer
                         );
+                        let nack = IdentityResponse {
+                            result: Some(
+                                variance_proto::identity_proto::identity_response::Result::Error(
+                                    variance_proto::identity_proto::IdentityError {
+                                        error: "rate_limited".into(),
+                                        details: "Too many requests, retry later".into(),
+                                    },
+                                ),
+                            ),
+                            timestamp: chrono::Utc::now().timestamp(),
+                        };
+                        let _ = self
+                            .swarm
+                            .behaviour_mut()
+                            .identity
+                            .send_response(channel, nack);
                         return;
                     }
 
@@ -447,6 +463,18 @@ impl Node {
                             "Rate-limited offline message request {:?} from {}",
                             request_id, peer
                         );
+                        let nack = OfflineMessageResponse {
+                            messages: vec![],
+                            has_more: false,
+                            next_cursor: None,
+                            error_code: Some("rate_limited".into()),
+                            error_message: Some("Too many requests, retry later".into()),
+                        };
+                        let _ = self
+                            .swarm
+                            .behaviour_mut()
+                            .offline_messages
+                            .send_response(channel, nack);
                         return;
                     }
 
@@ -694,6 +722,15 @@ impl Node {
                         .is_allowed()
                     {
                         warn!("Rate-limited direct message {} from {}", request.id, peer);
+                        let nack = DirectMessageAck {
+                            message_id: request.id.clone(),
+                            error: Some("rate_limited".into()),
+                        };
+                        let _ = self
+                            .swarm
+                            .behaviour_mut()
+                            .direct_messages
+                            .send_response(channel, nack);
                         return;
                     }
 
@@ -713,6 +750,7 @@ impl Node {
 
                     let ack = DirectMessageAck {
                         message_id: request.id.clone(),
+                        error: None,
                     };
                     let _ = self
                         .swarm
@@ -721,7 +759,20 @@ impl Node {
                         .send_response(channel, ack);
                 }
                 Message::Response { response, .. } => {
-                    debug!("Direct message ACK received: {}", response.message_id);
+                    if let Some(ref err) = response.error {
+                        warn!(
+                            "Direct message {} NACK'd by {}: {}",
+                            response.message_id, peer, err
+                        );
+                        self.events
+                            .send_direct_message(DirectMessageEvent::DeliveryNack {
+                                peer,
+                                message_id: response.message_id.clone(),
+                                error: err.clone(),
+                            });
+                    } else {
+                        debug!("Direct message ACK received: {}", response.message_id);
+                    }
                 }
             },
             Event::OutboundFailure {
