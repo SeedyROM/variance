@@ -4,6 +4,7 @@ use crate::events::{
     DirectMessageEvent, GroupMessageEvent, IdentityEvent, OfflineMessageEvent, SignalingEvent,
     TypingEvent,
 };
+use crate::rate_limiter::protocol as rl;
 
 use super::Node;
 
@@ -129,6 +130,21 @@ impl Node {
             message,
         } = event
         {
+            // GossipSub uses the propagation_source (immediate forwarder), not
+            // necessarily the original author. This is still useful as a
+            // per-peer ingress limit: a misbehaving forwarder gets throttled.
+            if !self
+                .rate_limiter
+                .check(&propagation_source, rl::DIRECT_MESSAGES)
+                .is_allowed()
+            {
+                warn!(
+                    "Rate-limited GossipSub message {} from {}",
+                    message_id, propagation_source
+                );
+                return;
+            }
+
             debug!(
                 "Got message {} from {} on topic {:?}",
                 message_id, propagation_source, message.topic
@@ -225,6 +241,14 @@ impl Node {
                     request,
                     channel,
                 } => {
+                    if !self.rate_limiter.check(&peer, rl::IDENTITY).is_allowed() {
+                        warn!(
+                            "Rate-limited identity request {:?} from {}",
+                            request_id, peer
+                        );
+                        return;
+                    }
+
                     debug!(
                         "Received identity request {:?} from {}: {:?}",
                         request_id, peer, request
@@ -414,6 +438,18 @@ impl Node {
                     request,
                     channel,
                 } => {
+                    if !self
+                        .rate_limiter
+                        .check(&peer, rl::OFFLINE_MESSAGES)
+                        .is_allowed()
+                    {
+                        warn!(
+                            "Rate-limited offline message request {:?} from {}",
+                            request_id, peer
+                        );
+                        return;
+                    }
+
                     debug!(
                         "Received offline message request {:?} from {}: {} messages since {:?}",
                         request_id, peer, request.limit, request.since_timestamp
@@ -525,6 +561,14 @@ impl Node {
                     request,
                     channel,
                 } => {
+                    if !self.rate_limiter.check(&peer, rl::SIGNALING).is_allowed() {
+                        warn!(
+                            "Rate-limited signaling request {:?} from {}",
+                            request_id, peer
+                        );
+                        return;
+                    }
+
                     debug!(
                         "Received WebRTC signaling request {:?} from {} for call {}",
                         request_id, peer, request.call_id
@@ -644,6 +688,15 @@ impl Node {
                 Message::Request {
                     request, channel, ..
                 } => {
+                    if !self
+                        .rate_limiter
+                        .check(&peer, rl::DIRECT_MESSAGES)
+                        .is_allowed()
+                    {
+                        warn!("Rate-limited direct message {} from {}", request.id, peer);
+                        return;
+                    }
+
                     debug!("Received direct message {} from {}", request.id, peer);
 
                     // Learn the sender's DID → PeerId mapping for future sends
@@ -712,13 +765,22 @@ impl Node {
 
         match event {
             Event::Message {
-                peer: _,
+                peer,
                 message:
                     Message::Request {
                         request, channel, ..
                     },
                 ..
             } => {
+                if !self
+                    .rate_limiter
+                    .check(&peer, rl::TYPING_INDICATORS)
+                    .is_allowed()
+                {
+                    debug!("Rate-limited typing indicator from {}", peer);
+                    return;
+                }
+
                 let sender_did = request.sender_did.clone();
                 let is_typing = request.is_typing;
                 let recipient = match &request.recipient {
@@ -791,6 +853,9 @@ impl Node {
         cause: Option<libp2p::swarm::ConnectionError>,
     ) {
         debug!("Connection to {} closed: {:?}", peer_id, cause);
+
+        // Free rate-limiter state for this peer
+        self.rate_limiter.remove_peer(&peer_id);
 
         // Remove stale DID→PeerId mappings so future sends are correctly
         // detected as offline and queued rather than silently dropped.

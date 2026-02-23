@@ -26,6 +26,9 @@ bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+# Concurrency
+dashmap = { workspace = true }
+
 # Error handling
 snafu = { workspace = true }
 thiserror = { workspace = true }

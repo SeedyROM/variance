@@ -7,6 +7,7 @@ use crate::{
     error::*,
     events::{DirectMessageEvent, EventChannels},
     handlers,
+    rate_limiter::PeerRateLimiter,
 };
 use futures::StreamExt;
 use libp2p::{
@@ -54,6 +55,8 @@ pub struct Node {
     pending_resolve_requests: HashMap<libp2p::request_response::OutboundRequestId, String>,
     /// Auto-discovery requests sent when peers connect: request_id → peer_id
     pending_auto_discovery: HashMap<libp2p::request_response::OutboundRequestId, libp2p::PeerId>,
+    /// Per-peer, per-protocol inbound rate limiter
+    rate_limiter: PeerRateLimiter,
 }
 
 impl Node {
@@ -200,6 +203,7 @@ impl Node {
             pending_did_broadcasts: HashMap::new(),
             pending_resolve_requests: HashMap::new(),
             pending_auto_discovery: HashMap::new(),
+            rate_limiter: PeerRateLimiter::new(),
         };
 
         let handle = NodeHandle::new(command_tx);

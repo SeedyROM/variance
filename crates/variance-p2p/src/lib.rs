@@ -11,6 +11,7 @@ pub mod events;
 pub mod handlers;
 pub mod node;
 pub mod protocols;
+pub mod rate_limiter;
 
 pub use commands::{NodeCommand, NodeHandle};
 pub use config::{BootstrapPeer, Config};
