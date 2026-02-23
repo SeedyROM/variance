@@ -6,6 +6,9 @@ import { useIdentityStore } from "../../stores/identityStore";
 import { cn } from "../../utils/cn";
 import type { DirectMessage } from "../../api/types";
 
+/** Don't send another /typing/start within this window (ms). */
+const TYPING_SEND_COOLDOWN_MS = 3_000;
+
 interface MessageInputProps {
   peerDid: string;
 }
@@ -14,6 +17,8 @@ export function MessageInput({ peerDid }: MessageInputProps) {
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Timestamp of the last *actual* typing-start request we fired. */
+  const lastTypingSentRef = useRef<number>(0);
   const queryClient = useQueryClient();
   const localDid = useIdentityStore((s) => s.did);
 
@@ -71,6 +76,7 @@ export function MessageInput({ peerDid }: MessageInputProps) {
 
     // Cancel any pending typing-stop timer and immediately signal stop
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    lastTypingSentRef.current = 0; // allow immediate re-send on next input
     void typingApi.stop({ recipient: peerDid, is_group: false });
 
     sendMutation.mutate(trimmed);
@@ -90,10 +96,21 @@ export function MessageInput({ peerDid }: MessageInputProps) {
     e.target.style.height = "auto";
     e.target.style.height = `${e.target.scrollHeight}px`;
 
-    // Typing indicator with debounce
-    void typingApi.start({ recipient: peerDid, is_group: false });
+    // Typing indicator — only fire the HTTP request if we haven't sent one
+    // recently. The server also enforces its own cooldown, but skipping here
+    // avoids unnecessary HTTP round-trips on every keystroke.
+    const now = Date.now();
+    if (now - lastTypingSentRef.current >= TYPING_SEND_COOLDOWN_MS) {
+      lastTypingSentRef.current = now;
+      void typingApi.start({ recipient: peerDid, is_group: false });
+    }
+
+    // Reset the stop-typing timer on every keystroke — if the user pauses for
+    // 2s we send a stop, which also clears the server cooldown so the next
+    // keystroke will send a fresh start.
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
     typingTimerRef.current = setTimeout(() => {
+      lastTypingSentRef.current = 0; // allow immediate re-send after stop
       void typingApi.stop({ recipient: peerDid, is_group: false });
     }, 2000);
   };

@@ -1,6 +1,12 @@
 use dashmap::DashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use variance_proto::messaging_proto::TypingIndicator;
+
+/// Minimum interval between outbound typing-start P2P messages per recipient.
+/// Repeated calls within this window are silently dropped to prevent
+/// per-keystroke network traffic and potential DoS.
+const OUTBOUND_COOLDOWN_MS: u64 = 3000;
 
 /// Typing indicator handler
 ///
@@ -16,6 +22,10 @@ pub struct TypingHandler {
 
     /// Timeout for typing indicators in milliseconds (default: 5 seconds)
     timeout_ms: i64,
+
+    /// Tracks the last time we sent a typing-start for each recipient.
+    /// Prevents flooding the P2P network when the UI fires on every keystroke.
+    last_outbound_start: Arc<DashMap<String, Instant>>,
 }
 
 impl TypingHandler {
@@ -25,6 +35,7 @@ impl TypingHandler {
             local_did,
             typing_states: Arc::new(DashMap::new()),
             timeout_ms: 5000, // 5 seconds
+            last_outbound_start: Arc::new(DashMap::new()),
         }
     }
 
@@ -34,6 +45,7 @@ impl TypingHandler {
             local_did,
             typing_states: Arc::new(DashMap::new()),
             timeout_ms,
+            last_outbound_start: Arc::new(DashMap::new()),
         }
     }
 
@@ -64,6 +76,49 @@ impl TypingHandler {
             ),
             is_typing,
             timestamp,
+        }
+    }
+
+    /// Rate-limited typing-start for direct messages.
+    ///
+    /// Returns `Some(indicator)` only if enough time has elapsed since the last
+    /// outbound typing-start for this recipient. Repeated calls within the
+    /// cooldown window return `None`, preventing per-keystroke P2P traffic.
+    pub fn try_start_typing_direct(&self, recipient_did: String) -> Option<TypingIndicator> {
+        if self.is_within_cooldown(&recipient_did) {
+            return None;
+        }
+        self.last_outbound_start
+            .insert(recipient_did.clone(), Instant::now());
+        Some(self.send_typing_direct(recipient_did, true))
+    }
+
+    /// Rate-limited typing-start for group messages.
+    ///
+    /// Returns `Some(indicator)` only if enough time has elapsed since the last
+    /// outbound typing-start for this group. See [`try_start_typing_direct`].
+    pub fn try_start_typing_group(&self, group_id: String) -> Option<TypingIndicator> {
+        let key = format!("group:{}", group_id);
+        if self.is_within_cooldown(&key) {
+            return None;
+        }
+        self.last_outbound_start.insert(key, Instant::now());
+        Some(self.send_typing_group(group_id, true))
+    }
+
+    /// Clear the outbound cooldown for a recipient so the next typing-start
+    /// will be sent immediately. Called when the user sends a message or
+    /// explicitly stops typing.
+    pub fn clear_cooldown(&self, recipient: &str) {
+        self.last_outbound_start.remove(recipient);
+    }
+
+    /// Returns `true` if we sent a typing-start for `key` within the cooldown window.
+    fn is_within_cooldown(&self, key: &str) -> bool {
+        if let Some(last) = self.last_outbound_start.get(key) {
+            last.elapsed().as_millis() < u128::from(OUTBOUND_COOLDOWN_MS)
+        } else {
+            false
         }
     }
 
@@ -417,5 +472,58 @@ mod tests {
         handler.cleanup_all_expired();
 
         assert_eq!(handler.typing_states.len(), 0);
+    }
+
+    #[test]
+    fn test_try_start_typing_direct_cooldown() {
+        let handler = TypingHandler::new("did:variance:alice".to_string());
+
+        // First call should produce an indicator
+        let first = handler.try_start_typing_direct("did:variance:bob".to_string());
+        assert!(first.is_some());
+        assert!(first.unwrap().is_typing);
+
+        // Immediate second call should be suppressed (within cooldown)
+        let second = handler.try_start_typing_direct("did:variance:bob".to_string());
+        assert!(second.is_none());
+
+        // Different recipient should still work
+        let other = handler.try_start_typing_direct("did:variance:charlie".to_string());
+        assert!(other.is_some());
+    }
+
+    #[test]
+    fn test_try_start_typing_group_cooldown() {
+        let handler = TypingHandler::new("did:variance:alice".to_string());
+
+        let first = handler.try_start_typing_group("group123".to_string());
+        assert!(first.is_some());
+
+        let second = handler.try_start_typing_group("group123".to_string());
+        assert!(second.is_none());
+
+        // Different group should still work
+        let other = handler.try_start_typing_group("group456".to_string());
+        assert!(other.is_some());
+    }
+
+    #[test]
+    fn test_clear_cooldown_allows_resend() {
+        let handler = TypingHandler::new("did:variance:alice".to_string());
+
+        let first = handler.try_start_typing_direct("did:variance:bob".to_string());
+        assert!(first.is_some());
+
+        // Suppressed while in cooldown
+        assert!(handler
+            .try_start_typing_direct("did:variance:bob".to_string())
+            .is_none());
+
+        // Clear cooldown (simulates stop-typing or message-sent)
+        handler.clear_cooldown("did:variance:bob");
+
+        // Should work again immediately
+        let after_clear = handler.try_start_typing_direct("did:variance:bob".to_string());
+        assert!(after_clear.is_some());
     }
 }

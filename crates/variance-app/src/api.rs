@@ -1732,18 +1732,22 @@ async fn start_typing(
     State(state): State<AppState>,
     Json(req): Json<TypingRequest>,
 ) -> Result<Json<serde_json::Value>> {
+    // Rate-limit outbound typing-start to prevent per-keystroke P2P traffic.
+    // Returns None (and we skip the send) if we already sent recently.
     let indicator = if req.is_group {
-        state.typing.send_typing_group(req.recipient.clone(), true)
+        state.typing.try_start_typing_group(req.recipient.clone())
     } else {
-        state.typing.send_typing_direct(req.recipient.clone(), true)
+        state.typing.try_start_typing_direct(req.recipient.clone())
     };
 
-    if let Err(e) = state
-        .node_handle
-        .send_typing_indicator(req.recipient, indicator)
-        .await
-    {
-        tracing::debug!("Failed to deliver typing indicator (best-effort): {}", e);
+    if let Some(indicator) = indicator {
+        if let Err(e) = state
+            .node_handle
+            .send_typing_indicator(req.recipient, indicator)
+            .await
+        {
+            tracing::debug!("Failed to deliver typing indicator (best-effort): {}", e);
+        }
     }
 
     Ok(Json(serde_json::json!({
@@ -1763,6 +1767,9 @@ async fn stop_typing(
             .typing
             .send_typing_direct(req.recipient.clone(), false)
     };
+
+    // Clear cooldown so the next typing-start sends immediately
+    state.typing.clear_cooldown(&req.recipient);
 
     if let Err(e) = state
         .node_handle
