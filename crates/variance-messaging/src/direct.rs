@@ -469,47 +469,71 @@ impl DirectMessageHandler {
 
         let plaintext = match &olm_message {
             OlmMessage::PreKey(pre_key_msg) => {
-                let sender_identity_key =
-                    message
-                        .sender_identity_key
-                        .as_ref()
-                        .ok_or_else(|| Error::Crypto {
-                            message: "PreKey message missing sender_identity_key".to_string(),
+                // In Olm, the sender continues to emit PreKey messages for every
+                // outbound message until they receive a reply.  If an inbound session
+                // already exists we must use it — re-running create_inbound_session
+                // would reset the ratchet to position 0, making all subsequent
+                // messages (encrypted at positions 1, 2, …) undecryptable.
+                let existing = {
+                    let mut sessions = self.sessions.write().await;
+                    sessions.get_mut(&message.sender_did).map(|session| session.decrypt(&olm_message).map_err(|e| Error::Crypto {
+                            message: format!("Decryption failure: {}", e),
+                        }))
+                }; // sessions write lock released here
+
+                if let Some(result) = existing {
+                    // Persist the advanced ratchet state.
+                    if let Err(e) = self.persist_session(&message.sender_did).await {
+                        tracing::warn!(
+                            "Failed to persist session for {}: {}",
+                            message.sender_did,
+                            e
+                        );
+                    }
+                    result?
+                } else {
+                    // No session yet — derive one from this PreKey message.
+                    let sender_identity_key =
+                        message
+                            .sender_identity_key
+                            .as_ref()
+                            .ok_or_else(|| Error::Crypto {
+                                message: "PreKey message missing sender_identity_key".to_string(),
+                            })?;
+
+                    let key_array: [u8; 32] =
+                        sender_identity_key
+                            .as_slice()
+                            .try_into()
+                            .map_err(|_| Error::Crypto {
+                                message: "sender_identity_key must be exactly 32 bytes".to_string(),
+                            })?;
+                    let identity_key = Curve25519PublicKey::from_bytes(key_array);
+
+                    let result = self
+                        .account
+                        .write()
+                        .await
+                        .create_inbound_session(identity_key, pre_key_msg)
+                        .map_err(|e| Error::Crypto {
+                            message: format!("Failed to create inbound Olm session: {}", e),
                         })?;
 
-                let key_array: [u8; 32] =
-                    sender_identity_key
-                        .as_slice()
-                        .try_into()
-                        .map_err(|_| Error::Crypto {
-                            message: "sender_identity_key must be exactly 32 bytes".to_string(),
-                        })?;
-                let identity_key = Curve25519PublicKey::from_bytes(key_array);
+                    self.sessions
+                        .write()
+                        .await
+                        .insert(message.sender_did.clone(), result.session);
 
-                let result = self
-                    .account
-                    .write()
-                    .await
-                    .create_inbound_session(identity_key, pre_key_msg)
-                    .map_err(|e| Error::Crypto {
-                        message: format!("Failed to create inbound Olm session: {}", e),
-                    })?;
+                    if let Err(e) = self.persist_session(&message.sender_did).await {
+                        tracing::warn!(
+                            "Failed to persist inbound session for {}: {}",
+                            message.sender_did,
+                            e
+                        );
+                    }
 
-                self.sessions
-                    .write()
-                    .await
-                    .insert(message.sender_did.clone(), result.session);
-
-                // Persist the newly created inbound session
-                if let Err(e) = self.persist_session(&message.sender_did).await {
-                    tracing::warn!(
-                        "Failed to persist inbound session for {}: {}",
-                        message.sender_did,
-                        e
-                    );
+                    result.plaintext
                 }
-
-                result.plaintext
             }
             OlmMessage::Normal(_) => {
                 // Decrypt inside a scoped block so the write lock is released
@@ -892,5 +916,76 @@ mod tests {
         // Bob receives the PreKey message, auto-creates his inbound session, and decrypts.
         let decrypted = bob.receive_message(wire_message).await.unwrap();
         assert_eq!(decrypted.text, "Hello Bob!");
+    }
+
+    /// Alice sends multiple messages before Bob replies.  All messages from Alice
+    /// are PreKey messages (Olm keeps sending PreKey until it receives a reply).
+    /// Bob must decrypt each one using the same inbound session rather than
+    /// re-creating it, which would reset the ratchet and break decryption.
+    #[tokio::test]
+    async fn test_multiple_prekey_messages_before_reply() {
+        let dir = tempdir().unwrap();
+        let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
+
+        let alice_signing = SigningKey::generate(&mut OsRng);
+        let bob_signing = SigningKey::generate(&mut OsRng);
+
+        let mut bob_account = Account::new();
+        bob_account.generate_one_time_keys(1);
+        let bob_identity_key = bob_account.curve25519_key();
+        let bob_otk = *bob_account.one_time_keys().values().next().unwrap();
+
+        let alice = DirectMessageHandler::new(
+            "did:variance:alice".to_string(),
+            alice_signing,
+            Account::new(),
+            storage.clone(),
+        );
+        let bob = DirectMessageHandler::new(
+            "did:variance:bob".to_string(),
+            bob_signing,
+            bob_account,
+            storage,
+        );
+
+        alice
+            .init_session_as_initiator("did:variance:bob".to_string(), bob_identity_key, bob_otk)
+            .await
+            .unwrap();
+
+        let make_content = |text: &str| MessageContent {
+            text: text.to_string(),
+            attachments: vec![],
+            mentions: vec![],
+            reply_to: None,
+            metadata: HashMap::new(),
+        };
+
+        let msg1 = alice
+            .send_message("did:variance:bob".to_string(), make_content("first"))
+            .await
+            .unwrap();
+        let msg2 = alice
+            .send_message("did:variance:bob".to_string(), make_content("second"))
+            .await
+            .unwrap();
+        let msg3 = alice
+            .send_message("did:variance:bob".to_string(), make_content("third"))
+            .await
+            .unwrap();
+
+        // All three should be PreKey messages (no reply from Bob yet).
+        assert_eq!(msg1.olm_message_type, 0);
+        assert_eq!(msg2.olm_message_type, 0);
+        assert_eq!(msg3.olm_message_type, 0);
+
+        // Bob decrypts all three without a reply in between.
+        let d1 = bob.receive_message(msg1).await.unwrap();
+        let d2 = bob.receive_message(msg2).await.unwrap();
+        let d3 = bob.receive_message(msg3).await.unwrap();
+
+        assert_eq!(d1.text, "first");
+        assert_eq!(d2.text, "second");
+        assert_eq!(d3.text, "third");
     }
 }
