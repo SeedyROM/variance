@@ -1,68 +1,79 @@
 mod event_handlers;
 
+use std::collections::{HashMap, HashSet};
+use std::num::NonZeroUsize;
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::StreamExt;
+use libp2p::{
+    dcutr,
+    gossipsub::{self, IdentTopic},
+    identify, kad, mdns, noise, ping,
+    request_response::OutboundRequestId,
+    swarm::dial_opts::DialOpts,
+    tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
+};
+use prost::Message;
+use tokio::sync::oneshot;
+use tokio::{select, sync};
+use tracing::{debug, info, warn};
+
+use variance_identity::protocol;
+use variance_proto::identity_proto::{IdentityFound, IdentityResponse};
+
 use crate::{
     behaviour::VarianceBehaviour,
     commands::*,
     config::Config,
     error::*,
     events::{DirectMessageEvent, EventChannels},
-    handlers,
+    handlers::{identity, offline, signaling},
     rate_limiter::PeerRateLimiter,
 };
-use futures::StreamExt;
-use libp2p::{
-    dcutr, gossipsub, identify, kad, mdns, noise, ping, tcp, yamux, Multiaddr, PeerId, Swarm,
-    SwarmBuilder,
-};
-use prost::Message;
-use std::collections::HashMap;
-use std::num::NonZeroUsize;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::select;
-use tokio::sync::oneshot;
-use tracing::{debug, info, warn};
-use variance_proto::identity_proto::{IdentityFound, IdentityResponse};
 
-type ProviderQueryResult = (Vec<PeerId>, oneshot::Sender<Result<Vec<PeerId>>>);
+/// Response channel for a single identity request to a peer.
+type IdentityRequestOneshot = oneshot::Sender<Result<IdentityResponse>>;
+/// Type alias for the response channel of a get_providers query: a oneshot sender that takes a Result with either a Vec of PeerIds or an Error.
+type ProviderQueryOneshot = oneshot::Sender<Result<Vec<PeerId>>>;
+/// Type alias for the pending state of a get_providers query: the list of PeerIds accumulated so far and the oneshot sender to respond to when the query completes.
+type ProviderQueryResult = (Vec<PeerId>, ProviderQueryOneshot);
 
+type BroadcastDidResolveOneshot = oneshot::Sender<Result<IdentityFound>>;
 /// Tracks a broadcast DID resolve: how many individual requests are still pending
 /// and the oneshot channel to fire when the first Found response arrives.
-type BroadcastResolve = (usize, oneshot::Sender<Result<IdentityFound>>);
+type BroadcastResolve = (usize, BroadcastDidResolveOneshot);
 
 pub struct Node {
     swarm: Swarm<VarianceBehaviour>,
     peer_id: PeerId,
     /// Local DID, set via SetLocalIdentity command after node initialization
-    local_did: Arc<tokio::sync::RwLock<Option<String>>>,
-    identity_handler: Arc<handlers::identity::IdentityHandler>,
-    offline_handler: Arc<handlers::offline::OfflineMessageHandler>,
-    signaling_handler: Arc<handlers::signaling::SignalingHandler>,
+    local_did: Arc<sync::RwLock<Option<String>>>,
+    identity_handler: Arc<identity::IdentityHandler>,
+    offline_handler: Arc<offline::OfflineMessageHandler>,
+    signaling_handler: Arc<signaling::SignalingHandler>,
     events: EventChannels,
-    command_rx: tokio::sync::mpsc::Receiver<NodeCommand>,
+    command_rx: sync::mpsc::Receiver<NodeCommand>,
     /// Pending identity requests awaiting responses
-    pending_identity_requests: HashMap<
-        libp2p::request_response::OutboundRequestId,
-        oneshot::Sender<Result<IdentityResponse>>,
-    >,
+    pending_identity_requests: HashMap<OutboundRequestId, IdentityRequestOneshot>,
     /// Pending get_providers queries: query_id → (accumulated peers, response sender)
     pending_provider_queries: HashMap<kad::QueryId, ProviderQueryResult>,
     /// DID to PeerId mapping for routing signaling messages
-    did_to_peer: Arc<tokio::sync::RwLock<HashMap<String, PeerId>>>,
+    did_to_peer: Arc<sync::RwLock<HashMap<String, PeerId>>>,
     /// Broadcast DID resolution: DID → (remaining request count, response sender).
     /// Fires on the first Found response; if all requests fail, fires an error.
     pending_did_broadcasts: HashMap<String, BroadcastResolve>,
     /// Maps individual identity request_id → DID being resolved (for broadcast lookups).
-    pending_resolve_requests: HashMap<libp2p::request_response::OutboundRequestId, String>,
+    pending_resolve_requests: HashMap<OutboundRequestId, String>,
     /// Auto-discovery requests sent when peers connect: request_id → peer_id
-    pending_auto_discovery: HashMap<libp2p::request_response::OutboundRequestId, libp2p::PeerId>,
+    pending_auto_discovery: HashMap<OutboundRequestId, libp2p::PeerId>,
     /// Per-peer, per-protocol inbound rate limiter
     rate_limiter: PeerRateLimiter,
     /// Peers discovered via mDNS or Identify, keyed by PeerId with their known addresses.
     /// Used by the periodic reconnect loop to redial peers that dropped.
     known_peers: HashMap<PeerId, Vec<Multiaddr>>,
     /// Peer IDs of configured relay nodes, used to trigger circuit listen after connection.
-    relay_peer_ids: std::collections::HashSet<PeerId>,
+    relay_peer_ids: HashSet<PeerId>,
 }
 
 impl Node {
@@ -74,7 +85,7 @@ impl Node {
         info!("Creating P2P node with peer ID: {}", peer_id);
 
         // Create command channel for application layer to send commands to the node
-        let (command_tx, command_rx) = tokio::sync::mpsc::channel(100);
+        let (command_tx, command_rx) = sync::mpsc::channel(100);
 
         // Capture config values needed inside the SwarmBuilder closure (closures can't
         // borrow config across the builder chain).
@@ -194,18 +205,15 @@ impl Node {
             .build();
 
         // Initialize protocol handlers
-        let identity_handler = Arc::new(handlers::identity::IdentityHandler::new(peer_id));
+        let identity_handler = Arc::new(identity::IdentityHandler::new(peer_id));
 
-        let offline_handler = Arc::new(
-            handlers::offline::OfflineMessageHandler::with_local_storage(
-                peer_id.to_string(),
-                &config.storage_path.join("messages"),
-            )?,
-        );
+        let offline_handler = Arc::new(offline::OfflineMessageHandler::with_local_storage(
+            peer_id.to_string(),
+            &config.storage_path.join("messages"),
+        )?);
 
-        let signaling_handler = Arc::new(handlers::signaling::SignalingHandler::new(
-            identity_handler.clone(),
-        ));
+        let signaling_handler =
+            Arc::new(signaling::SignalingHandler::new(identity_handler.clone()));
 
         let events = EventChannels::default();
 
@@ -218,7 +226,7 @@ impl Node {
         let node = Node {
             swarm,
             peer_id,
-            local_did: Arc::new(tokio::sync::RwLock::new(None)),
+            local_did: Arc::new(sync::RwLock::new(None)),
             identity_handler,
             offline_handler,
             signaling_handler,
@@ -226,7 +234,7 @@ impl Node {
             command_rx,
             pending_identity_requests: HashMap::new(),
             pending_provider_queries: std::collections::HashMap::new(),
-            did_to_peer: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            did_to_peer: Arc::new(sync::RwLock::new(HashMap::new())),
             pending_did_broadcasts: HashMap::new(),
             pending_resolve_requests: HashMap::new(),
             pending_auto_discovery: HashMap::new(),
@@ -312,7 +320,7 @@ impl Node {
         Ok(())
     }
 
-    pub async fn run(&mut self, mut shutdown: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
+    pub async fn run(&mut self, mut shutdown: sync::mpsc::Receiver<()>) -> Result<()> {
         // Delay the first tick so initial mDNS connections have time to establish.
         let start = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut reconnect_interval = tokio::time::interval_at(start, Duration::from_secs(30));
@@ -343,8 +351,7 @@ impl Node {
     /// Handles missed mDNS announcements at startup and connections that
     /// dropped due to idle timeout.
     fn reconnect_known_peers(&mut self) {
-        let connected: std::collections::HashSet<PeerId> =
-            self.swarm.connected_peers().cloned().collect();
+        let connected: HashSet<PeerId> = self.swarm.connected_peers().cloned().collect();
 
         let to_dial: Vec<(PeerId, Vec<Multiaddr>)> = self
             .known_peers
@@ -361,11 +368,10 @@ impl Node {
         }
 
         for (peer_id, addrs) in to_dial {
-            if let Err(e) = self.swarm.dial(
-                libp2p::swarm::dial_opts::DialOpts::peer_id(peer_id)
-                    .addresses(addrs)
-                    .build(),
-            ) {
+            if let Err(e) = self
+                .swarm
+                .dial(DialOpts::peer_id(peer_id).addresses(addrs).build())
+            {
                 debug!("Reconnect dial to {} failed: {}", peer_id, e);
             }
         }
@@ -419,7 +425,7 @@ impl Node {
             } => {
                 debug!("Publishing group message to topic {}", topic);
 
-                let topic_hash = gossipsub::IdentTopic::new(&topic);
+                let topic_hash = IdentTopic::new(&topic);
                 let encoded = message.encode_to_vec();
 
                 match self
@@ -442,7 +448,7 @@ impl Node {
             NodeCommand::SubscribeToTopic { topic, response_tx } => {
                 debug!("Subscribing to topic {}", topic);
 
-                let topic_hash = gossipsub::IdentTopic::new(&topic);
+                let topic_hash = IdentTopic::new(&topic);
 
                 match self.swarm.behaviour_mut().gossipsub.subscribe(&topic_hash) {
                     Ok(_) => {
@@ -459,7 +465,7 @@ impl Node {
             NodeCommand::UnsubscribeFromTopic { topic, response_tx } => {
                 debug!("Unsubscribing from topic {}", topic);
 
-                let topic_hash = gossipsub::IdentTopic::new(&topic);
+                let topic_hash = IdentTopic::new(&topic);
 
                 if self
                     .swarm
@@ -537,7 +543,7 @@ impl Node {
                 self.pending_did_broadcasts
                     .insert(did.clone(), (peer_count, response_tx));
 
-                let request = variance_identity::protocol::create_did_request(&did, None);
+                let request = protocol::create_did_request(&did, None);
                 for peer in peers {
                     debug!("Broadcasting DID resolve request for {} to {}", did, peer);
                     let request_id = self

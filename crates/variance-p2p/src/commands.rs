@@ -12,6 +12,14 @@ use variance_proto::messaging_proto::{DirectMessage, GroupMessage, TypingIndicat
 
 use crate::error::Result;
 
+/// Re-used type aliases (canonical definitions in `node::mod`).
+type IdentityRequestOneshot = oneshot::Sender<Result<IdentityResponse>>;
+type BroadcastDidResolveOneshot = oneshot::Sender<Result<IdentityFound>>;
+type ProviderQueryOneshot = oneshot::Sender<Result<Vec<PeerId>>>;
+/// Simple ack/error response for fire-and-confirm commands.
+type CommandResponse = oneshot::Sender<Result<()>>;
+type ConnectedDidsResponse = oneshot::Sender<Vec<String>>;
+
 /// Commands that can be sent to the P2P node
 #[derive(Debug)]
 pub enum NodeCommand {
@@ -19,53 +27,53 @@ pub enum NodeCommand {
     SendIdentityRequest {
         peer: PeerId,
         request: IdentityRequest,
-        response_tx: oneshot::Sender<Result<IdentityResponse>>,
+        response_tx: IdentityRequestOneshot,
     },
 
     /// Send a WebRTC signaling message to a peer (by DID)
     SendSignalingMessage {
         peer_did: String,
         message: SignalingMessage,
-        response_tx: oneshot::Sender<Result<()>>,
+        response_tx: CommandResponse,
     },
 
     /// Publish a group message to a GossipSub topic
     PublishGroupMessage {
         topic: String,
         message: GroupMessage,
-        response_tx: oneshot::Sender<Result<()>>,
+        response_tx: CommandResponse,
     },
 
     /// Subscribe to a GossipSub topic (for group messaging)
     SubscribeToTopic {
         topic: String,
-        response_tx: oneshot::Sender<Result<()>>,
+        response_tx: CommandResponse,
     },
 
     /// Unsubscribe from a GossipSub topic
     UnsubscribeFromTopic {
         topic: String,
-        response_tx: oneshot::Sender<Result<()>>,
+        response_tx: CommandResponse,
     },
 
     /// Publish a DHT provider record announcing this node serves the given username key.
     /// Key should be constructed with `username_dht_key(username)`.
     ProvideUsername {
         key: libp2p::kad::RecordKey,
-        response_tx: oneshot::Sender<Result<()>>,
+        response_tx: CommandResponse,
     },
 
     /// Find peers that have announced they provide the given username key.
     FindUsernameProviders {
         key: libp2p::kad::RecordKey,
-        response_tx: oneshot::Sender<Result<Vec<libp2p::PeerId>>>,
+        response_tx: ProviderQueryOneshot,
     },
 
     /// Send an encrypted direct message to a peer (by DID)
     SendDirectMessage {
         peer_did: String,
         message: DirectMessage,
-        response_tx: oneshot::Sender<Result<()>>,
+        response_tx: CommandResponse,
     },
 
     /// Register this node's own DID and Olm keys in the identity handler.
@@ -97,16 +105,14 @@ pub enum NodeCommand {
     /// Olm identity key and one-time pre-keys needed to establish a session.
     ResolveIdentityByDid {
         did: String,
-        response_tx: oneshot::Sender<Result<IdentityFound>>,
+        response_tx: BroadcastDidResolveOneshot,
     },
 
     /// Return the list of DIDs for all currently connected peers.
     ///
     /// Used by the app layer to provide accurate initial presence state
     /// when a WebSocket client connects or to serve presence polling.
-    GetConnectedDids {
-        response_tx: oneshot::Sender<Vec<String>>,
-    },
+    GetConnectedDids { response_tx: ConnectedDidsResponse },
 
     /// Send a typing indicator to a peer (fire-and-forget, no ack expected).
     SendTypingIndicator {
