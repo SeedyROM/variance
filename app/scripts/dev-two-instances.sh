@@ -6,7 +6,8 @@
 # the normal onboarding flow to generate its identity.
 #
 # Usage:
-#   ./dev-two-instances.sh             # build then launch
+#   ./dev-two-instances.sh             # debug build then launch (fast)
+#   ./dev-two-instances.sh --release   # release build then launch (slow)
 #   ./dev-two-instances.sh --no-build  # skip build, use existing binary
 #
 # Override the data directories:
@@ -15,15 +16,31 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ALICE_DIR="${VARIANCE_ALICE_DIR:-/tmp/variance-alice}"
 BOB_DIR="${VARIANCE_BOB_DIR:-/tmp/variance-bob}"
-BINARY="/Users/zack/Workspace/rust/2026/variance/target/release/bundle/macos/Variance.app/Contents/MacOS/variance-desktop"
+
+MODE="debug"
+case "${1:-}" in
+  --no-build) MODE="no-build" ;;
+  --release)  MODE="release" ;;
+esac
+
+if [[ "$MODE" == "release" ]]; then
+  BINARY="$ROOT_DIR/target/release/bundle/macos/Variance.app/Contents/MacOS/variance-desktop"
+else
+  BINARY="$ROOT_DIR/target/debug/bundle/macos/Variance.app/Contents/MacOS/variance-desktop"
+fi
 
 # ── build ─────────────────────────────────────────────────────────────────────
 
-if [[ "${1:-}" != "--no-build" ]]; then
-  echo "▶ Building..."
-  (cd "$SCRIPT_DIR" && pnpm run tauri:build)
+if [[ "$MODE" == "debug" ]]; then
+  echo "▶ Building (debug)..."
+  (cd "$SCRIPT_DIR/.." && pnpm tauri build --debug --bundles app)
+  echo ""
+elif [[ "$MODE" == "release" ]]; then
+  echo "▶ Building (release)..."
+  (cd "$SCRIPT_DIR/.." && pnpm tauri build --bundles app)
   echo ""
 fi
 

@@ -1,0 +1,21 @@
+[package]
+name = "variance-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "variance-relay"
+path = "src/main.rs"
+
+[dependencies]
+libp2p = { workspace = true, features = ["relay", "identify", "ping", "tcp", "quic", "noise", "yamux", "tokio", "macros"] }
+tokio = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+dirs = { workspace = true }

@@ -11,7 +11,7 @@ use crate::{
 };
 use futures::StreamExt;
 use libp2p::{
-    gossipsub, identify, kad, mdns, noise, ping, tcp, yamux, Multiaddr, PeerId, Swarm,
+    dcutr, gossipsub, identify, kad, mdns, noise, ping, tcp, yamux, Multiaddr, PeerId, Swarm,
     SwarmBuilder,
 };
 use prost::Message;
@@ -61,6 +61,8 @@ pub struct Node {
     /// Peers discovered via mDNS or Identify, keyed by PeerId with their known addresses.
     /// Used by the periodic reconnect loop to redial peers that dropped.
     known_peers: HashMap<PeerId, Vec<Multiaddr>>,
+    /// Peer IDs of configured relay nodes, used to trigger circuit listen after connection.
+    relay_peer_ids: std::collections::HashSet<PeerId>,
 }
 
 impl Node {
@@ -74,82 +76,16 @@ impl Node {
         // Create command channel for application layer to send commands to the node
         let (command_tx, command_rx) = tokio::sync::mpsc::channel(100);
 
-        // Build Kademlia DHT
-        let mut kad_config = kad::Config::default();
-        kad_config.set_replication_factor(
-            NonZeroUsize::new(config.kad_config.replication_factor)
-                .unwrap_or(NonZeroUsize::new(20).unwrap()),
-        );
-        kad_config.set_provider_record_ttl(Some(Duration::from_secs(
-            config.kad_config.provider_record_ttl,
-        )));
+        // Capture config values needed inside the SwarmBuilder closure (closures can't
+        // borrow config across the builder chain).
+        let kad_replication_factor = config.kad_config.replication_factor;
+        let kad_provider_record_ttl = config.kad_config.provider_record_ttl;
+        let gossipsub_heartbeat_interval = config.gossipsub_config.heartbeat_interval_secs;
+        let gossipsub_history_length = config.gossipsub_config.history_length;
+        let gossipsub_history_gossip = config.gossipsub_config.history_gossip;
 
-        let store = kad::store::MemoryStore::new(peer_id);
-        let mut kad = kad::Behaviour::with_config(peer_id, store, kad_config);
-        // libp2p 0.55+ defaults to client mode; nodes must explicitly opt into server mode
-        // so they accept and serve incoming Kademlia requests (provider record queries).
-        // Without this, /ipfs/kad/1.0.0 is rejected and get_providers can never find peers
-        // that registered via start_providing.
-        kad.set_mode(Some(kad::Mode::Server));
-
-        // Build GossipSub
-        let gossipsub_config = gossipsub::ConfigBuilder::default()
-            .heartbeat_interval(Duration::from_secs(
-                config.gossipsub_config.heartbeat_interval_secs,
-            ))
-            .history_length(config.gossipsub_config.history_length)
-            .history_gossip(config.gossipsub_config.history_gossip)
-            .build()
-            .map_err(|e| Error::Gossipsub {
-                message: e.to_string(),
-            })?;
-
-        let gossipsub = gossipsub::Behaviour::new(
-            gossipsub::MessageAuthenticity::Signed(keypair.clone()),
-            gossipsub_config,
-        )
-        .map_err(|e| Error::Gossipsub {
-            message: e.to_string(),
-        })?;
-
-        // Build mDNS
-        let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id).map_err(|e| {
-            Error::Transport {
-                source: Box::new(e),
-            }
-        })?;
-
-        // Build Identify
-        let identify = identify::Behaviour::new(identify::Config::new(
-            "/variance/1.0.0".to_string(),
-            keypair.public(),
-        ));
-
-        // Build Ping
-        let ping = ping::Behaviour::new(ping::Config::new());
-
-        // Build custom protocols
-        let identity = crate::protocols::identity::create_identity_behaviour();
-        let offline_messages = crate::protocols::messaging::create_offline_message_behaviour();
-        let signaling = crate::protocols::media::create_signaling_behaviour();
-        let direct_messages = crate::protocols::messaging::create_direct_message_behaviour();
-        let typing_indicators = crate::protocols::messaging::create_typing_indicator_behaviour();
-
-        // Combine into VarianceBehaviour
-        let behaviour = VarianceBehaviour {
-            kad,
-            gossipsub,
-            mdns,
-            identify,
-            ping,
-            identity,
-            offline_messages,
-            signaling,
-            direct_messages,
-            typing_indicators,
-        };
-
-        // Build Swarm
+        // Build Swarm — with_relay_client() must come before with_behaviour() and changes
+        // the closure signature from |keypair| to |keypair, relay_client|.
         let swarm = SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
@@ -161,7 +97,88 @@ impl Node {
                 source: Box::new(e),
             })?
             .with_quic()
-            .with_behaviour(|_| behaviour)
+            .with_relay_client(noise::Config::new, yamux::Config::default)
+            .map_err(|e| Error::Transport {
+                source: Box::new(e),
+            })?
+            .with_behaviour(|keypair, relay_client| {
+                let peer_id = keypair.public().to_peer_id();
+
+                // Build Kademlia DHT
+                let mut kad_config = kad::Config::default();
+                kad_config.set_replication_factor(
+                    NonZeroUsize::new(kad_replication_factor)
+                        .unwrap_or(NonZeroUsize::new(20).unwrap()),
+                );
+                kad_config
+                    .set_provider_record_ttl(Some(Duration::from_secs(kad_provider_record_ttl)));
+                let store = kad::store::MemoryStore::new(peer_id);
+                let mut kad = kad::Behaviour::with_config(peer_id, store, kad_config);
+                // libp2p 0.55+ defaults to client mode; nodes must explicitly opt into server
+                // mode so they accept and serve incoming Kademlia requests (provider record
+                // queries). Without this, /ipfs/kad/1.0.0 is rejected and get_providers can
+                // never find peers that registered via start_providing.
+                kad.set_mode(Some(kad::Mode::Server));
+
+                // Build GossipSub
+                let gossipsub_config = gossipsub::ConfigBuilder::default()
+                    .heartbeat_interval(Duration::from_secs(gossipsub_heartbeat_interval))
+                    .history_length(gossipsub_history_length)
+                    .history_gossip(gossipsub_history_gossip)
+                    .build()
+                    .map_err(|e| Error::Gossipsub {
+                        message: e.to_string(),
+                    })?;
+                let gossipsub = gossipsub::Behaviour::new(
+                    gossipsub::MessageAuthenticity::Signed(keypair.clone()),
+                    gossipsub_config,
+                )
+                .map_err(|e| Error::Gossipsub {
+                    message: e.to_string(),
+                })?;
+
+                // Build mDNS
+                let mdns =
+                    mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id).map_err(|e| {
+                        Error::Transport {
+                            source: Box::new(e),
+                        }
+                    })?;
+
+                // Build Identify
+                let identify = identify::Behaviour::new(identify::Config::new(
+                    "/variance/1.0.0".to_string(),
+                    keypair.public(),
+                ));
+
+                // Build Ping
+                let ping = ping::Behaviour::new(ping::Config::new());
+
+                // Build custom protocols
+                let identity = crate::protocols::identity::create_identity_behaviour();
+                let offline_messages =
+                    crate::protocols::messaging::create_offline_message_behaviour();
+                let signaling = crate::protocols::media::create_signaling_behaviour();
+                let direct_messages =
+                    crate::protocols::messaging::create_direct_message_behaviour();
+                let typing_indicators =
+                    crate::protocols::messaging::create_typing_indicator_behaviour();
+
+                Ok(VarianceBehaviour {
+                    relay_client,
+                    dcutr: dcutr::Behaviour::new(peer_id),
+                    kad,
+                    gossipsub,
+                    mdns,
+                    identify,
+                    ping,
+                    identity,
+                    offline_messages,
+                    signaling,
+                    direct_messages,
+                    typing_indicators,
+                })
+            })
             .map_err(|e| Error::Transport {
                 source: Box::new(e),
             })?
@@ -192,6 +209,12 @@ impl Node {
 
         let events = EventChannels::default();
 
+        let relay_peer_ids = config
+            .relay_peers
+            .iter()
+            .filter_map(|r| r.peer_id.parse().ok())
+            .collect();
+
         let node = Node {
             swarm,
             peer_id,
@@ -209,6 +232,7 @@ impl Node {
             pending_auto_discovery: HashMap::new(),
             rate_limiter: PeerRateLimiter::new(),
             known_peers: HashMap::new(),
+            relay_peer_ids,
         };
 
         let handle = NodeHandle::new(command_tx);
@@ -267,16 +291,32 @@ impl Node {
                 })?;
         }
 
+        // Dial configured relay peers. Circuit listen is triggered in handle_connection_established
+        // once the connection succeeds and we can reserve a slot.
+        for relay in &config.relay_peers {
+            let peer_id: PeerId = relay.peer_id.parse().map_err(|_| Error::InvalidPeerId {
+                peer_id: relay.peer_id.clone(),
+            })?;
+            self.swarm
+                .behaviour_mut()
+                .kad
+                .add_address(&peer_id, relay.multiaddr.clone());
+            self.swarm
+                .dial(relay.multiaddr.clone())
+                .map_err(|e| Error::Transport {
+                    source: Box::new(e),
+                })?;
+            info!("Dialing relay peer: {} at {}", peer_id, relay.multiaddr);
+        }
+
         Ok(())
     }
 
     pub async fn run(&mut self, mut shutdown: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
         // Delay the first tick so initial mDNS connections have time to establish.
         let start = tokio::time::Instant::now() + Duration::from_secs(30);
-        let mut reconnect_interval =
-            tokio::time::interval_at(start, Duration::from_secs(30));
-        reconnect_interval
-            .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut reconnect_interval = tokio::time::interval_at(start, Duration::from_secs(30));
+        reconnect_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             select! {

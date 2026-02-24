@@ -8,8 +8,9 @@ use crate::rate_limiter::protocol as rl;
 
 use super::Node;
 
+use libp2p::dcutr::Event as DcutrEvent;
 use libp2p::swarm::SwarmEvent;
-use libp2p::{gossipsub, identify, kad, mdns, ping, request_response, PeerId};
+use libp2p::{gossipsub, identify, kad, mdns, ping, relay, request_response, Multiaddr, PeerId};
 use prost::Message;
 use tracing::{debug, info, warn};
 use variance_proto::identity_proto::{IdentityRequest, IdentityResponse};
@@ -59,6 +60,8 @@ impl Node {
 
     async fn handle_behaviour_event(&mut self, event: VarianceBehaviourEvent) {
         match event {
+            VarianceBehaviourEvent::RelayClient(e) => self.handle_relay_client_event(e),
+            VarianceBehaviourEvent::Dcutr(e) => self.handle_dcutr_event(e),
             VarianceBehaviourEvent::Kad(e) => self.handle_kad_event(e),
             VarianceBehaviourEvent::Gossipsub(e) => self.handle_gossipsub_event(e),
             VarianceBehaviourEvent::Mdns(e) => self.handle_mdns_event(e),
@@ -76,6 +79,43 @@ impl Node {
             }
             VarianceBehaviourEvent::TypingIndicators(e) => {
                 self.handle_typing_indicator_event(e).await;
+            }
+        }
+    }
+
+    // ── Relay Client ──────────────────────────────────────────────────
+
+    fn handle_relay_client_event(&mut self, event: relay::client::Event) {
+        match event {
+            relay::client::Event::ReservationReqAccepted { relay_peer_id, .. } => {
+                info!(
+                    "Relay reservation accepted: reachable via {}",
+                    relay_peer_id
+                );
+            }
+            relay::client::Event::OutboundCircuitEstablished { relay_peer_id, .. } => {
+                debug!("Outbound circuit established via relay {}", relay_peer_id);
+            }
+            _ => {}
+        }
+    }
+
+    // ── DCUTR (hole punching) ─────────────────────────────────────────
+
+    fn handle_dcutr_event(&mut self, event: DcutrEvent) {
+        // dcutr::Event is a struct with remote_peer_id + result (not an enum)
+        match event.result {
+            Ok(_) => {
+                info!(
+                    "Direct connection established with {} (hole punch succeeded)",
+                    event.remote_peer_id
+                );
+            }
+            Err(e) => {
+                debug!(
+                    "Hole punch failed with {}, staying on relay: {}",
+                    event.remote_peer_id, e
+                );
             }
         }
     }
@@ -912,6 +952,17 @@ impl Node {
             .send_request(&peer_id, request);
 
         self.pending_auto_discovery.insert(request_id, peer_id);
+
+        // If this is a configured relay peer, reserve a circuit slot so we're
+        // reachable via it. Circuit listen only works after the connection is up.
+        if self.relay_peer_ids.contains(&peer_id) {
+            let circuit_addr: Multiaddr = format!("/p2p/{}/p2p-circuit", peer_id)
+                .parse()
+                .expect("valid circuit addr");
+            if let Err(e) = self.swarm.listen_on(circuit_addr) {
+                warn!("Failed to listen on relay circuit for {}: {}", peer_id, e);
+            }
+        }
     }
 
     async fn handle_connection_closed(
