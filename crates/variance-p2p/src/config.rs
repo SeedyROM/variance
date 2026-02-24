@@ -22,6 +22,11 @@ pub struct Config {
     #[serde(default)]
     pub gossipsub_config: GossipsubConfig,
 
+    /// Relay nodes for NAT traversal. After connecting, the node will
+    /// reserve a circuit slot and be reachable at the relay's circuit address.
+    #[serde(default)]
+    pub relay_peers: Vec<BootstrapPeer>,
+
     /// Storage path for local data
     #[serde(default = "default_storage_path")]
     pub storage_path: PathBuf,
@@ -41,6 +46,7 @@ impl Default for Config {
                 "/ip4/0.0.0.0/udp/0/quic-v1".parse().unwrap(),
             ],
             bootstrap_peers: Vec::new(),
+            relay_peers: Vec::new(),
             enable_mdns: true,
             kad_config: KadConfig::default(),
             gossipsub_config: GossipsubConfig::default(),
