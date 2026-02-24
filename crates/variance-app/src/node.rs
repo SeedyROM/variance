@@ -6,8 +6,10 @@
 use crate::event_router::EventRouterDeps;
 use crate::{create_router, AppConfig, AppState, EventRouter, Result};
 use axum::Router;
+use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::task::JoinHandle;
 
 /// A fully initialized Variance node ready to serve HTTP requests
@@ -37,7 +39,7 @@ impl RunningNode {
     pub async fn shutdown(self) -> Result<()> {
         let _ = self.shutdown_tx.send(()).await;
 
-        match tokio::time::timeout(std::time::Duration::from_secs(5), self.node_task).await {
+        match tokio::time::timeout(Duration::from_secs(5), self.node_task).await {
             Ok(Ok(Ok(_))) => {
                 tracing::info!("P2P node shut down successfully");
                 Ok(())
@@ -215,7 +217,7 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
                 identity_file.olm_account_pickle = pickle_json;
                 match serde_json::to_string_pretty(&identity_file) {
                     Ok(json) => {
-                        if let Err(e) = std::fs::write(identity_path, json) {
+                        if let Err(e) = fs::write(identity_path, json) {
                             tracing::warn!("Failed to persist Olm OTKs to identity file: {}", e);
                         }
                     }
@@ -271,7 +273,7 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
     let cleanup_storage = app_state.storage.clone();
     let cleanup_identity_cache = app_state.identity_cache.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        let mut interval = tokio::time::interval(Duration::from_secs(3600));
         interval.tick().await; // skip the immediate first tick
         loop {
             interval.tick().await;

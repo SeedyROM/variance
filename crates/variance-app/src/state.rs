@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use variance_identity::cache::MultiLayerCache;
@@ -98,7 +99,7 @@ pub struct AppState {
 impl AppState {
     /// Load identity from file, migrating old formats in-place if needed.
     pub fn load_identity(identity_path: &Path) -> anyhow::Result<IdentityFile> {
-        let contents = std::fs::read_to_string(identity_path)
+        let contents = fs::read_to_string(identity_path)
             .map_err(|e| anyhow::anyhow!("Failed to read identity file: {}", e))?;
 
         let mut identity: IdentityFile = serde_json::from_str(&contents)
@@ -118,7 +119,7 @@ impl AppState {
 
             let migrated = serde_json::to_string_pretty(&identity)
                 .map_err(|e| anyhow::anyhow!("Failed to serialize migrated identity: {}", e))?;
-            std::fs::write(identity_path, migrated)
+            fs::write(identity_path, migrated)
                 .map_err(|e| anyhow::anyhow!("Failed to write migrated identity file: {}", e))?;
         }
 

@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::time::Duration;
 use tokio::signal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use variance_app::{identity_gen, start_node, AppConfig};
@@ -210,7 +212,7 @@ async fn start_node_cmd(
     let _ = shutdown_tx.send(()).await;
 
     // Wait for node to finish with timeout
-    match tokio::time::timeout(std::time::Duration::from_secs(5), node_task).await {
+    match tokio::time::timeout(Duration::from_secs(5), node_task).await {
         Ok(Ok(Ok(_))) => tracing::info!("P2P node shut down successfully"),
         Ok(Ok(Err(e))) => tracing::error!("P2P node error during shutdown: {}", e),
         Ok(Err(e)) => tracing::error!("P2P node task panicked: {}", e),
@@ -311,13 +313,13 @@ fn generate_identity(output: String, force: bool) -> Result<()> {
     }
 
     if let Some(parent) = output_path.parent() {
-        std::fs::create_dir_all(parent).context("Failed to create directory for identity file")?;
+        fs::create_dir_all(parent).context("Failed to create directory for identity file")?;
     }
 
     let (identity, phrase) = identity_gen::generate().context("Failed to generate identity")?;
     let did = identity.did.clone();
 
-    std::fs::write(output_path, serde_json::to_string_pretty(&identity)?)
+    fs::write(output_path, serde_json::to_string_pretty(&identity)?)
         .context("Failed to write identity file")?;
 
     tracing::info!("✓ Identity generated successfully");
@@ -371,7 +373,7 @@ fn recover_identity(output: String, force: bool) -> Result<()> {
     }
 
     if let Some(parent) = output_path.parent() {
-        std::fs::create_dir_all(parent).context("Failed to create directory for identity file")?;
+        fs::create_dir_all(parent).context("Failed to create directory for identity file")?;
     }
 
     println!("\n{}", "=".repeat(70));
@@ -393,7 +395,7 @@ fn recover_identity(output: String, force: bool) -> Result<()> {
     let identity = identity_gen::recover(mnemonic_phrase).context("Failed to recover identity")?;
     let did = identity.did.clone();
 
-    std::fs::write(output_path, serde_json::to_string_pretty(&identity)?)
+    fs::write(output_path, serde_json::to_string_pretty(&identity)?)
         .context("Failed to write identity file")?;
 
     tracing::info!("✓ Identity recovered successfully");
@@ -414,7 +416,7 @@ fn recover_identity(output: String, force: bool) -> Result<()> {
 fn show_identity(input: String) -> Result<()> {
     tracing::info!("Loading identity from: {}", input);
 
-    let contents = std::fs::read_to_string(&input).context("Failed to read identity file")?;
+    let contents = fs::read_to_string(&input).context("Failed to read identity file")?;
 
     let identity: serde_json::Value =
         serde_json::from_str(&contents).context("Failed to parse identity file")?;

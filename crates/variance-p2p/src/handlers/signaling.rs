@@ -1,5 +1,6 @@
 use crate::error::*;
 use crate::handlers::identity::IdentityHandler;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, warn};
@@ -20,7 +21,7 @@ pub struct SignalingHandler {
     call_manager: Arc<RwLock<Option<Arc<CallManager>>>>,
 
     /// Active calls (call_id -> peer_did)
-    active_calls: Arc<RwLock<std::collections::HashMap<String, String>>>,
+    active_calls: Arc<RwLock<HashMap<String, String>>>,
 
     /// Identity handler for resolving DIDs and public keys
     identity_handler: Arc<IdentityHandler>,
@@ -35,7 +36,7 @@ impl SignalingHandler {
         Self {
             media_handler: Arc::new(RwLock::new(None)),
             call_manager: Arc::new(RwLock::new(None)),
-            active_calls: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            active_calls: Arc::new(RwLock::new(HashMap::new())),
             identity_handler,
         }
     }

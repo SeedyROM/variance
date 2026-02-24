@@ -1,4 +1,5 @@
 use crate::error::*;
+use std::path::Path;
 use std::sync::Arc;
 use tracing::{debug, error};
 use variance_messaging::offline::OfflineRelayHandler;
@@ -26,7 +27,7 @@ impl OfflineMessageHandler {
     }
 
     /// Create with local storage at a specific path
-    pub fn with_local_storage(peer_id: String, storage_path: &std::path::Path) -> Result<Self> {
+    pub fn with_local_storage(peer_id: String, storage_path: &Path) -> Result<Self> {
         let storage =
             Arc::new(
                 LocalMessageStorage::new(storage_path).map_err(|e| Error::Transport {

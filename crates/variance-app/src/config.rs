@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::PathBuf;
 
 fn variance_data_dir() -> PathBuf {
@@ -119,7 +120,7 @@ impl Default for AppConfig {
 impl AppConfig {
     /// Load configuration from TOML file
     pub fn from_file(path: &str) -> anyhow::Result<Self> {
-        let contents = std::fs::read_to_string(path)?;
+        let contents = fs::read_to_string(path)?;
         let config: AppConfig = toml::from_str(&contents)?;
         Ok(config)
     }
@@ -127,7 +128,7 @@ impl AppConfig {
     /// Save configuration to TOML file
     pub fn to_file(&self, path: &str) -> anyhow::Result<()> {
         let contents = toml::to_string_pretty(self)?;
-        std::fs::write(path, contents)?;
+        fs::write(path, contents)?;
         Ok(())
     }
 }

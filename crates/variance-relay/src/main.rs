@@ -9,7 +9,7 @@ use libp2p::{
     tcp, yamux, Multiaddr, SwarmBuilder,
 };
 use std::{
-    fs::read_to_string,
+    fs::{self, read_to_string},
     path::{Path, PathBuf},
 };
 use tracing::{debug, info, warn};
@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let data_dir = PathBuf::from(&args.data_dir);
-    std::fs::create_dir_all(&data_dir)
+    fs::create_dir_all(&data_dir)
         .with_context(|| format!("Failed to create data dir: {}", data_dir.display()))?;
 
     let keypair = load_or_generate_keypair(&data_dir)?;
@@ -208,7 +208,7 @@ fn load_or_generate_keypair(data_dir: &Path) -> Result<Keypair> {
             .context("Failed to encode keypair")?;
         let hex = hex::encode(&bytes);
         let json = serde_json::to_string(&hex).context("Failed to serialize keypair JSON")?;
-        std::fs::write(&path, &json)
+        fs::write(&path, &json)
             .with_context(|| format!("Failed to write keypair to {}", path.display()))?;
         info!("Generated and persisted new keypair to {}", path.display());
         Ok(keypair)

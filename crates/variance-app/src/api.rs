@@ -7,6 +7,7 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
+use std::fs;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use variance_media::Call;
@@ -443,7 +444,7 @@ fn persist_username_to_identity(
     identity.discriminator = Some(discriminator);
     let json = serde_json::to_string_pretty(&identity)
         .map_err(|e| anyhow::anyhow!("Failed to serialize identity: {}", e))?;
-    std::fs::write(identity_path, json)
+    fs::write(identity_path, json)
         .map_err(|e| anyhow::anyhow!("Failed to write identity file: {}", e))?;
     Ok(())
 }

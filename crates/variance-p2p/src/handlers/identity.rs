@@ -1,6 +1,7 @@
 use crate::error::*;
 use chrono::Utc;
 use libp2p::PeerId;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::debug;
@@ -34,7 +35,7 @@ pub struct IdentityHandler {
 
     /// Local DID cache (in-memory for now)
     /// Key: DID or username, Value: DID document
-    cache: Arc<RwLock<std::collections::HashMap<String, Did>>>,
+    cache: Arc<RwLock<HashMap<String, Did>>>,
 
     /// Own identity + Olm keys, set via set_local_identity() after node startup.
     local_identity: Arc<RwLock<Option<LocalIdentity>>>,
@@ -45,7 +46,7 @@ impl IdentityHandler {
     pub fn new(peer_id: PeerId) -> Self {
         Self {
             peer_id,
-            cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            cache: Arc::new(RwLock::new(HashMap::new())),
             local_identity: Arc::new(RwLock::new(None)),
         }
     }

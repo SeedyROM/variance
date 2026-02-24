@@ -394,6 +394,8 @@ mod tests {
 
     #[test]
     fn tokens_refill_over_time() {
+        use std::time::Duration;
+
         let limiter = PeerRateLimiter::new();
         // Override with a fast-refilling bucket for testing: 1 token, refills at 1000/s
         limiter.set_protocol_config(protocol::IDENTITY, BucketConfig::new(1.0, 1000.0));
@@ -404,7 +406,7 @@ mod tests {
         assert!(!limiter.check(&peer, protocol::IDENTITY).is_allowed());
 
         // Sleep briefly — at 1000 tokens/s, 2ms should refill ~2 tokens
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        std::thread::sleep(Duration::from_millis(2));
 
         assert!(limiter.check(&peer, protocol::IDENTITY).is_allowed());
     }

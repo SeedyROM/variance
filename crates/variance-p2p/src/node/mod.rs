@@ -1,7 +1,7 @@
 mod event_handlers;
 
 use std::collections::{HashMap, HashSet};
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU8, NonZeroUsize};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,7 +38,7 @@ type IdentityRequestOneshot = oneshot::Sender<Result<IdentityResponse>>;
 type ProviderQueryOneshot = oneshot::Sender<Result<Vec<PeerId>>>;
 /// Type alias for the pending state of a get_providers query: the list of PeerIds accumulated so far and the oneshot sender to respond to when the query completes.
 type ProviderQueryResult = (Vec<PeerId>, ProviderQueryOneshot);
-
+/// Response channel for a broadcast DID resolve: a oneshot sender that takes a Result with either an IdentityFound or an Error.
 type BroadcastDidResolveOneshot = oneshot::Sender<Result<IdentityFound>>;
 /// Tracks a broadcast DID resolve: how many individual requests are still pending
 /// and the oneshot channel to fire when the first Found response arrives.
@@ -196,9 +196,7 @@ impl Node {
             .with_swarm_config(|c| {
                 c.with_idle_connection_timeout(Duration::from_secs(300))
                     // Limit concurrent dials to prevent connection storms
-                    .with_dial_concurrency_factor(
-                        std::num::NonZeroU8::new(8).expect("8 is non-zero"),
-                    )
+                    .with_dial_concurrency_factor(NonZeroU8::new(8).expect("8 is non-zero"))
                     // Only keep one connection per peer
                     .with_max_negotiating_inbound_streams(128)
             })
@@ -233,7 +231,7 @@ impl Node {
             events,
             command_rx,
             pending_identity_requests: HashMap::new(),
-            pending_provider_queries: std::collections::HashMap::new(),
+            pending_provider_queries: HashMap::new(),
             did_to_peer: Arc::new(sync::RwLock::new(HashMap::new())),
             pending_did_broadcasts: HashMap::new(),
             pending_resolve_requests: HashMap::new(),

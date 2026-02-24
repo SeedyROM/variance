@@ -1,6 +1,7 @@
 use crate::error::*;
 use async_trait::async_trait;
 use prost::Message;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use variance_proto::messaging_proto::{
     DirectMessage, Group, GroupMessage, OfflineMessageEnvelope, ReadReceipt,
@@ -595,8 +596,7 @@ impl MessageStorage for LocalMessageStorage {
 
     async fn list_direct_conversations(&self, local_did: &str) -> Result<Vec<(String, i64)>> {
         let tree = self.direct_tree()?;
-        let mut conversations: std::collections::HashMap<String, i64> =
-            std::collections::HashMap::new();
+        let mut conversations: HashMap<String, i64> = HashMap::new();
 
         for entry in tree.iter() {
             let (key, _) = entry.map_err(|e| Error::Storage { source: e })?;
@@ -640,7 +640,7 @@ impl MessageStorage for LocalMessageStorage {
         let keys_to_delete: Vec<sled::IVec> = tree
             .scan_prefix(prefix.as_bytes())
             .keys()
-            .collect::<std::result::Result<Vec<_>, _>>()
+            .collect::<Result<Vec<_>, _>>()
             .map_err(|e| Error::Storage { source: e })?;
 
         for key in keys_to_delete {
@@ -776,7 +776,7 @@ impl MessageStorage for LocalMessageStorage {
 
     async fn list_peers_with_pending_messages(&self) -> Result<Vec<String>> {
         let tree = self.pending_messages_tree()?;
-        let mut peers = std::collections::HashSet::new();
+        let mut peers = HashSet::new();
 
         for item in tree.iter() {
             let (key, _) = item.map_err(|e| Error::Storage { source: e })?;

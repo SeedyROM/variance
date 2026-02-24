@@ -3,7 +3,7 @@ use crate::error::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Entry in a cache layer with expiration
 #[derive(Clone)]
@@ -127,8 +127,8 @@ impl L3Cache {
             let entry: DiskEntry =
                 serde_json::from_slice(&data).map_err(|e| Error::Serialization { source: e })?;
 
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
 
@@ -147,8 +147,8 @@ impl L3Cache {
     }
 
     fn insert(&self, key: &str, value: &Did) -> Result<()> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
 
@@ -224,8 +224,8 @@ impl MultiLayerCache {
 
     /// Evict expired entries from the disk cache (L3)
     fn evict_expired_l3(&self) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
 

@@ -4,6 +4,7 @@ use ed25519_dalek::SigningKey;
 use libp2p::PeerId;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use variance_proto::identity_proto;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
@@ -70,7 +71,7 @@ pub struct Service {
     pub service_type: String,
     pub service_endpoint: String,
     #[serde(default)]
-    pub metadata: std::collections::HashMap<String, String>,
+    pub metadata: HashMap<String, String>,
 }
 
 impl Did {

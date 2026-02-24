@@ -2,7 +2,10 @@ use crate::did::Did;
 use crate::error::*;
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::io::Cursor;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Abstraction for identity storage backend
 ///
@@ -144,7 +147,7 @@ impl IdentityStorage for LocalStorage {
 pub struct IpfsStorage {
     client: ipfs_api_backend_hyper::IpfsClient,
     /// Cache of username → IPNS key name for publishing
-    ipns_keys: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
+    ipns_keys: Arc<tokio::sync::RwLock<HashMap<String, String>>>,
 }
 
 impl IpfsStorage {
@@ -193,9 +196,7 @@ impl IpfsStorage {
 
         Ok(Self {
             client,
-            ipns_keys: std::sync::Arc::new(tokio::sync::RwLock::new(
-                std::collections::HashMap::new(),
-            )),
+            ipns_keys: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         })
     }
 }
@@ -213,7 +214,7 @@ impl IdentityStorage for IpfsStorage {
 
         // Spawn task to make future Send (ipfs-api-backend-hyper futures are not Send)
         let handle = tokio::task::spawn(async move {
-            let cursor = std::io::Cursor::new(json);
+            let cursor = Cursor::new(json);
             client.add(cursor).await
         });
 
