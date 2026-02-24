@@ -1,4 +1,6 @@
-use libp2p::{dcutr, gossipsub, identify, kad, mdns, ping, relay, request_response, swarm::NetworkBehaviour};
+use libp2p::{
+    dcutr, gossipsub, identify, kad, mdns, ping, relay, request_response, swarm::NetworkBehaviour,
+};
 
 /// Combined network behaviour for Variance P2P
 #[derive(NetworkBehaviour)]

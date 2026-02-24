@@ -110,9 +110,8 @@ impl Node {
                     NonZeroUsize::new(kad_replication_factor)
                         .unwrap_or(NonZeroUsize::new(20).unwrap()),
                 );
-                kad_config.set_provider_record_ttl(Some(Duration::from_secs(
-                    kad_provider_record_ttl,
-                )));
+                kad_config
+                    .set_provider_record_ttl(Some(Duration::from_secs(kad_provider_record_ttl)));
                 let store = kad::store::MemoryStore::new(peer_id);
                 let mut kad = kad::Behaviour::with_config(peer_id, store, kad_config);
                 // libp2p 0.55+ defaults to client mode; nodes must explicitly opt into server
@@ -139,9 +138,11 @@ impl Node {
                 })?;
 
                 // Build mDNS
-                let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)
-                    .map_err(|e| Error::Transport {
-                        source: Box::new(e),
+                let mdns =
+                    mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id).map_err(|e| {
+                        Error::Transport {
+                            source: Box::new(e),
+                        }
                     })?;
 
                 // Build Identify

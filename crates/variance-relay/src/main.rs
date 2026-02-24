@@ -2,14 +2,23 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use futures::StreamExt;
 use libp2p::{
-    identify, identity, noise, ping, relay, swarm::NetworkBehaviour, tcp, yamux, Multiaddr,
-    SwarmBuilder,
+    identify,
+    identity::Keypair,
+    noise, ping, relay,
+    swarm::{NetworkBehaviour, SwarmEvent},
+    tcp, yamux, Multiaddr, SwarmBuilder,
 };
-use std::path::PathBuf;
+use std::{
+    fs::read_to_string,
+    path::{Path, PathBuf},
+};
 use tracing::{debug, info, warn};
 
 #[derive(Parser)]
-#[command(name = "variance-relay", about = "Variance P2P relay node for NAT traversal")]
+#[command(
+    name = "variance-relay",
+    about = "Variance P2P relay node for NAT traversal"
+)]
 struct Args {
     /// TCP/QUIC listen port
     #[arg(long, default_value = "4001")]
@@ -105,27 +114,27 @@ async fn main() -> Result<()> {
         tokio::select! {
             event = swarm.next() => {
                 match event {
-                    Some(libp2p::swarm::SwarmEvent::NewListenAddr { address, .. }) => {
+                    Some(SwarmEvent::NewListenAddr { address, .. }) => {
                         info!("Now listening on {}/p2p/{}", address, peer_id);
                     }
-                    Some(libp2p::swarm::SwarmEvent::ConnectionEstablished { peer_id: remote, .. }) => {
+                    Some(SwarmEvent::ConnectionEstablished { peer_id: remote, .. }) => {
                         debug!("Connection established with {}", remote);
                     }
-                    Some(libp2p::swarm::SwarmEvent::ConnectionClosed { peer_id: remote, cause, .. }) => {
+                    Some(SwarmEvent::ConnectionClosed { peer_id: remote, cause, .. }) => {
                         debug!("Connection closed with {}: {:?}", remote, cause);
                     }
-                    Some(libp2p::swarm::SwarmEvent::Behaviour(RelayBehaviourEvent::Relay(event))) => {
+                    Some(SwarmEvent::Behaviour(RelayBehaviourEvent::Relay(event))) => {
                         handle_relay_event(event);
                     }
-                    Some(libp2p::swarm::SwarmEvent::Behaviour(RelayBehaviourEvent::Identify(
+                    Some(SwarmEvent::Behaviour(RelayBehaviourEvent::Identify(
                         identify::Event::Received { peer_id: remote, info, .. },
                     ))) => {
                         debug!("Identified {}: agent={}", remote, info.agent_version);
                     }
-                    Some(libp2p::swarm::SwarmEvent::OutgoingConnectionError { peer_id, error, .. }) => {
+                    Some(SwarmEvent::OutgoingConnectionError { peer_id, error, .. }) => {
                         warn!("Outgoing connection error to {:?}: {}", peer_id, error);
                     }
-                    Some(libp2p::swarm::SwarmEvent::IncomingConnectionError { error, .. }) => {
+                    Some(SwarmEvent::IncomingConnectionError { error, .. }) => {
                         debug!("Incoming connection error: {}", error);
                     }
                     _ => {}
@@ -162,10 +171,7 @@ fn handle_relay_event(event: relay::Event) {
             src_peer_id,
             dst_peer_id,
         } => {
-            debug!(
-                "Circuit request denied: {} → {}",
-                src_peer_id, dst_peer_id
-            );
+            debug!("Circuit request denied: {} → {}", src_peer_id, dst_peer_id);
         }
         relay::Event::CircuitClosed {
             src_peer_id,
@@ -175,10 +181,7 @@ fn handle_relay_event(event: relay::Event) {
             if let Some(e) = error {
                 debug!("Circuit closed: {} → {}: {}", src_peer_id, dst_peer_id, e);
             } else {
-                debug!(
-                    "Circuit closed normally: {} → {}",
-                    src_peer_id, dst_peer_id
-                );
+                debug!("Circuit closed normally: {} → {}", src_peer_id, dst_peer_id);
             }
         }
         _ => {}
@@ -186,21 +189,20 @@ fn handle_relay_event(event: relay::Event) {
 }
 
 /// Load keypair from `<data_dir>/keypair.json`, or generate and persist a new one.
-fn load_or_generate_keypair(data_dir: &PathBuf) -> Result<identity::Keypair> {
+fn load_or_generate_keypair(data_dir: &Path) -> Result<Keypair> {
     let path = data_dir.join("keypair.json");
 
     if path.exists() {
-        let json = std::fs::read_to_string(&path)
+        let json = read_to_string(&path)
             .with_context(|| format!("Failed to read keypair from {}", path.display()))?;
-        let hex: String =
-            serde_json::from_str(&json).context("Failed to parse keypair JSON")?;
+        let hex: String = serde_json::from_str(&json).context("Failed to parse keypair JSON")?;
         let bytes = hex::decode(&hex).context("Failed to hex-decode keypair bytes")?;
-        let keypair = identity::Keypair::from_protobuf_encoding(&bytes)
+        let keypair = Keypair::from_protobuf_encoding(&bytes)
             .context("Failed to decode keypair from protobuf")?;
         info!("Loaded existing keypair from {}", path.display());
         Ok(keypair)
     } else {
-        let keypair = identity::Keypair::generate_ed25519();
+        let keypair = Keypair::generate_ed25519();
         let bytes = keypair
             .to_protobuf_encoding()
             .context("Failed to encode keypair")?;

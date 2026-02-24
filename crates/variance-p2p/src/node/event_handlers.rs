@@ -960,10 +960,7 @@ impl Node {
                 .parse()
                 .expect("valid circuit addr");
             if let Err(e) = self.swarm.listen_on(circuit_addr) {
-                warn!(
-                    "Failed to listen on relay circuit for {}: {}",
-                    peer_id, e
-                );
+                warn!("Failed to listen on relay circuit for {}: {}", peer_id, e);
             }
         }
     }
