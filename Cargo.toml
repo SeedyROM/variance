@@ -8,6 +8,7 @@ members = [
     "crates/variance-media",
     "crates/variance-app",
     "crates/variance-cli",
+    "crates/variance-relay",
 
     "app/src-tauri",
 ]
@@ -36,10 +37,13 @@ libp2p = { version = "0.55", features = [
     "mdns",
     "identify",
     "ping",
+    "relay",
+    "dcutr",
     "request-response",
     "macros",
     "metrics",
 ] }
+clap = { version = "4.5", features = ["derive"] }
 libp2p-identity = { version = "0.2", features = ["ed25519", "secp256k1"] }
 
 # HTTP server

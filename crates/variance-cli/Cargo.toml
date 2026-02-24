@@ -14,7 +14,7 @@ variance-p2p = { path = "../variance-p2p" }
 variance-proto = { path = "../variance-proto" }
 
 # CLI
-clap = { version = "4.5", features = ["derive", "env"] }
+clap = { workspace = true, features = ["env"] }
 
 # HTTP server
 axum = { workspace = true }

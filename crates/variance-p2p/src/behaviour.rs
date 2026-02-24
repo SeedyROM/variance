@@ -1,8 +1,14 @@
-use libp2p::{gossipsub, identify, kad, mdns, ping, request_response, swarm::NetworkBehaviour};
+use libp2p::{dcutr, gossipsub, identify, kad, mdns, ping, relay, request_response, swarm::NetworkBehaviour};
 
 /// Combined network behaviour for Variance P2P
 #[derive(NetworkBehaviour)]
 pub struct VarianceBehaviour {
+    /// Circuit relay client for NAT traversal
+    pub relay_client: relay::client::Behaviour,
+
+    /// DCUTR for upgrading relayed connections to direct ones via hole punching
+    pub dcutr: dcutr::Behaviour,
+
     /// Kademlia DHT for peer/content routing
     pub kad: kad::Behaviour<kad::store::MemoryStore>,
 
