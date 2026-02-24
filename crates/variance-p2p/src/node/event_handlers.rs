@@ -172,6 +172,12 @@ impl Node {
                 for (peer_id, multiaddr) in peers {
                     info!("Discovered peer via mDNS: {} at {}", peer_id, multiaddr);
 
+                    // Track address for periodic reconnection
+                    let known = self.known_peers.entry(peer_id).or_default();
+                    if !known.contains(&multiaddr) {
+                        known.push(multiaddr.clone());
+                    }
+
                     self.swarm
                         .behaviour_mut()
                         .kad
@@ -199,8 +205,18 @@ impl Node {
     fn handle_identify_event(&mut self, event: identify::Event) {
         if let identify::Event::Received { peer_id, info, .. } = event {
             debug!("Identified peer {}: {:?}", peer_id, info);
+            for addr in &info.listen_addrs {
+                self.swarm
+                    .behaviour_mut()
+                    .kad
+                    .add_address(&peer_id, addr.clone());
+            }
+            // Track addresses for periodic reconnection
+            let known = self.known_peers.entry(peer_id).or_default();
             for addr in info.listen_addrs {
-                self.swarm.behaviour_mut().kad.add_address(&peer_id, addr);
+                if !known.contains(&addr) {
+                    known.push(addr);
+                }
             }
         }
     }

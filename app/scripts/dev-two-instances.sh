@@ -49,7 +49,7 @@ echo "Launching Alice → $ALICE_DIR"
 RUST_LOG=debug VARIANCE_DATA_DIR="$ALICE_DIR" "$BINARY" >/tmp/variance-alice.log 2>&1 &
 ALICE_PID=$!
 
-sleep 0.5
+sleep 1.5
 
 echo "Launching Bob   → $BOB_DIR"
 RUST_LOG=debug VARIANCE_DATA_DIR="$BOB_DIR" "$BINARY" >/tmp/variance-bob.log 2>&1 &

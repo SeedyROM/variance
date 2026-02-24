@@ -11,7 +11,8 @@ use crate::{
 };
 use futures::StreamExt;
 use libp2p::{
-    gossipsub, identify, kad, mdns, noise, ping, tcp, yamux, PeerId, Swarm, SwarmBuilder,
+    gossipsub, identify, kad, mdns, noise, ping, tcp, yamux, Multiaddr, PeerId, Swarm,
+    SwarmBuilder,
 };
 use prost::Message;
 use std::collections::HashMap;
@@ -57,6 +58,9 @@ pub struct Node {
     pending_auto_discovery: HashMap<libp2p::request_response::OutboundRequestId, libp2p::PeerId>,
     /// Per-peer, per-protocol inbound rate limiter
     rate_limiter: PeerRateLimiter,
+    /// Peers discovered via mDNS or Identify, keyed by PeerId with their known addresses.
+    /// Used by the periodic reconnect loop to redial peers that dropped.
+    known_peers: HashMap<PeerId, Vec<Multiaddr>>,
 }
 
 impl Node {
@@ -162,7 +166,7 @@ impl Node {
                 source: Box::new(e),
             })?
             .with_swarm_config(|c| {
-                c.with_idle_connection_timeout(Duration::from_secs(60))
+                c.with_idle_connection_timeout(Duration::from_secs(300))
                     // Limit concurrent dials to prevent connection storms
                     .with_dial_concurrency_factor(
                         std::num::NonZeroU8::new(8).expect("8 is non-zero"),
@@ -204,6 +208,7 @@ impl Node {
             pending_resolve_requests: HashMap::new(),
             pending_auto_discovery: HashMap::new(),
             rate_limiter: PeerRateLimiter::new(),
+            known_peers: HashMap::new(),
         };
 
         let handle = NodeHandle::new(command_tx);
@@ -266,6 +271,13 @@ impl Node {
     }
 
     pub async fn run(&mut self, mut shutdown: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
+        // Delay the first tick so initial mDNS connections have time to establish.
+        let start = tokio::time::Instant::now() + Duration::from_secs(30);
+        let mut reconnect_interval =
+            tokio::time::interval_at(start, Duration::from_secs(30));
+        reconnect_interval
+            .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
         loop {
             select! {
                 event = self.swarm.select_next_some() => {
@@ -273,6 +285,9 @@ impl Node {
                 }
                 Some(command) = self.command_rx.recv() => {
                     self.handle_command(command).await;
+                }
+                _ = reconnect_interval.tick() => {
+                    self.reconnect_known_peers();
                 }
                 _ = shutdown.recv() => {
                     info!("Shutdown signal received");
@@ -282,6 +297,38 @@ impl Node {
         }
 
         Ok(())
+    }
+
+    /// Periodically re-dial known peers that are not currently connected.
+    /// Handles missed mDNS announcements at startup and connections that
+    /// dropped due to idle timeout.
+    fn reconnect_known_peers(&mut self) {
+        let connected: std::collections::HashSet<PeerId> =
+            self.swarm.connected_peers().cloned().collect();
+
+        let to_dial: Vec<(PeerId, Vec<Multiaddr>)> = self
+            .known_peers
+            .iter()
+            .filter(|(peer_id, _)| !connected.contains(peer_id))
+            .map(|(peer_id, addrs)| (*peer_id, addrs.clone()))
+            .collect();
+
+        if !to_dial.is_empty() {
+            debug!(
+                "Reconnect scan: {} known peer(s) not connected, redialing",
+                to_dial.len()
+            );
+        }
+
+        for (peer_id, addrs) in to_dial {
+            if let Err(e) = self.swarm.dial(
+                libp2p::swarm::dial_opts::DialOpts::peer_id(peer_id)
+                    .addresses(addrs)
+                    .build(),
+            ) {
+                debug!("Reconnect dial to {} failed: {}", peer_id, e);
+            }
+        }
     }
 
     /// Handle a command from the application layer.
