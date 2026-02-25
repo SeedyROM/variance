@@ -67,6 +67,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/groups/{id}/invite", post(invite_to_group))
         .route("/groups/{id}/members", get(get_group_members))
         .route("/groups/{id}/leave", post(leave_group))
+        .route(
+            "/groups/{id}/members/{member_did}",
+            axum::routing::delete(remove_group_member),
+        )
         .route("/groups/accept", post(accept_group_invitation))
         // Receipt endpoints
         .route("/receipts/delivered", post(send_delivered_receipt))
@@ -298,6 +302,8 @@ pub struct AcceptGroupInvitationRequest {
     pub signature: String, // hex-encoded
     #[serde(default)]
     pub members: Vec<InvitationMember>,
+    /// Key version being conveyed; 0/absent means pre-versioning (treated as v1)
+    pub key_version: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1128,6 +1134,16 @@ async fn send_group_message(
             message: format!("Failed to send message: {}", e),
         })?;
 
+    // Publish to GossipSub so peers receive it (non-fatal if unavailable)
+    let topic = format!("/variance/group/{}", req.group_id);
+    if let Err(e) = state
+        .node_handle
+        .publish_group_message(topic, message.clone())
+        .await
+    {
+        tracing::warn!("Failed to publish group message to GossipSub: {}", e);
+    }
+
     // Emit event if event channels are available
     if let Some(ref channels) = state.event_channels {
         channels.send_group_message(GroupMessageEvent::MessageSent {
@@ -1265,13 +1281,18 @@ async fn create_group(
     State(state): State<AppState>,
     Json(req): Json<CreateGroupRequest>,
 ) -> Result<Json<GroupResponse>> {
-    let (_group_id, group) = state
+    let (group_id, group) = state
         .group_messaging
         .create_group(req.name, req.description)
         .await
         .map_err(|e| Error::App {
             message: format!("Failed to create group: {}", e),
         })?;
+
+    let topic = format!("/variance/group/{}", group_id);
+    if let Err(e) = state.node_handle.subscribe_to_topic(topic).await {
+        tracing::warn!("Failed to subscribe to group topic: {}", e);
+    }
 
     Ok(Json(group_to_response(group)))
 }
@@ -1348,9 +1369,7 @@ async fn leave_group(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    // Remove ourselves from the group by removing our membership
-    // If we're admin, this effectively abandons the group
-    state
+    let invitations = state
         .group_messaging
         .remove_member(&id, &state.local_did.clone())
         .await
@@ -1358,7 +1377,50 @@ async fn leave_group(
             message: format!("Failed to leave group: {}", e),
         })?;
 
-    Ok(Json(serde_json::json!({ "success": true, "group_id": id })))
+    let rekey = format_rekey_invitations(invitations);
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "group_id": id,
+        "rekey_invitations": rekey,
+    })))
+}
+
+async fn remove_group_member(
+    State(state): State<AppState>,
+    Path((id, member_did)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>> {
+    let invitations = state
+        .group_messaging
+        .remove_member(&id, &member_did)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to remove member: {}", e),
+        })?;
+
+    let rekey = format_rekey_invitations(invitations);
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "group_id": id,
+        "removed_did": member_did,
+        "rekey_invitations": rekey,
+    })))
+}
+
+fn format_rekey_invitations(
+    invitations: Vec<variance_proto::messaging_proto::GroupInvitation>,
+) -> Vec<serde_json::Value> {
+    invitations
+        .into_iter()
+        .map(|inv| {
+            serde_json::json!({
+                "invitee_did": inv.invitee_did,
+                "encrypted_group_key": hex::encode(&inv.encrypted_group_key),
+                "signature": hex::encode(&inv.signature),
+                "key_version": inv.key_version,
+                "timestamp": inv.timestamp,
+            })
+        })
+        .collect()
 }
 
 async fn accept_group_invitation(
@@ -1383,6 +1445,7 @@ async fn accept_group_invitation(
             role: m.role,
             joined_at: m.joined_at,
             nickname: m.nickname,
+            x25519_key: None,
         })
         .collect();
 
@@ -1395,6 +1458,7 @@ async fn accept_group_invitation(
         timestamp: req.timestamp,
         signature,
         members,
+        key_version: req.key_version.unwrap_or(0),
     };
 
     state
@@ -1404,6 +1468,11 @@ async fn accept_group_invitation(
         .map_err(|e| Error::App {
             message: format!("Failed to accept invitation: {}", e),
         })?;
+
+    let topic = format!("/variance/group/{}", req.group_id);
+    if let Err(e) = state.node_handle.subscribe_to_topic(topic).await {
+        tracing::warn!("Failed to subscribe to group topic: {}", e);
+    }
 
     Ok(Json(serde_json::json!({
         "success": true,

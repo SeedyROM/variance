@@ -50,6 +50,9 @@ message GroupMessage {
   int64 timestamp = 7;
   MessageType type = 8;
   optional string reply_to = 9;
+
+  // Key version used for encryption; required for decryption after rotation
+  uint32 key_version = 10;
 }
 
 enum MessageType {
@@ -130,6 +133,8 @@ message GroupMember {
   GroupRole role = 2;
   int64 joined_at = 3;
   optional string nickname = 4;
+  // X25519 public key for encrypting group key re-invitations after rotation
+  optional bytes x25519_key = 5;
 }
 
 enum GroupRole {
@@ -159,6 +164,9 @@ message GroupInvitation {
 
   // Full member list at time of invitation, so acceptor starts with correct state
   repeated GroupMember members = 8;
+
+  // Key version being conveyed; required so the recipient inserts into the right slot
+  uint32 key_version = 9;
 }
 
 // ACK for direct message delivery confirmation.

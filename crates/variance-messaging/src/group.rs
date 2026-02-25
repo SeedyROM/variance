@@ -31,9 +31,11 @@ pub struct GroupMessageHandler {
     /// Groups indexed by group_id
     groups: DashMap<String, Group>,
 
-    /// Group keys (decrypted) indexed by group_id
-    /// Only contains keys for groups where local user is a member
-    group_keys: DashMap<String, Vec<u8>>,
+    /// Versioned group keys (decrypted), indexed by group_id → version → raw key bytes.
+    ///
+    /// Old versions are kept so historical messages can still be decrypted after rotation.
+    /// Only contains keys for groups where local user is a member.
+    group_keys: DashMap<String, DashMap<u32, Vec<u8>>>,
 
     /// Message storage backend
     storage: Arc<dyn MessageStorage>,
@@ -111,12 +113,13 @@ impl GroupMessageHandler {
             created_at: chrono::Utc::now().timestamp_millis(),
         };
 
-        // Create admin member
+        // Create admin member (no X25519 key stored for the creator — they already have the key)
         let admin_member = GroupMember {
             did: self.local_did.clone(),
             role: GroupRole::Admin.into(),
             joined_at: chrono::Utc::now().timestamp_millis(),
             nickname: None,
+            x25519_key: None,
         };
 
         let group = Group {
@@ -130,13 +133,15 @@ impl GroupMessageHandler {
             description,
         };
 
-        // Store group and key in memory
+        // Store group and key in memory (version 1 for the initial key)
         self.groups.insert(group_id.clone(), group.clone());
-        self.group_keys.insert(group_id.clone(), key_bytes);
+        let inner: DashMap<u32, Vec<u8>> = DashMap::new();
+        inner.insert(1, key_bytes);
+        self.group_keys.insert(group_id.clone(), inner);
 
         // Persist to disk
         self.persist_group(&group_id).await?;
-        self.persist_group_key(&group_id).await?;
+        self.persist_group_key(&group_id, 1).await?;
 
         Ok((group_id, group))
     }
@@ -176,59 +181,26 @@ impl GroupMessageHandler {
             });
         }
 
-        // Add member
+        // Add member (store their X25519 key so rotate_key can re-encrypt for them)
         let new_member = GroupMember {
             did: invitee_did.clone(),
             role: GroupRole::Member.into(),
             joined_at: chrono::Utc::now().timestamp_millis(),
             nickname: None,
+            x25519_key: Some(invitee_x25519_key.to_vec()),
         };
         group_ref.members.push(new_member);
         drop(group_ref);
 
-        // Get raw group key
+        // Get current key version and raw key
+        let current_version = self.current_key_version(group_id);
         let raw_group_key = self
             .group_keys
             .get(group_id)
+            .and_then(|inner| inner.get(&current_version).map(|k| k.clone()))
             .ok_or_else(|| Error::Encryption {
                 message: "Group key not found".to_string(),
-            })?
-            .clone();
-
-        // Encrypt group key for invitee using ECDH + HKDF + AES-256-GCM.
-        //
-        // Wire format: ephemeral_pub (32 bytes) || nonce (12 bytes) || ciphertext.
-        // The recipient recovers the shared secret using their own X25519 secret key
-        // + the ephemeral public key, then applies the same HKDF to get the cipher key.
-        let ephemeral_secret = x25519_dalek::EphemeralSecret::random_from_rng(OsRng);
-        let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral_secret);
-        let invitee_public = x25519_dalek::PublicKey::from(invitee_x25519_key);
-        let shared_secret = ephemeral_secret.diffie_hellman(&invitee_public);
-
-        let hk = Hkdf::<Sha256>::new(None, shared_secret.as_bytes());
-        let mut cipher_key_bytes = [0u8; 32];
-        hk.expand(b"variance-group-key-v1", &mut cipher_key_bytes)
-            .expect("HKDF expand with 32-byte output always succeeds");
-
-        let cipher = Aes256Gcm::new_from_slice(&cipher_key_bytes).map_err(|_| Error::Crypto {
-            message: "Failed to build AES-256-GCM cipher for group key encryption".to_string(),
-        })?;
-
-        let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
-
-        let ciphertext =
-            cipher
-                .encrypt(nonce, raw_group_key.as_ref())
-                .map_err(|_| Error::Encryption {
-                    message: "AES-256-GCM encryption of group key failed".to_string(),
-                })?;
-
-        let mut encrypted_group_key = Vec::with_capacity(32 + 12 + ciphertext.len());
-        encrypted_group_key.extend_from_slice(ephemeral_public.as_bytes());
-        encrypted_group_key.extend_from_slice(&nonce_bytes);
-        encrypted_group_key.extend_from_slice(&ciphertext);
+            })?;
 
         let group_ref = self
             .groups
@@ -240,22 +212,17 @@ impl GroupMessageHandler {
         let members = group_ref.members.clone();
         drop(group_ref);
 
-        // Create invitation with full member list so the acceptor
-        // starts with correct group membership state.
-        let invitation = GroupInvitation {
-            group_id: group_id.to_string(),
-            group_name,
-            inviter_did: self.local_did.clone(),
-            invitee_did: invitee_did.clone(),
-            encrypted_group_key,
-            timestamp: chrono::Utc::now().timestamp_millis(),
-            signature: vec![],
-            members,
-        };
-
-        // Sign invitation
-        let mut invitation_with_sig = invitation.clone();
-        invitation_with_sig.signature = self.sign_invitation(&invitation)?;
+        let invitation_with_sig = self
+            .encrypt_key_for_member(
+                group_id,
+                &group_name,
+                &invitee_did,
+                invitee_x25519_key,
+                &raw_group_key,
+                current_version,
+                &members,
+            )
+            .await?;
 
         // Persist updated group membership
         if let Err(e) = self.persist_group(group_id).await {
@@ -267,8 +234,14 @@ impl GroupMessageHandler {
 
     /// Remove a member from a group
     ///
-    /// Only admin can remove members. After removal, rotates the group key.
-    pub async fn remove_member(&self, group_id: &str, member_did: &str) -> Result<()> {
+    /// Any member may remove themselves (leave). Admins may also remove other members.
+    /// After removal, rotates the group key and returns re-key invitations for remaining
+    /// members who have a stored X25519 key.
+    pub async fn remove_member(
+        &self,
+        group_id: &str,
+        member_did: &str,
+    ) -> Result<Vec<GroupInvitation>> {
         let mut group_ref = self
             .groups
             .get_mut(group_id)
@@ -276,10 +249,10 @@ impl GroupMessageHandler {
                 group_id: group_id.to_string(),
             })?;
 
-        // Only admin can remove
-        if group_ref.admin_did != self.local_did {
+        // Self-removal is always allowed; admin check applies only to removing others.
+        if member_did != self.local_did && group_ref.admin_did != self.local_did {
             return Err(Error::Unauthorized {
-                message: "Only admin can remove members".to_string(),
+                message: "Only admin can remove other members".to_string(),
             });
         }
 
@@ -287,57 +260,127 @@ impl GroupMessageHandler {
         group_ref.members.retain(|m| m.did != member_did);
         drop(group_ref);
 
-        // Rotate key for forward secrecy (also persists the new key)
-        self.rotate_key(group_id).await?;
+        // Rotate key for forward secrecy; collect re-key invitations for remaining members
+        let invitations = self.rotate_key(group_id).await?;
 
         // Persist updated membership
         if let Err(e) = self.persist_group(group_id).await {
             tracing::warn!("Failed to persist group after remove_member: {}", e);
         }
 
-        Ok(())
+        Ok(invitations)
     }
 
     /// Rotate group key
     ///
-    /// Generates a new key and increments version.
-    /// Should be called after member removal or periodically.
-    pub async fn rotate_key(&self, group_id: &str) -> Result<()> {
-        let mut group_ref = self
-            .groups
-            .get_mut(group_id)
-            .ok_or_else(|| Error::GroupNotFound {
-                group_id: group_id.to_string(),
-            })?;
+    /// Generates a new key and increments version. Old key versions are kept in the
+    /// in-memory map so historical messages can still be decrypted.
+    ///
+    /// Returns re-key `GroupInvitation`s for every remaining member that has a stored
+    /// X25519 key. The caller should distribute these to the respective members.
+    pub async fn rotate_key(&self, group_id: &str) -> Result<Vec<GroupInvitation>> {
+        let new_version = {
+            let mut group_ref = self
+                .groups
+                .get_mut(group_id)
+                .ok_or_else(|| Error::GroupNotFound {
+                    group_id: group_id.to_string(),
+                })?;
+
+            let old_version = group_ref
+                .current_key
+                .as_ref()
+                .map(|k| k.version)
+                .unwrap_or(0);
+            let new_version = old_version + 1;
+
+            let new_key_meta = GroupKey {
+                version: new_version,
+                key: vec![], // raw key stored in group_keys map, not here
+                created_at: chrono::Utc::now().timestamp_millis(),
+            };
+            group_ref.current_key = Some(new_key_meta);
+            new_version
+        };
 
         // Generate new key
         let mut key_bytes = vec![0u8; 32];
         rand::thread_rng().fill_bytes(&mut key_bytes);
 
-        let old_version = group_ref
-            .current_key
-            .as_ref()
-            .map(|k| k.version)
-            .unwrap_or(0);
+        // Insert into versioned map, keeping old versions for historical decryption
+        {
+            let inner = self
+                .group_keys
+                .entry(group_id.to_string())
+                .or_insert_with(DashMap::new);
+            inner.insert(new_version, key_bytes.clone());
+        }
 
-        let new_key = GroupKey {
-            version: old_version + 1,
-            key: key_bytes.clone(),
-            created_at: chrono::Utc::now().timestamp_millis(),
-        };
-
-        group_ref.current_key = Some(new_key);
-        drop(group_ref);
-
-        // Update local key
-        self.group_keys.insert(group_id.to_string(), key_bytes);
-
-        // Persist encrypted key to disk
-        if let Err(e) = self.persist_group_key(group_id).await {
+        // Persist encrypted new key
+        if let Err(e) = self.persist_group_key(group_id, new_version).await {
             tracing::warn!("Failed to persist group key after rotation: {}", e);
         }
 
-        Ok(())
+        // Build re-key invitations for every remaining member that has an X25519 key.
+        // Members without a stored key (e.g. the admin who created the group, or
+        // pre-migration members) are skipped with a warning.
+        let (group_name, members) = {
+            let g = self
+                .groups
+                .get(group_id)
+                .ok_or_else(|| Error::GroupNotFound {
+                    group_id: group_id.to_string(),
+                })?;
+            (g.name.clone(), g.members.clone())
+        };
+
+        let mut invitations = Vec::new();
+        for member in &members {
+            if member.did == self.local_did {
+                continue; // no need to send an invitation to ourselves
+            }
+            let Some(ref x25519_bytes) = member.x25519_key else {
+                tracing::warn!(
+                    "Skipping re-key invitation for {} (no X25519 key stored)",
+                    member.did
+                );
+                continue;
+            };
+            let x25519_key: [u8; 32] = match x25519_bytes.as_slice().try_into() {
+                Ok(k) => k,
+                Err(_) => {
+                    tracing::warn!(
+                        "Skipping re-key invitation for {} (malformed X25519 key)",
+                        member.did
+                    );
+                    continue;
+                }
+            };
+
+            match self
+                .encrypt_key_for_member(
+                    group_id,
+                    &group_name,
+                    &member.did,
+                    x25519_key,
+                    &key_bytes,
+                    new_version,
+                    &members,
+                )
+                .await
+            {
+                Ok(inv) => invitations.push(inv),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to create re-key invitation for {}: {}",
+                        member.did,
+                        e
+                    );
+                }
+            }
+        }
+
+        Ok(invitations)
     }
 
     /// Send a group message
@@ -364,10 +407,12 @@ impl GroupMessageHandler {
         }
         drop(group);
 
-        // Get group key
+        // Get current key version and raw key bytes
+        let current_version = self.current_key_version(&group_id);
         let group_key = self
             .group_keys
             .get(&group_id)
+            .and_then(|inner| inner.get(&current_version).map(|k| k.clone()))
             .ok_or_else(|| Error::Encryption {
                 message: "Group key not found".to_string(),
             })?;
@@ -392,8 +437,6 @@ impl GroupMessageHandler {
                     message: format!("AES-GCM encryption failed: {}", e),
                 })?;
 
-        drop(group_key);
-
         // Generate ULID for message ID
         let id = Ulid::new().to_string();
         let timestamp = chrono::Utc::now().timestamp_millis();
@@ -409,6 +452,7 @@ impl GroupMessageHandler {
             timestamp,
             r#type: Self::infer_message_type(&content),
             reply_to: content.reply_to.clone(),
+            key_version: current_version,
         };
 
         // Sign message
@@ -440,13 +484,25 @@ impl GroupMessageHandler {
         }
         drop(group);
 
-        // Get group key
-        let group_key =
-            self.group_keys
-                .get(&message.group_id)
-                .ok_or_else(|| Error::Decryption {
-                    message: "Group key not found".to_string(),
-                })?;
+        // Look up the key for this message's specific version
+        let group_key = self
+            .group_keys
+            .get(&message.group_id)
+            .and_then(|inner| {
+                // key_version 0 means pre-versioning: use version 1 for compat
+                let ver = if message.key_version == 0 {
+                    1
+                } else {
+                    message.key_version
+                };
+                inner.get(&ver).map(|k| k.clone())
+            })
+            .ok_or_else(|| Error::Decryption {
+                message: format!(
+                    "Group key version {} not found",
+                    message.key_version
+                ),
+            })?;
 
         // Decrypt with AES-256-GCM
         let cipher = Aes256Gcm::new_from_slice(&group_key).map_err(|e| Error::Crypto {
@@ -466,8 +522,6 @@ impl GroupMessageHandler {
             .map_err(|e| Error::Decryption {
                 message: format!("AES-GCM decryption failed: {}", e),
             })?;
-
-        drop(group_key);
 
         // Deserialize content using protobuf
         let content = MessageContent::decode(plaintext.as_slice())
@@ -630,6 +684,13 @@ impl GroupMessageHandler {
 
         let group_id = invitation.group_id.clone();
 
+        // key_version 0 means pre-versioning field; treat as version 1 for backward compat
+        let key_version = if invitation.key_version == 0 {
+            1
+        } else {
+            invitation.key_version
+        };
+
         // Use the full member list from the invitation if provided,
         // falling back to inviter + self for backward compatibility.
         let members = if invitation.members.is_empty() {
@@ -640,12 +701,14 @@ impl GroupMessageHandler {
                     role: GroupRole::Admin.into(),
                     joined_at: invitation.timestamp,
                     nickname: None,
+                    x25519_key: None,
                 },
                 GroupMember {
                     did: self.local_did.clone(),
                     role: GroupRole::Member.into(),
                     joined_at: now,
                     nickname: None,
+                    x25519_key: None,
                 },
             ]
         } else {
@@ -657,19 +720,29 @@ impl GroupMessageHandler {
             name: invitation.group_name.clone(),
             admin_did: invitation.inviter_did.clone(),
             members,
-            current_key: None, // stored separately in group_keys
+            current_key: Some(GroupKey {
+                version: key_version,
+                key: vec![],
+                created_at: invitation.timestamp,
+            }),
             created_at: invitation.timestamp,
             avatar_cid: None,
             description: None,
         };
 
-        // Insert into in-memory state
+        // Insert into in-memory versioned key map
+        {
+            let inner = self
+                .group_keys
+                .entry(group_id.clone())
+                .or_insert_with(DashMap::new);
+            inner.insert(key_version, group_key);
+        }
         self.groups.insert(group_id.clone(), group);
-        self.group_keys.insert(group_id.clone(), group_key);
 
         // Persist both to disk
         self.persist_group(&group_id).await?;
-        self.persist_group_key(&group_id).await?;
+        self.persist_group_key(&group_id, key_version).await?;
 
         Ok(())
     }
@@ -685,23 +758,56 @@ impl GroupMessageHandler {
         for group in groups {
             let group_id = group.id.clone();
 
-            // Decrypt and restore the group key
-            if let Some(blob) = self.storage.fetch_group_key_encrypted(&group_id).await? {
-                if blob.len() >= 28 {
-                    // 12-byte nonce + at least 16-byte AES-GCM tag
+            // Decrypt and restore all versioned group keys
+            let versioned_blobs = self.storage.fetch_all_group_keys(&group_id).await?;
+            if !versioned_blobs.is_empty() {
+                let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&self.storage_key);
+                let cipher = Aes256Gcm::new(key);
+                let inner: DashMap<u32, Vec<u8>> = DashMap::new();
+
+                for (version, blob) in versioned_blobs {
+                    if blob.len() < 28 {
+                        // 12-byte nonce + at least 16-byte AES-GCM tag
+                        tracing::warn!(
+                            "Versioned key blob for {}/{} is too short, skipping",
+                            group_id,
+                            version
+                        );
+                        continue;
+                    }
                     let (nonce_bytes, ciphertext) = blob.split_at(12);
-                    let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&self.storage_key);
-                    let cipher = Aes256Gcm::new(key);
                     let nonce = Nonce::from_slice(nonce_bytes);
                     match cipher.decrypt(nonce, ciphertext) {
                         Ok(key_bytes) => {
-                            self.group_keys.insert(group_id.clone(), key_bytes);
+                            inner.insert(version, key_bytes);
                         }
                         Err(_) => {
                             tracing::warn!(
-                                "Failed to decrypt stored group key for {} (corrupted or key mismatch)",
+                                "Failed to decrypt stored group key v{} for {} (corrupted or key mismatch)",
+                                version,
                                 group_id
                             );
+                        }
+                    }
+                }
+
+                if !inner.is_empty() {
+                    self.group_keys.insert(group_id.clone(), inner);
+                }
+            } else {
+                // Fallback: try the legacy single-key tree for groups stored before migration
+                if let Ok(Some(blob)) =
+                    self.storage.fetch_group_key_encrypted(&group_id).await
+                {
+                    if blob.len() >= 28 {
+                        let (nonce_bytes, ciphertext) = blob.split_at(12);
+                        let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&self.storage_key);
+                        let cipher = Aes256Gcm::new(key);
+                        let nonce = Nonce::from_slice(nonce_bytes);
+                        if let Ok(key_bytes) = cipher.decrypt(nonce, ciphertext) {
+                            let inner: DashMap<u32, Vec<u8>> = DashMap::new();
+                            inner.insert(1, key_bytes);
+                            self.group_keys.insert(group_id.clone(), inner);
                         }
                     }
                 }
@@ -727,14 +833,18 @@ impl GroupMessageHandler {
         Ok(())
     }
 
-    /// Encrypt the current group key with AES-256-GCM and persist it.
+    /// Encrypt a specific version of the group key with AES-256-GCM and persist it.
     ///
     /// Format: random 12-byte nonce || GCM ciphertext. The encryption key is
     /// derived from the signing key so a stolen DB cannot yield group keys
     /// without the identity file.
-    async fn persist_group_key(&self, group_id: &str) -> Result<()> {
-        let raw_key = match self.group_keys.get(group_id) {
-            Some(k) => k.clone(),
+    async fn persist_group_key(&self, group_id: &str, version: u32) -> Result<()> {
+        let raw_key = match self
+            .group_keys
+            .get(group_id)
+            .and_then(|inner| inner.get(&version).map(|k| k.clone()))
+        {
+            Some(k) => k,
             None => return Ok(()),
         };
 
@@ -755,7 +865,7 @@ impl GroupMessageHandler {
         blob.extend_from_slice(&ciphertext);
 
         self.storage
-            .store_group_key_encrypted(group_id, &blob)
+            .store_versioned_group_key(group_id, version, &blob)
             .await
     }
 
@@ -768,6 +878,7 @@ impl GroupMessageHandler {
         data.extend_from_slice(&message.ciphertext);
         data.extend_from_slice(&message.nonce);
         data.extend_from_slice(&message.timestamp.to_le_bytes());
+        data.extend_from_slice(&message.key_version.to_le_bytes());
 
         let signature = self.signing_key.sign(&data);
         Ok(signature.to_bytes().to_vec())
@@ -786,6 +897,7 @@ impl GroupMessageHandler {
         data.extend_from_slice(&message.ciphertext);
         data.extend_from_slice(&message.nonce);
         data.extend_from_slice(&message.timestamp.to_le_bytes());
+        data.extend_from_slice(&message.key_version.to_le_bytes());
 
         let signature =
             Signature::from_bytes(message.signature.as_slice().try_into().map_err(|_| {
@@ -851,6 +963,8 @@ impl GroupMessageHandler {
         for member in &invitation.members {
             data.extend_from_slice(member.did.as_bytes());
         }
+        // Bind key version to prevent downgrade attacks
+        data.extend_from_slice(&invitation.key_version.to_le_bytes());
         data
     }
 
@@ -868,6 +982,74 @@ impl GroupMessageHandler {
         } else {
             MessageType::Text.into()
         }
+    }
+
+    /// Return the highest key version stored for a group, or 0 if none.
+    fn current_key_version(&self, group_id: &str) -> u32 {
+        self.group_keys
+            .get(group_id)
+            .and_then(|inner| inner.iter().map(|e| *e.key()).max())
+            .unwrap_or(0)
+    }
+
+    /// Encrypt `raw_key` for a single member and return a signed `GroupInvitation`.
+    ///
+    /// Uses ECDH (X25519 ephemeral) + HKDF-SHA256 + AES-256-GCM.
+    /// Wire format for `encrypted_group_key`: ephemeral_pub (32 B) || nonce (12 B) || ciphertext.
+    async fn encrypt_key_for_member(
+        &self,
+        group_id: &str,
+        group_name: &str,
+        invitee_did: &str,
+        invitee_x25519_key: [u8; 32],
+        raw_key: &[u8],
+        key_version: u32,
+        members: &[GroupMember],
+    ) -> Result<GroupInvitation> {
+        let ephemeral_secret = x25519_dalek::EphemeralSecret::random_from_rng(OsRng);
+        let ephemeral_public = x25519_dalek::PublicKey::from(&ephemeral_secret);
+        let invitee_public = x25519_dalek::PublicKey::from(invitee_x25519_key);
+        let shared_secret = ephemeral_secret.diffie_hellman(&invitee_public);
+
+        let hk = Hkdf::<Sha256>::new(None, shared_secret.as_bytes());
+        let mut cipher_key_bytes = [0u8; 32];
+        hk.expand(b"variance-group-key-v1", &mut cipher_key_bytes)
+            .expect("HKDF expand with 32-byte output always succeeds");
+
+        let cipher = Aes256Gcm::new_from_slice(&cipher_key_bytes).map_err(|_| Error::Crypto {
+            message: "Failed to build AES-256-GCM cipher for group key encryption".to_string(),
+        })?;
+
+        let mut nonce_bytes = [0u8; 12];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        let ciphertext = cipher
+            .encrypt(nonce, raw_key)
+            .map_err(|_| Error::Encryption {
+                message: "AES-256-GCM encryption of group key failed".to_string(),
+            })?;
+
+        let mut encrypted_group_key = Vec::with_capacity(32 + 12 + ciphertext.len());
+        encrypted_group_key.extend_from_slice(ephemeral_public.as_bytes());
+        encrypted_group_key.extend_from_slice(&nonce_bytes);
+        encrypted_group_key.extend_from_slice(&ciphertext);
+
+        let invitation = GroupInvitation {
+            group_id: group_id.to_string(),
+            group_name: group_name.to_string(),
+            inviter_did: self.local_did.clone(),
+            invitee_did: invitee_did.to_string(),
+            encrypted_group_key,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            signature: vec![],
+            members: members.to_vec(),
+            key_version,
+        };
+
+        let mut invitation_with_sig = invitation.clone();
+        invitation_with_sig.signature = self.sign_invitation(&invitation)?;
+        Ok(invitation_with_sig)
     }
 
     /// Check if user is admin or moderator
@@ -984,13 +1166,14 @@ mod tests {
 
         // Get original key version
         let group = handler.get_group(&group_id).await.unwrap().unwrap();
-        let old_version = group.current_key.unwrap().version;
+        let old_version = group.current_key.as_ref().unwrap().version;
 
-        // Remove member
-        handler
+        // Remove member; admin has no stored X25519 key so invitations will be empty
+        let invitations = handler
             .remove_member(&group_id, "did:variance:bob")
             .await
             .unwrap();
+        assert!(invitations.is_empty(), "admin has no x25519_key stored; no invitations expected");
 
         // Check member removed
         let group = handler.get_group(&group_id).await.unwrap().unwrap();
@@ -998,7 +1181,7 @@ mod tests {
         assert!(!group.members.iter().any(|m| m.did == "did:variance:bob"));
 
         // Check key rotated
-        let new_version = group.current_key.unwrap().version;
+        let new_version = group.current_key.as_ref().unwrap().version;
         assert_eq!(new_version, old_version + 1);
     }
 
@@ -1037,6 +1220,7 @@ mod tests {
         assert!(!message.ciphertext.is_empty());
         assert_eq!(message.nonce.len(), 12);
         assert!(!message.signature.is_empty());
+        assert_eq!(message.key_version, 1);
 
         // Verify signature
         assert!(handler
@@ -1070,6 +1254,7 @@ mod tests {
                 role: GroupRole::Admin.into(),
                 joined_at: 0,
                 nickname: None,
+                x25519_key: None,
             }],
             current_key: None,
             created_at: 0,
@@ -1170,9 +1355,17 @@ mod tests {
             GroupMessageHandler::new("did:variance:alice".to_string(), signing_key, storage);
         handler2.restore_groups().await.unwrap();
 
-        // Group and key should be restored
+        // Group and key should be restored with versioned inner map
         assert!(handler2.get_group(&group_id).await.unwrap().is_some());
         assert!(handler2.group_keys.contains_key(&group_id));
+        assert!(
+            handler2
+                .group_keys
+                .get(&group_id)
+                .unwrap()
+                .contains_key(&1u32),
+            "version 1 key should be present after restore"
+        );
 
         // Should be able to send and receive a message
         let content = MessageContent {
@@ -1285,5 +1478,213 @@ mod tests {
         let wrong_key = SigningKey::generate(&mut OsRng).verifying_key();
         let result = GroupMessageHandler::verify_invitation_with_key(&invitation, &wrong_key);
         assert!(result.is_err());
+    }
+
+    /// Bob can decrypt a v1 message sent before Carol joined, and a v2 message
+    /// sent after Carol was removed (key rotation).
+    #[tokio::test]
+    async fn test_receive_old_message_after_key_rotation() {
+        let alice_dir = tempdir().unwrap();
+        let bob_dir = tempdir().unwrap();
+        let carol_dir = tempdir().unwrap();
+
+        let alice = GroupMessageHandler::new(
+            "did:variance:alice".to_string(),
+            SigningKey::generate(&mut OsRng),
+            Arc::new(LocalMessageStorage::new(alice_dir.path()).unwrap()),
+        );
+        let bob = GroupMessageHandler::new(
+            "did:variance:bob".to_string(),
+            SigningKey::generate(&mut OsRng),
+            Arc::new(LocalMessageStorage::new(bob_dir.path()).unwrap()),
+        );
+        let carol = GroupMessageHandler::new(
+            "did:variance:carol".to_string(),
+            SigningKey::generate(&mut OsRng),
+            Arc::new(LocalMessageStorage::new(carol_dir.path()).unwrap()),
+        );
+
+        // Alice creates group and invites Bob
+        let (group_id, _) = alice.create_group("Test Group".to_string(), None).await.unwrap();
+        let bob_invite = alice
+            .add_member(&group_id, "did:variance:bob".to_string(), bob.x25519_public_key())
+            .await
+            .unwrap();
+        bob.accept_invitation(bob_invite).await.unwrap();
+
+        // Alice sends a v1 message
+        let v1_msg = alice
+            .send_message(
+                group_id.clone(),
+                MessageContent {
+                    text: "v1 message".to_string(),
+                    attachments: vec![],
+                    mentions: vec![],
+                    reply_to: None,
+                    metadata: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(v1_msg.key_version, 1);
+
+        // Alice invites Carol, then removes Carol → key rotates to v2
+        alice
+            .add_member(&group_id, "did:variance:carol".to_string(), carol.x25519_public_key())
+            .await
+            .unwrap();
+        let rekey_invites = alice
+            .remove_member(&group_id, "did:variance:carol")
+            .await
+            .unwrap();
+
+        // Bob accepts his re-key invitation
+        let bob_rekey = rekey_invites
+            .into_iter()
+            .find(|inv| inv.invitee_did == "did:variance:bob")
+            .expect("bob should receive a re-key invitation");
+        bob.accept_invitation(bob_rekey).await.unwrap();
+
+        // Alice sends a v2 message
+        let v2_msg = alice
+            .send_message(
+                group_id.clone(),
+                MessageContent {
+                    text: "v2 message".to_string(),
+                    attachments: vec![],
+                    mentions: vec![],
+                    reply_to: None,
+                    metadata: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(v2_msg.key_version, 2);
+
+        // Bob can decrypt both v1 and v2 messages
+        let dec_v1 = bob.receive_message(v1_msg).await.unwrap();
+        assert_eq!(dec_v1.text, "v1 message");
+
+        let dec_v2 = bob.receive_message(v2_msg).await.unwrap();
+        assert_eq!(dec_v2.text, "v2 message");
+    }
+
+    #[tokio::test]
+    async fn test_rotate_key_generates_invitations_for_remaining_members() {
+        let alice_dir = tempdir().unwrap();
+        let bob_dir = tempdir().unwrap();
+
+        let alice = GroupMessageHandler::new(
+            "did:variance:alice".to_string(),
+            SigningKey::generate(&mut OsRng),
+            Arc::new(LocalMessageStorage::new(alice_dir.path()).unwrap()),
+        );
+        let bob = GroupMessageHandler::new(
+            "did:variance:bob".to_string(),
+            SigningKey::generate(&mut OsRng),
+            Arc::new(LocalMessageStorage::new(bob_dir.path()).unwrap()),
+        );
+
+        let (group_id, _) = alice.create_group("Test".to_string(), None).await.unwrap();
+        alice
+            .add_member(&group_id, "did:variance:bob".to_string(), bob.x25519_public_key())
+            .await
+            .unwrap();
+
+        // Rotate key — Bob has an x25519_key stored so he gets an invitation;
+        // Alice (creator) has no stored x25519_key so she's skipped.
+        let invitations = alice.rotate_key(&group_id).await.unwrap();
+        assert_eq!(invitations.len(), 1);
+        assert_eq!(invitations[0].invitee_did, "did:variance:bob");
+        assert_eq!(invitations[0].key_version, 2);
+    }
+
+    #[tokio::test]
+    async fn test_non_admin_can_leave_group() {
+        let alice_dir = tempdir().unwrap();
+        let bob_dir = tempdir().unwrap();
+
+        let alice = GroupMessageHandler::new(
+            "did:variance:alice".to_string(),
+            SigningKey::generate(&mut OsRng),
+            Arc::new(LocalMessageStorage::new(alice_dir.path()).unwrap()),
+        );
+        let bob = GroupMessageHandler::new(
+            "did:variance:bob".to_string(),
+            SigningKey::generate(&mut OsRng),
+            Arc::new(LocalMessageStorage::new(bob_dir.path()).unwrap()),
+        );
+
+        let (group_id, _) = alice.create_group("Test".to_string(), None).await.unwrap();
+        let invite = alice
+            .add_member(&group_id, "did:variance:bob".to_string(), bob.x25519_public_key())
+            .await
+            .unwrap();
+        bob.accept_invitation(invite).await.unwrap();
+
+        // Bob (non-admin) leaves — should succeed
+        let result = bob.remove_member(&group_id, "did:variance:bob").await;
+        assert!(result.is_ok(), "non-admin should be able to leave: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn test_removed_member_cannot_decrypt_after_rotation() {
+        let alice_dir = tempdir().unwrap();
+        let bob_dir = tempdir().unwrap();
+        let carol_dir = tempdir().unwrap();
+
+        let alice = GroupMessageHandler::new(
+            "did:variance:alice".to_string(),
+            SigningKey::generate(&mut OsRng),
+            Arc::new(LocalMessageStorage::new(alice_dir.path()).unwrap()),
+        );
+        let bob = GroupMessageHandler::new(
+            "did:variance:bob".to_string(),
+            SigningKey::generate(&mut OsRng),
+            Arc::new(LocalMessageStorage::new(bob_dir.path()).unwrap()),
+        );
+        let carol = GroupMessageHandler::new(
+            "did:variance:carol".to_string(),
+            SigningKey::generate(&mut OsRng),
+            Arc::new(LocalMessageStorage::new(carol_dir.path()).unwrap()),
+        );
+
+        let (group_id, _) = alice.create_group("Test".to_string(), None).await.unwrap();
+        let bob_invite = alice
+            .add_member(&group_id, "did:variance:bob".to_string(), bob.x25519_public_key())
+            .await
+            .unwrap();
+        bob.accept_invitation(bob_invite).await.unwrap();
+        let carol_invite = alice
+            .add_member(&group_id, "did:variance:carol".to_string(), carol.x25519_public_key())
+            .await
+            .unwrap();
+        carol.accept_invitation(carol_invite).await.unwrap();
+
+        // Remove Carol; key rotates to v2
+        alice.remove_member(&group_id, "did:variance:carol").await.unwrap();
+
+        // Alice sends a v2 message
+        let v2_msg = alice
+            .send_message(
+                group_id.clone(),
+                MessageContent {
+                    text: "post-rotation secret".to_string(),
+                    attachments: vec![],
+                    mentions: vec![],
+                    reply_to: None,
+                    metadata: HashMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(v2_msg.key_version, 2);
+
+        // Carol only has v1 key — she cannot decrypt the v2 message
+        let carol_result = carol.receive_message(v2_msg).await;
+        assert!(
+            carol_result.is_err(),
+            "Carol should not be able to decrypt after removal"
+        );
     }
 }

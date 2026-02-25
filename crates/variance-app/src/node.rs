@@ -241,6 +241,20 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         tracing::warn!("Failed to restore group state: {} (starting fresh)", e);
     }
 
+    // Re-subscribe to GossipSub topics for all restored groups
+    if let Ok(groups) = app_state.group_messaging.list_groups().await {
+        for group in groups {
+            let topic = format!("/variance/group/{}", group.id);
+            if let Err(e) = app_state.node_handle.subscribe_to_topic(topic.clone()).await {
+                tracing::warn!(
+                    "Failed to re-subscribe to group topic {} at startup: {}",
+                    topic,
+                    e
+                );
+            }
+        }
+    }
+
     if let Err(e) = app_state
         .node_handle
         .set_local_identity(app_state.local_did.clone(), olm_identity_key, one_time_keys)
