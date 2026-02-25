@@ -10,7 +10,10 @@ use libp2p::{
 };
 use std::{
     fs::{self, read_to_string},
+    num::NonZeroU32,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
 };
 use tracing::{debug, info, warn};
 
@@ -27,6 +30,61 @@ struct Args {
     /// Directory for persistent state (keypair)
     #[arg(long, default_value_t = default_data_dir())]
     data_dir: String,
+
+    /// Maximum concurrent relay reservations
+    #[arg(long, default_value = "128")]
+    max_reservations: usize,
+
+    /// Maximum concurrent relay circuits
+    #[arg(long, default_value = "256")]
+    max_circuits: usize,
+
+    /// Maximum circuit duration in seconds
+    #[arg(long, default_value = "1200")]
+    max_circuit_duration_secs: u64,
+
+    /// Maximum bytes per circuit (0 = unlimited)
+    #[arg(long, default_value = "0")]
+    max_circuit_bytes: u64,
+
+    /// How often to log relay stats (seconds, 0 = disabled)
+    #[arg(long, default_value = "60")]
+    stats_interval_secs: u64,
+}
+
+/// Tracks relay activity for operational monitoring.
+struct RelayStats {
+    active_reservations: AtomicUsize,
+    active_circuits: AtomicUsize,
+    total_reservations: AtomicUsize,
+    total_circuits: AtomicUsize,
+    denied_reservations: AtomicUsize,
+    denied_circuits: AtomicUsize,
+}
+
+impl RelayStats {
+    fn new() -> Self {
+        Self {
+            active_reservations: AtomicUsize::new(0),
+            active_circuits: AtomicUsize::new(0),
+            total_reservations: AtomicUsize::new(0),
+            total_circuits: AtomicUsize::new(0),
+            denied_reservations: AtomicUsize::new(0),
+            denied_circuits: AtomicUsize::new(0),
+        }
+    }
+
+    fn log_summary(&self) {
+        info!(
+            active_reservations = self.active_reservations.load(Ordering::Relaxed),
+            active_circuits = self.active_circuits.load(Ordering::Relaxed),
+            total_reservations = self.total_reservations.load(Ordering::Relaxed),
+            total_circuits = self.total_circuits.load(Ordering::Relaxed),
+            denied_reservations = self.denied_reservations.load(Ordering::Relaxed),
+            denied_circuits = self.denied_circuits.load(Ordering::Relaxed),
+            "Relay stats"
+        );
+    }
 }
 
 fn default_data_dir() -> String {
@@ -81,8 +139,31 @@ async fn main() -> Result<()> {
         .context("Failed to build TCP transport")?
         .with_quic()
         .with_behaviour(|keypair| {
+            let relay_config = relay::Config {
+                max_reservations: args.max_reservations,
+                max_reservations_per_peer: 4,
+                reservation_duration: Duration::from_secs(3600),
+                max_circuits: args.max_circuits,
+                max_circuits_per_peer: 4,
+                max_circuit_duration: Duration::from_secs(args.max_circuit_duration_secs),
+                max_circuit_bytes: args.max_circuit_bytes,
+                ..Default::default()
+            };
+            // Per-peer rate limits: max 10 reservations per 60s, 30 circuits per 60s
+            let relay_config = relay_config
+                .reservation_rate_per_peer(
+                    NonZeroU32::new(10).expect("10 > 0"),
+                    Duration::from_secs(60),
+                )
+                .circuit_src_per_peer(
+                    NonZeroU32::new(30).expect("30 > 0"),
+                    Duration::from_secs(60),
+                );
+
+            info!(?relay_config, "Relay behaviour configuration");
+
             Ok(RelayBehaviour {
-                relay: relay::Behaviour::new(keypair.public().to_peer_id(), Default::default()),
+                relay: relay::Behaviour::new(keypair.public().to_peer_id(), relay_config),
                 identify: identify::Behaviour::new(identify::Config::new(
                     "/variance-relay/1.0.0".to_string(),
                     keypair.public(),
@@ -91,6 +172,7 @@ async fn main() -> Result<()> {
             })
         })
         .context("Failed to build relay behaviour")?
+        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(600)))
         .build();
 
     swarm
@@ -110,6 +192,19 @@ async fn main() -> Result<()> {
         peer_id, args.port
     );
 
+    let stats = RelayStats::new();
+
+    // Optional periodic stats reporting
+    let stats_interval = if args.stats_interval_secs > 0 {
+        Some(tokio::time::interval(Duration::from_secs(
+            args.stats_interval_secs,
+        )))
+    } else {
+        None
+    };
+    // Pin the interval so we can poll it in the select loop
+    tokio::pin!(stats_interval);
+
     loop {
         tokio::select! {
             event = swarm.next() => {
@@ -124,12 +219,21 @@ async fn main() -> Result<()> {
                         debug!("Connection closed with {}: {:?}", remote, cause);
                     }
                     Some(SwarmEvent::Behaviour(RelayBehaviourEvent::Relay(event))) => {
-                        handle_relay_event(event);
+                        handle_relay_event(event, &stats);
                     }
                     Some(SwarmEvent::Behaviour(RelayBehaviourEvent::Identify(
                         identify::Event::Received { peer_id: remote, info, .. },
                     ))) => {
-                        debug!("Identified {}: agent={}", remote, info.agent_version);
+                        debug!(
+                            peer = %remote,
+                            agent = %info.agent_version,
+                            "Identified peer"
+                        );
+                        // Add observed addresses from peers so the relay knows
+                        // its own public address(es) for advertisement.
+                        for addr in info.listen_addrs {
+                            swarm.add_external_address(addr);
+                        }
                     }
                     Some(SwarmEvent::OutgoingConnectionError { peer_id, error, .. }) => {
                         warn!("Outgoing connection error to {:?}: {}", peer_id, error);
@@ -137,11 +241,24 @@ async fn main() -> Result<()> {
                     Some(SwarmEvent::IncomingConnectionError { error, .. }) => {
                         debug!("Incoming connection error: {}", error);
                     }
+                    Some(SwarmEvent::ExternalAddrConfirmed { address }) => {
+                        info!("External address confirmed: {}", address);
+                    }
                     _ => {}
                 }
             }
+            // Periodic stats logging (only enabled when stats_interval_secs > 0)
+            _ = async {
+                match stats_interval.as_mut().as_pin_mut() {
+                    Some(mut interval) => interval.tick().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                stats.log_summary();
+            }
             _ = tokio::signal::ctrl_c() => {
                 info!("Shutting down relay node");
+                stats.log_summary();
                 break;
             }
         }
@@ -150,38 +267,46 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn handle_relay_event(event: relay::Event) {
+fn handle_relay_event(event: relay::Event, stats: &RelayStats) {
     match event {
         relay::Event::ReservationReqAccepted { src_peer_id, .. } => {
-            info!("Relay reservation accepted for {}", src_peer_id);
+            stats.active_reservations.fetch_add(1, Ordering::Relaxed);
+            stats.total_reservations.fetch_add(1, Ordering::Relaxed);
+            info!(peer = %src_peer_id, "Relay reservation accepted");
         }
         relay::Event::ReservationReqDenied { src_peer_id } => {
-            warn!("Relay reservation denied for {}", src_peer_id);
+            stats.denied_reservations.fetch_add(1, Ordering::Relaxed);
+            warn!(peer = %src_peer_id, "Relay reservation denied");
+        }
+        relay::Event::ReservationTimedOut { src_peer_id } => {
+            stats.active_reservations.fetch_sub(1, Ordering::Relaxed);
+            debug!(peer = %src_peer_id, "Relay reservation timed out");
         }
         relay::Event::CircuitReqAccepted {
             src_peer_id,
             dst_peer_id,
         } => {
-            info!(
-                "Circuit request accepted: {} → {}",
-                src_peer_id, dst_peer_id
-            );
+            stats.active_circuits.fetch_add(1, Ordering::Relaxed);
+            stats.total_circuits.fetch_add(1, Ordering::Relaxed);
+            info!(src = %src_peer_id, dst = %dst_peer_id, "Circuit accepted");
         }
         relay::Event::CircuitReqDenied {
             src_peer_id,
             dst_peer_id,
         } => {
-            debug!("Circuit request denied: {} → {}", src_peer_id, dst_peer_id);
+            stats.denied_circuits.fetch_add(1, Ordering::Relaxed);
+            debug!(src = %src_peer_id, dst = %dst_peer_id, "Circuit denied");
         }
         relay::Event::CircuitClosed {
             src_peer_id,
             dst_peer_id,
             error,
         } => {
+            stats.active_circuits.fetch_sub(1, Ordering::Relaxed);
             if let Some(e) = error {
-                debug!("Circuit closed: {} → {}: {}", src_peer_id, dst_peer_id, e);
+                debug!(src = %src_peer_id, dst = %dst_peer_id, error = %e, "Circuit closed with error");
             } else {
-                debug!("Circuit closed normally: {} → {}", src_peer_id, dst_peer_id);
+                debug!(src = %src_peer_id, dst = %dst_peer_id, "Circuit closed");
             }
         }
         _ => {}
