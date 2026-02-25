@@ -46,4 +46,16 @@ pub enum Error {
 
     #[snafu(display("Crypto error: {message}"))]
     Crypto { message: String },
+
+    #[snafu(display("MLS group error: {message}"))]
+    MlsGroup { message: String },
+
+    #[snafu(display("MLS welcome error: {message}"))]
+    MlsWelcome { message: String },
+
+    #[snafu(display("MLS key package error: {message}"))]
+    MlsKeyPackage { message: String },
+
+    #[snafu(display("MLS commit error: {message}"))]
+    MlsCommit { message: String },
 }

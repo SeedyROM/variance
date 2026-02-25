@@ -333,45 +333,75 @@ async fn handle_client_message(client_id: &str, msg: ClientMessage, state: &AppS
         } => {
             debug!("Client {} sending group message to {}", client_id, group_id);
 
+            use variance_messaging::mls::MlsGroupHandler;
+            use variance_messaging::storage::MessageStorage;
             use variance_proto::messaging_proto::MessageContent;
+
             let content = MessageContent {
                 text,
                 attachments: vec![],
                 mentions: vec![],
-                reply_to,
+                reply_to: reply_to.clone(),
                 metadata: Default::default(),
             };
+            let plaintext = prost::Message::encode_to_vec(&content);
 
-            match state
-                .group_messaging
-                .send_message(group_id.clone(), content)
-                .await
-            {
-                Ok(message) => {
-                    debug!("Group message sent: {}", message.id);
+            match state.mls_groups.encrypt_message(&group_id, &plaintext) {
+                Ok(mls_msg) => match MlsGroupHandler::serialize_message(&mls_msg) {
+                    Ok(mls_bytes) => {
+                        let message_id = ulid::Ulid::new().to_string();
+                        let timestamp = chrono::Utc::now().timestamp_millis();
 
-                    // Emit event if channels available
-                    if let Some(ref channels) = state.event_channels {
-                        use variance_p2p::events::GroupMessageEvent;
-                        channels.send_group_message(GroupMessageEvent::MessageSent {
-                            message_id: message.id.clone(),
+                        let message = variance_proto::messaging_proto::GroupMessage {
+                            id: message_id.clone(),
+                            sender_did: state.local_did.clone(),
                             group_id: group_id.clone(),
-                        });
-                    }
+                            timestamp,
+                            r#type: variance_proto::messaging_proto::MessageType::Text.into(),
+                            reply_to,
+                            mls_ciphertext: mls_bytes,
+                        };
 
-                    // Echo the sent message back to the sender so the UI updates immediately.
-                    if let Some(client) = state.ws_manager.clients.get(client_id) {
-                        let _ = client.tx.send(WsMessage::GroupMessageReceived {
-                            group_id,
-                            from: state.local_did.clone(),
-                            message_id: message.id.clone(),
-                            timestamp: message.timestamp,
-                        });
+                        let topic = format!("/variance/group/{}", group_id);
+                        if let Err(e) = state
+                            .node_handle
+                            .publish_group_message(topic, message.clone())
+                            .await
+                        {
+                            warn!("Failed to publish MLS group message: {}", e);
+                        }
+
+                        if let Err(e) = state.storage.store_group(&message).await {
+                            warn!("Failed to store MLS group message locally: {}", e);
+                        }
+
+                        if let Some(ref channels) = state.event_channels {
+                            use variance_p2p::events::GroupMessageEvent;
+                            channels.send_group_message(GroupMessageEvent::MessageSent {
+                                message_id: message_id.clone(),
+                                group_id: group_id.clone(),
+                            });
+                        }
+
+                        if let Some(client) = state.ws_manager.clients.get(client_id) {
+                            let _ = client.tx.send(WsMessage::GroupMessageReceived {
+                                group_id,
+                                from: state.local_did.clone(),
+                                message_id,
+                                timestamp,
+                            });
+                        }
                     }
-                }
+                    Err(e) => {
+                        warn!(
+                            "Failed to serialize MLS message from client {}: {}",
+                            client_id, e
+                        );
+                    }
+                },
                 Err(e) => {
                     warn!(
-                        "Failed to send group message from client {}: {}",
+                        "Failed to encrypt MLS group message from client {}: {}",
                         client_id, e
                     );
                 }

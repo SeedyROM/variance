@@ -84,6 +84,7 @@ pub enum NodeCommand {
         did: String,
         olm_identity_key: Vec<u8>,
         one_time_keys: Vec<Vec<u8>>,
+        mls_key_package: Option<Vec<u8>>,
     },
 
     /// Update the one-time keys list in the identity handler.
@@ -309,12 +310,14 @@ impl NodeHandle {
         did: String,
         olm_identity_key: Vec<u8>,
         one_time_keys: Vec<Vec<u8>>,
+        mls_key_package: Option<Vec<u8>>,
     ) -> Result<()> {
         self.command_tx
             .send(NodeCommand::SetLocalIdentity {
                 did,
                 olm_identity_key,
                 one_time_keys,
+                mls_key_package,
             })
             .await
             .map_err(|_| crate::error::Error::Protocol {

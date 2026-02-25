@@ -6,7 +6,7 @@ use variance_identity::cache::MultiLayerCache;
 use variance_identity::username::UsernameRegistry;
 use variance_media::{CallManager, SignalingHandler};
 use variance_messaging::{
-    direct::DirectMessageHandler, group::GroupMessageHandler, offline::OfflineRelayHandler,
+    direct::DirectMessageHandler, mls::MlsGroupHandler, offline::OfflineRelayHandler,
     receipts::ReceiptHandler, storage::LocalMessageStorage, typing::TypingHandler,
 };
 
@@ -47,8 +47,8 @@ pub struct AppState {
     /// Direct messaging handler
     pub direct_messaging: Arc<DirectMessageHandler>,
 
-    /// Group messaging handler
-    pub group_messaging: Arc<GroupMessageHandler>,
+    /// MLS group handler (RFC 9420 path)
+    pub mls_groups: Arc<MlsGroupHandler>,
 
     /// Read receipt handler
     pub receipts: Arc<ReceiptHandler>,
@@ -187,11 +187,10 @@ impl AppState {
                 olm_account,
                 storage.clone(),
             )),
-            group_messaging: Arc::new(GroupMessageHandler::new(
-                identity.did.clone(),
-                signing_key.clone(),
-                storage.clone(),
-            )),
+            mls_groups: Arc::new(
+                MlsGroupHandler::new(identity.did.clone(), &signing_key)
+                    .map_err(|e| anyhow::anyhow!("Failed to create MLS group handler: {}", e))?,
+            ),
             receipts: Arc::new(ReceiptHandler::new(
                 identity.did.clone(),
                 signing_key,
@@ -286,6 +285,7 @@ impl AppState {
                                 discriminator: None,
                                 olm_identity_key: vec![],
                                 one_time_keys: vec![],
+                                mls_key_package: None,
                             }));
                     }
                     variance_p2p::NodeCommand::GetConnectedDids { response_tx } => {
@@ -315,11 +315,10 @@ impl AppState {
                 vodozemac::olm::Account::new(),
                 storage.clone(),
             )),
-            group_messaging: Arc::new(GroupMessageHandler::new(
-                local_did.clone(),
-                signing_key.clone(),
-                storage.clone(),
-            )),
+            mls_groups: Arc::new(
+                MlsGroupHandler::new(local_did.clone(), &signing_key)
+                    .expect("Failed to create MLS group handler"),
+            ),
             receipts: Arc::new(ReceiptHandler::new(
                 local_did.clone(),
                 signing_key,
@@ -392,6 +391,7 @@ mod tests {
         // Verify all components are initialized
         assert_eq!(Arc::strong_count(&state.direct_messaging), 1);
         assert_eq!(Arc::strong_count(&state.calls), 1);
-        assert_eq!(Arc::strong_count(&state.storage), 5); // Shared by receipts, offline_relay, direct_messaging, group_messaging, and state itself
+        assert_eq!(Arc::strong_count(&state.mls_groups), 1);
+        assert_eq!(Arc::strong_count(&state.storage), 4); // Shared by receipts, offline_relay, direct_messaging, and state itself
     }
 }

@@ -9,7 +9,7 @@
 
 pub mod direct;
 pub mod error;
-pub mod group;
+pub mod mls;
 pub mod offline;
 pub mod protocol;
 pub mod receipts;

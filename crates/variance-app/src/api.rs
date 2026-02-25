@@ -47,8 +47,6 @@ pub fn create_router(state: AppState) -> Router {
         // Message endpoints
         .route("/messages/direct", post(send_direct_message))
         .route("/messages/direct/{did}", get(get_direct_messages))
-        .route("/messages/group", post(send_group_message))
-        .route("/messages/group/{group_id}", get(get_group_messages))
         // Call endpoints
         .route("/calls/create", post(create_call))
         .route("/calls/active", get(list_active_calls))
@@ -60,18 +58,16 @@ pub fn create_router(state: AppState) -> Router {
         .route("/signaling/answer", post(send_answer))
         .route("/signaling/ice", post(send_ice_candidate))
         .route("/signaling/control", post(send_control))
-        // Group management endpoints
-        .route("/groups", get(list_groups))
-        .route("/groups", post(create_group))
-        .route("/groups/{id}", get(get_group))
-        .route("/groups/{id}/invite", post(invite_to_group))
-        .route("/groups/{id}/members", get(get_group_members))
-        .route("/groups/{id}/leave", post(leave_group))
+        // MLS group endpoints (RFC 9420)
+        .route("/mls/groups", post(mls_create_group))
+        .route("/mls/groups/{id}/invite", post(mls_invite_to_group))
+        .route("/mls/groups/{id}/leave", post(mls_leave_group))
         .route(
-            "/groups/{id}/members/{member_did}",
-            axum::routing::delete(remove_group_member),
+            "/mls/groups/{id}/members/{member_did}",
+            axum::routing::delete(mls_remove_member),
         )
-        .route("/groups/accept", post(accept_group_invitation))
+        .route("/mls/messages/group", post(mls_send_group_message))
+        .route("/mls/welcome/accept", post(mls_accept_welcome))
         // Receipt endpoints
         .route("/receipts/delivered", post(send_delivered_receipt))
         .route("/receipts/read", post(send_read_receipt))
@@ -175,13 +171,6 @@ pub struct SendDirectMessageRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SendGroupMessageRequest {
-    pub group_id: String,
-    pub text: String,
-    pub reply_to: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct MessageResponse {
     pub message_id: String,
     pub success: bool,
@@ -197,17 +186,6 @@ pub struct DirectMessageResponse {
     pub timestamp: i64,
     pub reply_to: Option<String>,
     pub status: Option<String>, // "sent", "pending", or "failed"
-    pub sender_username: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GroupMessageResponse {
-    pub id: String,
-    pub sender_did: String,
-    pub group_id: String,
-    pub text: String,
-    pub timestamp: i64,
-    pub reply_to: Option<String>,
     pub sender_username: Option<String>,
 }
 
@@ -258,60 +236,6 @@ pub struct StartConversationResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RegisterUsernameRequest {
     pub username: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CreateGroupRequest {
-    pub name: String,
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GroupResponse {
-    pub id: String,
-    pub name: String,
-    pub admin_did: String,
-    pub members: Vec<GroupMemberResponse>,
-    pub created_at: i64,
-    pub description: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GroupMemberResponse {
-    pub did: String,
-    pub role: String,
-    pub joined_at: i64,
-    pub nickname: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct InviteToGroupRequest {
-    pub invitee_did: String,
-    /// Hex-encoded X25519 public key of the invitee
-    pub invitee_x25519_key: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AcceptGroupInvitationRequest {
-    /// The full GroupInvitation as JSON (forwarded from the inviter)
-    pub group_id: String,
-    pub group_name: String,
-    pub inviter_did: String,
-    pub encrypted_group_key: String, // hex-encoded
-    pub timestamp: i64,
-    pub signature: String, // hex-encoded
-    #[serde(default)]
-    pub members: Vec<InvitationMember>,
-    /// Key version being conveyed; 0/absent means pre-versioning (treated as v1)
-    pub key_version: Option<u32>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct InvitationMember {
-    pub did: String,
-    pub role: i32,
-    pub joined_at: i64,
-    pub nickname: Option<String>,
 }
 
 // ===== Health Check =====
@@ -1112,53 +1036,6 @@ async fn send_direct_message(
     }))
 }
 
-async fn send_group_message(
-    State(state): State<AppState>,
-    Json(req): Json<SendGroupMessageRequest>,
-) -> Result<Json<MessageResponse>> {
-    // Create message content
-    let content = MessageContent {
-        text: req.text,
-        attachments: vec![],
-        mentions: vec![],
-        reply_to: req.reply_to,
-        metadata: Default::default(),
-    };
-
-    // Send message
-    let message = state
-        .group_messaging
-        .send_message(req.group_id.clone(), content)
-        .await
-        .map_err(|e| Error::App {
-            message: format!("Failed to send message: {}", e),
-        })?;
-
-    // Publish to GossipSub so peers receive it (non-fatal if unavailable)
-    let topic = format!("/variance/group/{}", req.group_id);
-    if let Err(e) = state
-        .node_handle
-        .publish_group_message(topic, message.clone())
-        .await
-    {
-        tracing::warn!("Failed to publish group message to GossipSub: {}", e);
-    }
-
-    // Emit event if event channels are available
-    if let Some(ref channels) = state.event_channels {
-        channels.send_group_message(GroupMessageEvent::MessageSent {
-            message_id: message.id.clone(),
-            group_id: req.group_id,
-        });
-    }
-
-    Ok(Json(MessageResponse {
-        message_id: message.id,
-        success: true,
-        message: "Message sent successfully".to_string(),
-    }))
-}
-
 #[derive(Deserialize)]
 struct DirectMessagesParams {
     /// Exclusive upper bound on timestamp (ms) for cursor-based pagination.
@@ -1223,287 +1100,313 @@ async fn get_direct_messages(
     Ok(Json(responses))
 }
 
-async fn get_group_messages(
-    State(state): State<AppState>,
-    Path(group_id): Path<String>,
-) -> Result<Json<Vec<GroupMessageResponse>>> {
-    // Get messages from storage
-    let messages = state
-        .storage
-        .as_ref()
-        .fetch_group(&group_id, 50, None)
-        .await
-        .map_err(|e| Error::App {
-            message: format!("Failed to get messages: {}", e),
-        })?;
+// ===== MLS Group Handlers =====
 
-    // Decrypt each message (uses plaintext cache for previously decrypted messages)
-    let mut responses = Vec::new();
-    for m in messages {
-        let text = match state.group_messaging.get_message_content(&m).await {
-            Ok(content) => content.text,
-            Err(e) => {
-                tracing::warn!("Failed to decrypt group message {}: {}", m.id, e);
-                "[decryption failed]".to_string()
-            }
-        };
-
-        responses.push(GroupMessageResponse {
-            id: m.id.clone(),
-            sender_did: m.sender_did.clone(),
-            group_id: m.group_id.clone(),
-            text,
-            timestamp: m.timestamp,
-            reply_to: m.reply_to.clone(),
-            sender_username: state.username_registry.get_display_name(&m.sender_did),
-        });
-    }
-
-    Ok(Json(responses))
+#[derive(Debug, Deserialize)]
+pub struct MlsCreateGroupRequest {
+    pub name: String,
+    pub description: Option<String>,
 }
 
-// ===== Group Management Handlers =====
-
-async fn list_groups(State(state): State<AppState>) -> Result<Json<Vec<GroupResponse>>> {
-    let groups = state
-        .group_messaging
-        .list_groups()
-        .await
-        .map_err(|e| Error::App {
-            message: format!("Failed to list groups: {}", e),
-        })?;
-
-    let responses = groups.into_iter().map(group_to_response).collect();
-    Ok(Json(responses))
+#[derive(Debug, Deserialize)]
+pub struct MlsInviteRequest {
+    pub invitee_did: String,
+    /// Hex-encoded TLS-serialized MLS KeyPackage from the invitee's identity response.
+    pub mls_key_package: String,
 }
 
-async fn create_group(
+#[derive(Debug, Deserialize)]
+pub struct MlsSendGroupMessageRequest {
+    pub group_id: String,
+    pub text: String,
+    pub reply_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MlsAcceptWelcomeRequest {
+    /// Hex-encoded TLS-serialized MLS Welcome message.
+    pub mls_welcome: String,
+}
+
+/// Create a new MLS group. The local user is the sole initial member.
+async fn mls_create_group(
     State(state): State<AppState>,
-    Json(req): Json<CreateGroupRequest>,
-) -> Result<Json<GroupResponse>> {
-    let (group_id, group) = state
-        .group_messaging
-        .create_group(req.name, req.description)
-        .await
+    Json(req): Json<MlsCreateGroupRequest>,
+) -> Result<Json<serde_json::Value>> {
+    let group_id = ulid::Ulid::new().to_string();
+
+    state
+        .mls_groups
+        .create_group(&group_id)
         .map_err(|e| Error::App {
-            message: format!("Failed to create group: {}", e),
+            message: format!("Failed to create MLS group: {}", e),
         })?;
 
     let topic = format!("/variance/group/{}", group_id);
     if let Err(e) = state.node_handle.subscribe_to_topic(topic).await {
-        tracing::warn!("Failed to subscribe to group topic: {}", e);
+        tracing::warn!("Failed to subscribe to MLS group topic: {}", e);
     }
-
-    Ok(Json(group_to_response(group)))
-}
-
-async fn get_group(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<GroupResponse>> {
-    let group = state
-        .group_messaging
-        .get_group(&id)
-        .await
-        .map_err(|e| Error::App {
-            message: format!("Failed to get group: {}", e),
-        })?
-        .ok_or_else(|| Error::NotFound {
-            message: format!("Group {} not found", id),
-        })?;
-
-    Ok(Json(group_to_response(group)))
-}
-
-async fn get_group_members(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<Vec<GroupMemberResponse>>> {
-    let group = state
-        .group_messaging
-        .get_group(&id)
-        .await
-        .map_err(|e| Error::App {
-            message: format!("Failed to get group: {}", e),
-        })?
-        .ok_or_else(|| Error::NotFound {
-            message: format!("Group {} not found", id),
-        })?;
-
-    let members = group.members.into_iter().map(member_to_response).collect();
-    Ok(Json(members))
-}
-
-async fn invite_to_group(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(req): Json<InviteToGroupRequest>,
-) -> Result<Json<serde_json::Value>> {
-    let key_bytes = hex::decode(&req.invitee_x25519_key).map_err(|_| Error::BadRequest {
-        message: "Invalid hex-encoded X25519 key".to_string(),
-    })?;
-    let x25519_key: [u8; 32] = key_bytes.try_into().map_err(|_| Error::BadRequest {
-        message: "X25519 key must be exactly 32 bytes".to_string(),
-    })?;
-
-    let invitation = state
-        .group_messaging
-        .add_member(&id, req.invitee_did.clone(), x25519_key)
-        .await
-        .map_err(|e| Error::App {
-            message: format!("Failed to invite member: {}", e),
-        })?;
 
     Ok(Json(serde_json::json!({
         "success": true,
-        "group_id": invitation.group_id,
-        "invitee_did": invitation.invitee_did,
-        "encrypted_group_key": hex::encode(&invitation.encrypted_group_key),
-        "signature": hex::encode(&invitation.signature),
-        "timestamp": invitation.timestamp,
-        "members_count": invitation.members.len(),
+        "group_id": group_id,
+        "name": req.name,
+        "mls": true,
     })))
 }
 
-async fn leave_group(
+/// Invite a member to an MLS group using their KeyPackage.
+async fn mls_invite_to_group(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Json(req): Json<MlsInviteRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let invitations = state
-        .group_messaging
-        .remove_member(&id, &state.local_did.clone())
-        .await
+    use variance_messaging::mls::MlsGroupHandler;
+
+    let kp_bytes = hex::decode(&req.mls_key_package).map_err(|_| Error::BadRequest {
+        message: "Invalid hex-encoded MLS KeyPackage".to_string(),
+    })?;
+
+    let kp_in = MlsGroupHandler::deserialize_key_package(&kp_bytes).map_err(|e| Error::App {
+        message: format!("Failed to deserialize KeyPackage: {}", e),
+    })?;
+
+    let key_package = state
+        .mls_groups
+        .validate_key_package(kp_in)
         .map_err(|e| Error::App {
-            message: format!("Failed to leave group: {}", e),
+            message: format!("Invalid KeyPackage: {}", e),
         })?;
 
-    let rekey = format_rekey_invitations(invitations);
+    let result = state
+        .mls_groups
+        .add_member(&id, key_package)
+        .map_err(|e| Error::App {
+            message: format!("Failed to add member to MLS group: {}", e),
+        })?;
+
+    let welcome_bytes =
+        MlsGroupHandler::serialize_message(&result.welcome).map_err(|e| Error::App {
+            message: format!("Failed to serialize Welcome: {}", e),
+        })?;
+
+    let commit_bytes =
+        MlsGroupHandler::serialize_message(&result.commit).map_err(|e| Error::App {
+            message: format!("Failed to serialize commit: {}", e),
+        })?;
+
     Ok(Json(serde_json::json!({
         "success": true,
         "group_id": id,
-        "rekey_invitations": rekey,
+        "invitee_did": req.invitee_did,
+        "mls_welcome": hex::encode(&welcome_bytes),
+        "mls_commit": hex::encode(&commit_bytes),
     })))
 }
 
-async fn remove_group_member(
+/// Leave an MLS group (sends a leave proposal).
+async fn mls_leave_group(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    use variance_messaging::mls::MlsGroupHandler;
+
+    let leave_msg = state.mls_groups.leave_group(&id).map_err(|e| Error::App {
+        message: format!("Failed to leave MLS group: {}", e),
+    })?;
+
+    let leave_bytes = MlsGroupHandler::serialize_message(&leave_msg).map_err(|e| Error::App {
+        message: format!("Failed to serialize leave proposal: {}", e),
+    })?;
+
+    // Publish leave proposal to GossipSub so remaining members process it
+    let topic = format!("/variance/group/{}", id);
+    let leave_proto = variance_proto::messaging_proto::GroupMessage {
+        id: ulid::Ulid::new().to_string(),
+        sender_did: state.local_did.clone(),
+        group_id: id.clone(),
+        timestamp: chrono::Utc::now().timestamp_millis(),
+        r#type: 0,
+        reply_to: None,
+        mls_ciphertext: leave_bytes,
+    };
+    if let Err(e) = state
+        .node_handle
+        .publish_group_message(topic, leave_proto)
+        .await
+    {
+        tracing::warn!("Failed to publish MLS leave proposal: {}", e);
+    }
+
+    state.mls_groups.remove_group(&id);
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "group_id": id,
+    })))
+}
+
+/// Remove a member from an MLS group.
+async fn mls_remove_member(
     State(state): State<AppState>,
     Path((id, member_did)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>> {
-    let invitations = state
-        .group_messaging
-        .remove_member(&id, &member_did)
-        .await
+    use variance_messaging::mls::MlsGroupHandler;
+
+    let member_index = state
+        .mls_groups
+        .find_member_index(&id, &member_did)
         .map_err(|e| Error::App {
-            message: format!("Failed to remove member: {}", e),
+            message: format!("Failed to find member: {}", e),
+        })?
+        .ok_or_else(|| Error::NotFound {
+            message: format!("Member {} not found in group {}", member_did, id),
         })?;
 
-    let rekey = format_rekey_invitations(invitations);
+    let result = state
+        .mls_groups
+        .remove_member(&id, member_index)
+        .map_err(|e| Error::App {
+            message: format!("Failed to remove member from MLS group: {}", e),
+        })?;
+
+    let commit_bytes =
+        MlsGroupHandler::serialize_message(&result.commit).map_err(|e| Error::App {
+            message: format!("Failed to serialize remove commit: {}", e),
+        })?;
+
+    // Publish remove commit to GossipSub
+    let topic = format!("/variance/group/{}", id);
+    let remove_proto = variance_proto::messaging_proto::GroupMessage {
+        id: ulid::Ulid::new().to_string(),
+        sender_did: state.local_did.clone(),
+        group_id: id.clone(),
+        timestamp: chrono::Utc::now().timestamp_millis(),
+        r#type: 0,
+        reply_to: None,
+        mls_ciphertext: commit_bytes,
+    };
+    if let Err(e) = state
+        .node_handle
+        .publish_group_message(topic, remove_proto)
+        .await
+    {
+        tracing::warn!("Failed to publish MLS remove commit: {}", e);
+    }
+
     Ok(Json(serde_json::json!({
         "success": true,
         "group_id": id,
         "removed_did": member_did,
-        "rekey_invitations": rekey,
     })))
 }
 
-fn format_rekey_invitations(
-    invitations: Vec<variance_proto::messaging_proto::GroupInvitation>,
-) -> Vec<serde_json::Value> {
-    invitations
-        .into_iter()
-        .map(|inv| {
-            serde_json::json!({
-                "invitee_did": inv.invitee_did,
-                "encrypted_group_key": hex::encode(&inv.encrypted_group_key),
-                "signature": hex::encode(&inv.signature),
-                "key_version": inv.key_version,
-                "timestamp": inv.timestamp,
-            })
-        })
-        .collect()
-}
-
-async fn accept_group_invitation(
+/// Send a message to an MLS group.
+async fn mls_send_group_message(
     State(state): State<AppState>,
-    Json(req): Json<AcceptGroupInvitationRequest>,
-) -> Result<Json<serde_json::Value>> {
-    use variance_proto::messaging_proto::{GroupInvitation, GroupMember};
+    Json(req): Json<MlsSendGroupMessageRequest>,
+) -> Result<Json<MessageResponse>> {
+    use variance_messaging::mls::MlsGroupHandler;
 
-    let encrypted_group_key =
-        hex::decode(&req.encrypted_group_key).map_err(|_| Error::BadRequest {
-            message: "Invalid hex-encoded encrypted_group_key".to_string(),
+    // Serialize the plaintext content as protobuf bytes
+    let content = MessageContent {
+        text: req.text,
+        attachments: vec![],
+        mentions: vec![],
+        reply_to: req.reply_to,
+        metadata: Default::default(),
+    };
+    let plaintext = prost::Message::encode_to_vec(&content);
+
+    // Encrypt via MLS
+    let mls_msg = state
+        .mls_groups
+        .encrypt_message(&req.group_id, &plaintext)
+        .map_err(|e| Error::App {
+            message: format!("Failed to encrypt MLS message: {}", e),
         })?;
-    let signature = hex::decode(&req.signature).map_err(|_| Error::BadRequest {
-        message: "Invalid hex-encoded signature".to_string(),
+
+    let mls_bytes = MlsGroupHandler::serialize_message(&mls_msg).map_err(|e| Error::App {
+        message: format!("Failed to serialize MLS ciphertext: {}", e),
     })?;
 
-    let members: Vec<GroupMember> = req
-        .members
-        .into_iter()
-        .map(|m| GroupMember {
-            did: m.did,
-            role: m.role,
-            joined_at: m.joined_at,
-            nickname: m.nickname,
-            x25519_key: None,
-        })
-        .collect();
+    let message_id = ulid::Ulid::new().to_string();
+    let timestamp = chrono::Utc::now().timestamp_millis();
 
-    let invitation = GroupInvitation {
+    // Build the wire message with MLS ciphertext
+    let message = variance_proto::messaging_proto::GroupMessage {
+        id: message_id.clone(),
+        sender_did: state.local_did.clone(),
         group_id: req.group_id.clone(),
-        group_name: req.group_name,
-        inviter_did: req.inviter_did,
-        invitee_did: state.local_did.clone(),
-        encrypted_group_key,
-        timestamp: req.timestamp,
-        signature,
-        members,
-        key_version: req.key_version.unwrap_or(0),
+        timestamp,
+        r#type: variance_proto::messaging_proto::MessageType::Text.into(),
+        reply_to: None,
+        mls_ciphertext: mls_bytes,
     };
 
-    state
-        .group_messaging
-        .accept_invitation(invitation)
+    // Publish to GossipSub
+    let topic = format!("/variance/group/{}", req.group_id);
+    if let Err(e) = state
+        .node_handle
+        .publish_group_message(topic, message.clone())
         .await
-        .map_err(|e| Error::App {
-            message: format!("Failed to accept invitation: {}", e),
+    {
+        tracing::warn!("Failed to publish MLS group message to GossipSub: {}", e);
+    }
+
+    // Store in local DB so it appears in message history
+    if let Err(e) = state.storage.store_group(&message).await {
+        tracing::warn!("Failed to store MLS group message locally: {}", e);
+    }
+
+    if let Some(ref channels) = state.event_channels {
+        channels.send_group_message(GroupMessageEvent::MessageSent {
+            message_id: message_id.clone(),
+            group_id: req.group_id,
+        });
+    }
+
+    Ok(Json(MessageResponse {
+        message_id,
+        success: true,
+        message: "MLS message sent successfully".to_string(),
+    }))
+}
+
+/// Accept an MLS Welcome to join a group.
+async fn mls_accept_welcome(
+    State(state): State<AppState>,
+    Json(req): Json<MlsAcceptWelcomeRequest>,
+) -> Result<Json<serde_json::Value>> {
+    use variance_messaging::mls::MlsGroupHandler;
+
+    let welcome_bytes = hex::decode(&req.mls_welcome).map_err(|_| Error::BadRequest {
+        message: "Invalid hex-encoded MLS Welcome".to_string(),
+    })?;
+
+    let welcome_msg =
+        MlsGroupHandler::deserialize_message(&welcome_bytes).map_err(|e| Error::App {
+            message: format!("Failed to deserialize MLS Welcome: {}", e),
         })?;
 
-    let topic = format!("/variance/group/{}", req.group_id);
+    let group_id = state
+        .mls_groups
+        .join_group_from_welcome(welcome_msg)
+        .map_err(|e| Error::App {
+            message: format!("Failed to join group from MLS Welcome: {}", e),
+        })?;
+
+    // Subscribe to the group's GossipSub topic
+    let topic = format!("/variance/group/{}", group_id);
     if let Err(e) = state.node_handle.subscribe_to_topic(topic).await {
-        tracing::warn!("Failed to subscribe to group topic: {}", e);
+        tracing::warn!("Failed to subscribe to MLS group topic: {}", e);
     }
 
     Ok(Json(serde_json::json!({
         "success": true,
-        "group_id": req.group_id,
+        "group_id": group_id,
+        "mls": true,
     })))
-}
-
-fn group_to_response(group: variance_proto::messaging_proto::Group) -> GroupResponse {
-    GroupResponse {
-        id: group.id,
-        name: group.name,
-        admin_did: group.admin_did,
-        members: group.members.into_iter().map(member_to_response).collect(),
-        created_at: group.created_at,
-        description: group.description,
-    }
-}
-
-fn member_to_response(member: variance_proto::messaging_proto::GroupMember) -> GroupMemberResponse {
-    let role = match member.role {
-        1 => "member",
-        2 => "moderator",
-        3 => "admin",
-        _ => "unknown",
-    };
-    GroupMemberResponse {
-        did: member.did,
-        role: role.to_string(),
-        joined_at: member.joined_at,
-        nickname: member.nickname,
-    }
 }
 
 // ===== Call Handlers =====
@@ -2381,146 +2284,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    }
-
-    #[tokio::test]
-    async fn test_list_groups_empty() {
-        let app = create_router(test_state());
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/groups")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(json.as_array().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_create_group() {
-        let app = create_router(test_state());
-
-        let req_body = serde_json::json!({
-            "name": "Test Group",
-            "description": "A test group"
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/groups")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["name"], "Test Group");
-        assert_eq!(json["description"], "A test group");
-        assert!(!json["id"].as_str().unwrap().is_empty());
-        assert_eq!(json["admin_did"], "did:variance:test");
-        assert_eq!(json["members"].as_array().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_create_and_get_group() {
-        let state = test_state();
-        // Create a group via the handler directly
-        let (_, _group) = state
-            .group_messaging
-            .create_group("My Group".to_string(), None)
-            .await
-            .unwrap();
-
-        let app = create_router(state);
-
-        // List groups should now return 1
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/groups")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json.as_array().unwrap().len(), 1);
-        assert_eq!(json[0]["name"], "My Group");
-    }
-
-    #[tokio::test]
-    async fn test_get_group_not_found() {
-        let app = create_router(test_state());
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/groups/nonexistent")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn test_get_group_members() {
-        let state = test_state();
-        let (group_id, _) = state
-            .group_messaging
-            .create_group("Members Test".to_string(), None)
-            .await
-            .unwrap();
-
-        let app = create_router(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/groups/{}/members", group_id))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let members = json.as_array().unwrap();
-        assert_eq!(members.len(), 1);
-        assert_eq!(members[0]["did"], "did:variance:test");
-        assert_eq!(members[0]["role"], "admin");
     }
 
     #[tokio::test]

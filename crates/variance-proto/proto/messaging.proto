@@ -40,19 +40,15 @@ message GroupMessage {
   string sender_did = 2;
   string group_id = 3;
 
-  // Encrypted with group key (AES-256-GCM)
-  bytes ciphertext = 4;
-  bytes nonce = 5;
-
-  // Signature
-  bytes signature = 6;
+  reserved 4, 5, 6, 10;
+  reserved "ciphertext", "nonce", "signature", "key_version";
 
   int64 timestamp = 7;
   MessageType type = 8;
   optional string reply_to = 9;
 
-  // Key version used for encryption; required for decryption after rotation
-  uint32 key_version = 10;
+  // MLS (RFC 9420) ciphertext — TLS-serialized MlsMessageOut.
+  bytes mls_ciphertext = 11;
 }
 
 enum MessageType {
@@ -122,7 +118,8 @@ message Group {
   string name = 2;
   string admin_did = 3;
   repeated GroupMember members = 4;
-  GroupKey current_key = 5;
+  reserved 5;
+  reserved "current_key";
   int64 created_at = 6;
   optional string avatar_cid = 7;
   optional string description = 8;
@@ -133,8 +130,8 @@ message GroupMember {
   GroupRole role = 2;
   int64 joined_at = 3;
   optional string nickname = 4;
-  // X25519 public key for encrypting group key re-invitations after rotation
-  optional bytes x25519_key = 5;
+  reserved 5;
+  reserved "x25519_key";
 }
 
 enum GroupRole {
@@ -144,11 +141,7 @@ enum GroupRole {
   GROUP_ROLE_ADMIN = 3;
 }
 
-message GroupKey {
-  uint32 version = 1;
-  bytes key = 2; // AES-256 key (encrypted per-member)
-  int64 created_at = 3;
-}
+// GroupKey removed — MLS manages group key material internally.
 
 message GroupInvitation {
   string group_id = 1;
@@ -156,17 +149,21 @@ message GroupInvitation {
   string inviter_did = 3;
   string invitee_did = 4;
 
-  // Group key encrypted with invitee's public key
-  bytes encrypted_group_key = 5;
+  reserved 5, 7, 9;
+  reserved "encrypted_group_key", "signature", "key_version";
 
   int64 timestamp = 6;
-  bytes signature = 7;
 
   // Full member list at time of invitation, so acceptor starts with correct state
   repeated GroupMember members = 8;
 
-  // Key version being conveyed; required so the recipient inserts into the right slot
-  uint32 key_version = 9;
+  // MLS Welcome message — TLS-serialized MlsMessageOut (Welcome variant).
+  // The recipient joins via MlsGroupHandler::join_group_from_welcome().
+  bytes mls_welcome = 10;
+
+  // MLS commit — TLS-serialized MlsMessageOut (commit from add_members).
+  // Existing group members process this to advance their epoch.
+  bytes mls_commit = 11;
 }
 
 // ACK for direct message delivery confirmation.

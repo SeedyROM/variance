@@ -9,7 +9,7 @@ use tracing::{debug, warn};
 use variance_identity::username::UsernameRegistry;
 use variance_media::{CallManager, SignalingHandler};
 use variance_messaging::{
-    direct::DirectMessageHandler, group::GroupMessageHandler, typing::TypingHandler,
+    direct::DirectMessageHandler, mls::MlsGroupHandler, typing::TypingHandler,
 };
 use variance_p2p::{
     EventChannels, IdentityEvent, NodeHandle, OfflineMessageEvent, SignalingEvent, TypingEvent,
@@ -19,7 +19,7 @@ use variance_p2p::{
 pub struct EventRouterDeps {
     pub ws_manager: WebSocketManager,
     pub direct_messaging: Arc<DirectMessageHandler>,
-    pub group_messaging: Arc<GroupMessageHandler>,
+    pub mls_groups: Arc<MlsGroupHandler>,
     pub call_manager: Arc<CallManager>,
     pub signaling: Arc<SignalingHandler>,
     pub node_handle: NodeHandle,
@@ -31,7 +31,7 @@ pub struct EventRouterDeps {
 pub struct EventRouter {
     ws_manager: WebSocketManager,
     direct_messaging: Arc<DirectMessageHandler>,
-    group_messaging: Arc<GroupMessageHandler>,
+    mls_groups: Arc<MlsGroupHandler>,
     call_manager: Arc<CallManager>,
     signaling: Arc<SignalingHandler>,
     node_handle: NodeHandle,
@@ -44,7 +44,7 @@ impl EventRouter {
         let EventRouterDeps {
             ws_manager,
             direct_messaging,
-            group_messaging,
+            mls_groups,
             call_manager,
             signaling,
             node_handle,
@@ -55,7 +55,7 @@ impl EventRouter {
         Self {
             ws_manager,
             direct_messaging,
-            group_messaging,
+            mls_groups,
             call_manager,
             signaling,
             node_handle,
@@ -310,7 +310,7 @@ impl EventRouter {
 
         // Spawn task for group message events
         let ws_manager = self.ws_manager.clone();
-        let group_messaging = self.group_messaging.clone();
+        let mls_groups = self.mls_groups.clone();
         let events_clone = events.clone();
         tokio::spawn(async move {
             use variance_p2p::events::GroupMessageEvent;
@@ -326,21 +326,41 @@ impl EventRouter {
                     let message_id = message.id.clone();
                     let timestamp = message.timestamp;
 
-                    match group_messaging.receive_message(message).await {
-                        Ok(_content) => {
-                            let msg = WsMessage::GroupMessageReceived {
-                                group_id,
-                                from,
-                                message_id,
-                                timestamp,
-                            };
-                            ws_manager.broadcast(msg);
-                        }
-                        Err(e) => {
-                            warn!(
-                                "EventRouter: Failed to decrypt group message {}: {}",
-                                message_id, e
-                            );
+                    if message.mls_ciphertext.is_empty() {
+                        warn!(
+                            "EventRouter: Group message {} has no mls_ciphertext, dropping",
+                            message_id,
+                        );
+                    } else {
+                        match variance_messaging::mls::MlsGroupHandler::deserialize_message(
+                            &message.mls_ciphertext,
+                        ) {
+                            Ok(mls_msg) => match mls_groups.process_message(&group_id, mls_msg) {
+                                Ok(Some(_decrypted)) => {
+                                    let msg = WsMessage::GroupMessageReceived {
+                                        group_id,
+                                        from,
+                                        message_id,
+                                        timestamp,
+                                    };
+                                    ws_manager.broadcast(msg);
+                                }
+                                Ok(None) => {
+                                    // Commit or proposal — state updated, no application message
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "EventRouter: MLS decrypt failed for {}: {}",
+                                        message_id, e
+                                    );
+                                }
+                            },
+                            Err(e) => {
+                                warn!(
+                                    "EventRouter: Failed to deserialize MLS message {}: {}",
+                                    message_id, e
+                                );
+                            }
                         }
                     }
                 }
@@ -527,7 +547,7 @@ mod tests {
         EventRouter::new(EventRouterDeps {
             ws_manager: state.ws_manager.clone(),
             direct_messaging: state.direct_messaging.clone(),
-            group_messaging: state.group_messaging.clone(),
+            mls_groups: state.mls_groups.clone(),
             call_manager: state.calls.clone(),
             signaling: state.signaling.clone(),
             node_handle: state.node_handle.clone(),
@@ -579,7 +599,7 @@ mod tests {
         let router = EventRouter::new(EventRouterDeps {
             ws_manager: ws_manager.clone(),
             direct_messaging: state.direct_messaging.clone(),
-            group_messaging: state.group_messaging.clone(),
+            mls_groups: state.mls_groups.clone(),
             call_manager: state.calls.clone(),
             signaling: state.signaling.clone(),
             node_handle: state.node_handle.clone(),
