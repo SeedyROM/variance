@@ -239,7 +239,11 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
 
     // Restore persisted MLS group state (ratchet trees, epoch keys, group membership).
     // Must run before the re-subscribe loop so group_ids() returns the restored groups.
-    match app_state.storage.fetch_mls_state(&app_state.local_did).await {
+    match app_state
+        .storage
+        .fetch_mls_state(&app_state.local_did)
+        .await
+    {
         Ok(Some(state_bytes)) => match app_state.mls_groups.restore_in_place(&state_bytes) {
             Ok(n) => tracing::info!("Restored {} MLS group(s) from persistent storage", n),
             Err(e) => tracing::warn!(

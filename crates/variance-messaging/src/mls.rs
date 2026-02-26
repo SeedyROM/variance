@@ -764,12 +764,18 @@ mod tests {
 
         // Restore into a fresh handler — it should know about the group.
         let alice2 = MlsGroupHandler::new("did:key:alice".to_string(), &sk).unwrap();
-        assert!(!alice2.is_member("persist-test"), "fresh handler should have no groups");
+        assert!(
+            !alice2.is_member("persist-test"),
+            "fresh handler should have no groups"
+        );
 
         let n = alice2.restore_in_place(&snapshot).unwrap();
         assert_eq!(n, 1);
         assert!(alice2.is_member("persist-test"));
-        assert_eq!(alice2.list_members("persist-test").unwrap(), vec!["did:key:alice"]);
+        assert_eq!(
+            alice2.list_members("persist-test").unwrap(),
+            vec!["did:key:alice"]
+        );
     }
 
     #[test]
