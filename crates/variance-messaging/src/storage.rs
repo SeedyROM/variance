@@ -80,8 +80,22 @@ pub trait MessageStorage: Send + Sync {
 
     /// List all direct conversations for a local DID.
     ///
-    /// Returns `(peer_did, latest_timestamp)` pairs sorted by timestamp descending.
-    async fn list_direct_conversations(&self, local_did: &str) -> Result<Vec<(String, i64)>>;
+    /// Returns `(peer_did, latest_timestamp, latest_peer_timestamp)` triples sorted by
+    /// `latest_timestamp` descending. `latest_peer_timestamp` is the timestamp of the most
+    /// recent message sent **by the peer** (i.e. `sender_did != local_did`), or `None` if the
+    /// local user has only sent messages and received none.
+    async fn list_direct_conversations(
+        &self,
+        local_did: &str,
+    ) -> Result<Vec<(String, i64, Option<i64>)>>;
+
+    /// Record that `our_did` has read all messages with `peer_did` up to `timestamp` (ms,
+    /// inclusive). Stored as little-endian i64 bytes.
+    async fn store_last_read_at(&self, our_did: &str, peer_did: &str, timestamp: i64)
+        -> Result<()>;
+
+    /// Fetch the last-read timestamp for a conversation. Returns `None` if never read.
+    async fn fetch_last_read_at(&self, our_did: &str, peer_did: &str) -> Result<Option<i64>>;
 
     /// Delete all messages in a direct conversation.
     async fn delete_direct_conversation(&self, did1: &str, did2: &str) -> Result<()>;
@@ -205,6 +219,13 @@ impl LocalMessageStorage {
     fn group_metadata_tree(&self) -> Result<sled::Tree> {
         self.db
             .open_tree("group_metadata")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
+    /// Last-read-at tree — key: `"{our_did}::{peer_did}"`, value: i64 ms timestamp (LE bytes)
+    fn last_read_at_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("last_read_at")
             .map_err(|e| Error::Storage { source: e })
     }
 
@@ -581,25 +602,40 @@ impl MessageStorage for LocalMessageStorage {
         Ok(latest)
     }
 
-    async fn list_direct_conversations(&self, local_did: &str) -> Result<Vec<(String, i64)>> {
+    async fn list_direct_conversations(
+        &self,
+        local_did: &str,
+    ) -> Result<Vec<(String, i64, Option<i64>)>> {
         let tree = self.direct_tree()?;
-        let mut conversations: HashMap<String, i64> = HashMap::new();
+        // (peer_did -> (latest_any_ts, latest_peer_ts))
+        let mut conversations: HashMap<String, (i64, Option<i64>)> = HashMap::new();
 
         for entry in tree.iter() {
-            let (key, _) = entry.map_err(|e| Error::Storage { source: e })?;
+            let (key, value) = entry.map_err(|e| Error::Storage { source: e })?;
             let key_str = String::from_utf8_lossy(&key);
 
             if let Some((conv_id, timestamp)) = Self::parse_direct_key(&key_str) {
                 if let Some(peer_did) = Self::peer_did_from_conv_id(conv_id, local_did) {
-                    let entry = conversations.entry(peer_did).or_insert(i64::MIN);
-                    if timestamp > *entry {
-                        *entry = timestamp;
+                    let entry = conversations.entry(peer_did).or_insert((i64::MIN, None));
+                    if timestamp > entry.0 {
+                        entry.0 = timestamp;
+                    }
+                    if let Ok(msg) = DirectMessage::decode(value.as_ref()) {
+                        if msg.sender_did != local_did {
+                            let peer_ts = entry.1.get_or_insert(i64::MIN);
+                            if timestamp > *peer_ts {
+                                *peer_ts = timestamp;
+                            }
+                        }
                     }
                 }
             }
         }
 
-        let mut result: Vec<(String, i64)> = conversations.into_iter().collect();
+        let mut result: Vec<(String, i64, Option<i64>)> = conversations
+            .into_iter()
+            .map(|(peer_did, (latest, peer_latest))| (peer_did, latest, peer_latest))
+            .collect();
         result.sort_by(|a, b| b.1.cmp(&a.1));
         Ok(result)
     }
@@ -796,6 +832,31 @@ impl MessageStorage for LocalMessageStorage {
             groups.push(group);
         }
         Ok(groups)
+    }
+
+    async fn store_last_read_at(
+        &self,
+        our_did: &str,
+        peer_did: &str,
+        timestamp: i64,
+    ) -> Result<()> {
+        let tree = self.last_read_at_tree()?;
+        let key = format!("{}::{}", our_did, peer_did);
+        tree.insert(key.as_bytes(), &timestamp.to_le_bytes())
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    async fn fetch_last_read_at(&self, our_did: &str, peer_did: &str) -> Result<Option<i64>> {
+        let tree = self.last_read_at_tree()?;
+        let key = format!("{}::{}", our_did, peer_did);
+        Ok(tree
+            .get(key.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?
+            .map(|v| {
+                let bytes: [u8; 8] = v.as_ref().try_into().unwrap_or([0u8; 8]);
+                i64::from_le_bytes(bytes)
+            }))
     }
 }
 
@@ -1040,8 +1101,12 @@ mod tests {
         // Sorted desc by timestamp: carol first (2000), bob second (1000)
         assert_eq!(convs[0].0, "did:variance:carol");
         assert_eq!(convs[0].1, 2000);
+        // carol→alice: peer is carol, so latest_peer_timestamp = Some(2000)
+        assert_eq!(convs[0].2, Some(2000));
         assert_eq!(convs[1].0, "did:variance:bob");
         assert_eq!(convs[1].1, 1000);
+        // alice→bob: peer is bob, bob never sent, so latest_peer_timestamp = None
+        assert_eq!(convs[1].2, None);
     }
 
     #[tokio::test]
@@ -1249,5 +1314,79 @@ mod tests {
             .get("idx:01OFFLINE_MSG_ID".as_bytes())
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_last_read_at_round_trip() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        // Initially absent
+        let result = storage
+            .fetch_last_read_at("did:variance:alice", "did:variance:bob")
+            .await
+            .unwrap();
+        assert!(result.is_none());
+
+        // Store a timestamp
+        storage
+            .store_last_read_at("did:variance:alice", "did:variance:bob", 123_456_789)
+            .await
+            .unwrap();
+
+        let result = storage
+            .fetch_last_read_at("did:variance:alice", "did:variance:bob")
+            .await
+            .unwrap();
+        assert_eq!(result, Some(123_456_789));
+    }
+
+    #[tokio::test]
+    async fn test_last_read_at_overwrite() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        storage
+            .store_last_read_at("did:variance:alice", "did:variance:bob", 1000)
+            .await
+            .unwrap();
+        storage
+            .store_last_read_at("did:variance:alice", "did:variance:bob", 9999)
+            .await
+            .unwrap();
+
+        let result = storage
+            .fetch_last_read_at("did:variance:alice", "did:variance:bob")
+            .await
+            .unwrap();
+        assert_eq!(result, Some(9999));
+    }
+
+    #[tokio::test]
+    async fn test_last_read_at_per_conversation() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        // Different conversations are stored independently
+        storage
+            .store_last_read_at("did:variance:alice", "did:variance:bob", 1000)
+            .await
+            .unwrap();
+        storage
+            .store_last_read_at("did:variance:alice", "did:variance:charlie", 2000)
+            .await
+            .unwrap();
+
+        let bob_ts = storage
+            .fetch_last_read_at("did:variance:alice", "did:variance:bob")
+            .await
+            .unwrap();
+        let charlie_ts = storage
+            .fetch_last_read_at("did:variance:alice", "did:variance:charlie")
+            .await
+            .unwrap();
+
+        assert_eq!(bob_ts, Some(1000));
+        assert_eq!(charlie_ts, Some(2000));
     }
 }
