@@ -20,6 +20,7 @@ This Rust implementation corrects critical architectural flaws from the Go desig
 
 **Previously (2026-02-17):**
 - ✅ vodozemac 0.9 (replaces double-ratchet-2) — Olm Double Ratchet for DMs
+- ✅ OpenMLS (RFC 9420) — replaces hand-rolled AES-256-GCM group crypto; per-message forward secrecy + post-compromise security
 - ✅ Complete messaging: receipts, typing indicators, sled storage
 - ✅ Full HTTP REST API — all endpoints implemented
 - ✅ WebSocket event delivery for Tauri frontend

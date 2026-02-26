@@ -114,7 +114,7 @@ Use `anyhow` only for application binaries (variance-app, variance-cli).
 ### Message Storage
 
 - Direct messages: libp2p streams with Double Ratchet
-- Group messages: GossipSub with AES-256-GCM group keys
+- Group messages: GossipSub with OpenMLS (RFC 9420) — per-message forward secrecy, post-compromise security
 - Offline messages: **Relay nodes** with local DB, NOT DHT
 - TTL: 30 days on relay storage
 

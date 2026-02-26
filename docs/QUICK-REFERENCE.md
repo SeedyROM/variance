@@ -39,7 +39,7 @@ variance/
 │   │
 │   ├── variance-messaging/      # Chat system
 │   │   ├── direct.rs            # 1-on-1 (Olm Double Ratchet via vodozemac)
-│   │   ├── group.rs             # GossipSub groups (AES-256-GCM)
+│   │   ├── mls.rs               # GossipSub groups (OpenMLS / RFC 9420)
 │   │   ├── offline.rs           # Relay integration
 │   │   ├── storage.rs           # Local persistence (sled, ULID-sorted)
 │   │   ├── receipts.rs          # Read/delivery receipt tracking

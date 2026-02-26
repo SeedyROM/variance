@@ -382,7 +382,7 @@ message ChatMessage {
 
 ### Phase 3: Messaging ✅
 - [x] Direct messages: Olm Double Ratchet via vodozemac (PreKey + Normal)
-- [x] Group messages: GossipSub with AES-256-GCM per-group keys
+- [x] Group messages: GossipSub with OpenMLS (RFC 9420) — per-message forward secrecy + post-compromise security
 - [x] Offline messages: Relay node storage with 30-day TTL (NOT DHT)
 - [x] Message persistence (sled KV, ULID-sorted, paginated)
 - [x] Read receipts and delivery status

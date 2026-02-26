@@ -1,6 +1,8 @@
-# MLS Integration Opportunity
+# MLS Group Encryption
 
-Evaluating whether to adopt the Messaging Layer Security protocol ([RFC 9420](https://datatracker.ietf.org/doc/html/rfc9420)) via [openmls](https://github.com/openmls/openmls) before the current crypto layer hardens further.
+Group messaging uses the Messaging Layer Security protocol ([RFC 9420](https://datatracker.ietf.org/doc/html/rfc9420)) via [openmls](https://github.com/openmls/openmls). This document explains the design, what MLS replaces, and the implementation structure.
+
+The hand-rolled AES-256-GCM + X25519 group crypto has been replaced with OpenMLS. The evaluation rationale is preserved below for context.
 
 ## Current State
 
@@ -24,26 +26,23 @@ Each node creates a `vodozemac::olm::Account` at identity generation. The accoun
 - `variance-proto/proto/identity.proto` — `IdentityFound.olm_identity_key`, `one_time_keys`
 - `variance-proto/proto/messaging.proto` — `DirectMessage.olm_message_type`, `sender_identity_key`
 
-### Group Chats — AES-256-GCM + X25519 (hand-rolled)
+### Group Chats — OpenMLS (RFC 9420)
 
-Each group has a symmetric AES-256 key, versioned for forward secrecy on member removal. Key distribution uses X25519 ECDH:
+Groups use OpenMLS backed by GossipSub for message delivery. Each group is an `MlsGroup` with a ratchet tree that provides per-message forward secrecy and post-compromise security.
 
-1. Admin creates group → random 32-byte AES key (version 1).
-2. Admin invites member → encrypts group key with member's X25519 public key (ECDH shared secret → HKDF → AES-256-GCM wrapping). Sent as `GroupInvitation.encrypted_group_key`.
-3. Messages encrypted with `Aes256Gcm::encrypt(group_key, nonce, plaintext)`.
-4. On member removal → `rotate_key()`: new version, re-encrypt for all remaining members via X25519.
+1. Admin creates group → `MlsGroup::new()` with Ed25519 credential.
+2. Admin invites member → `MlsGroup::add_members()` produces a `Commit` + `Welcome`. Welcome sent as `GroupInvitation.mls_welcome`.
+3. Messages encrypted via `MlsGroup::create_message()` → `MlsCiphertext` serialized into `GroupMessage.mls_ciphertext`.
+4. On member removal → `MlsGroup::remove_members()` produces a `Commit`; epoch advances, ratchet tree updated.
 
-**Limitations of current approach:**
-- No forward secrecy *within* a key epoch (all messages between rotations use the same key).
-- No post-compromise security (compromised key decrypts all messages until next rotation).
-- X25519 key missing for pre-migration or self-created members → re-keying skips them.
-- Key distribution is all-or-nothing: new member gets current key but not historical keys (by design), and the admin must be online to rotate.
-- No standardized protocol — entirely custom, harder to audit.
+**Replaced approach (AES-256-GCM + X25519):**
+The old design used a symmetric AES-256 key versioned per epoch, distributed via X25519 ECDH. Limitations: no per-message forward secrecy within an epoch, no post-compromise security, entirely custom key management.
 
 **Files:**
-- `variance-messaging/src/group.rs` — `GroupMessageHandler`: create, join, add/remove member, rotate key, encrypt/decrypt, X25519 key derivation
-- `variance-messaging/src/storage.rs` — `store_group_key_encrypted`, `store_versioned_group_key`, `fetch_all_group_keys`, `store_group_metadata`
-- `variance-proto/proto/messaging.proto` — `GroupMessage.key_version`, `GroupKey`, `GroupInvitation.encrypted_group_key`, `GroupMember.x25519_key`
+- `variance-messaging/src/mls.rs` — `MlsGroupHandler`: create, join, add/remove member, encrypt/decrypt, commit processing
+- `variance-messaging/src/storage.rs` — `store_mls_group_state`, `fetch_mls_group_state`, `store_key_package`, `fetch_key_packages`
+- `variance-proto/proto/messaging.proto` — `GroupMessage.mls_ciphertext`, `GroupInvitation.mls_welcome`, `KeyPackageMessage`
+- `variance-proto/proto/identity.proto` — `IdentityFound.mls_key_package`
 
 ### Shared Primitives
 
@@ -86,36 +85,25 @@ OpenMLS supports `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` which uses:
 
 This is a near-perfect fit — our existing `ed25519-dalek` keys can serve as MLS credentials.
 
-## Decision: Replace Groups Only, or DMs Too?
+## Decision: MLS for Groups, Olm for DMs
 
-### Option A: MLS for groups only (recommended)
-
-Replace the hand-rolled AES-256-GCM + X25519 group crypto with MLS groups. Keep Olm for 1:1 DMs.
+Group crypto uses MLS (Option A). 1:1 DMs keep Olm (`vodozemac`).
 
 **Rationale:**
-- Group crypto is where the biggest security gap exists (no per-message FS, no PCS).
+- Group crypto had the biggest security gaps (no per-message FS, no PCS).
 - Olm is battle-tested (Matrix/Element), well-understood, and `vodozemac` is actively maintained.
 - Olm for 1:1 is simpler and lighter than an MLS group-of-2.
-- Lower migration risk — only group.rs changes significantly.
+- Impact scoped to `mls.rs`, proto definitions, and storage — DMs untouched.
 
-### Option B: MLS everywhere (DMs become group-of-2)
+DMs → MLS can be revisited later if multi-device support becomes a priority (each device is a separate leaf in the ratchet tree).
 
-Replace both Olm and the group layer with MLS. Every conversation is an MLS group.
-
-**Rationale:**
-- Single encryption protocol to maintain and audit.
-- Multi-device support for DMs and groups with the same mechanism.
-- But: heavier per-message cost for 1:1, loses Olm simplicity, larger migration surface.
-
-**Recommendation: Start with Option A.** The group layer is where the security gaps are real. We can revisit DMs → MLS later when multi-device becomes a priority.
-
-## File-by-File Impact (Option A)
+## File-by-File Impact
 
 ### High impact (major rewrite)
 
 | File | Change |
 |---|---|
-| `variance-messaging/src/group.rs` (1691 lines) | **Replace entirely.** `GroupMessageHandler` becomes a thin wrapper around `openmls::MlsGroup`. Key creation, add/remove member, encrypt/decrypt all delegate to MLS. X25519 manual key exchange is eliminated. Versioned key maps are replaced by MLS epochs. |
+| `variance-messaging/src/mls.rs` (was `group.rs`) | **Replaced.** `GroupMessageHandler` is now a thin wrapper around `openmls::MlsGroup`. Key creation, add/remove member, encrypt/decrypt all delegate to MLS. X25519 manual key exchange eliminated. Versioned key maps replaced by MLS epochs. |
 | `variance-proto/proto/messaging.proto` | **`GroupMessage`**: drop `nonce`, `key_version`; add `mls_ciphertext: bytes` (openmls `MlsCiphertext` serialized). **`GroupInvitation`**: drop `encrypted_group_key`, `key_version`; add `mls_welcome: bytes`. **`GroupKey`**: remove (MLS manages keys internally). **`GroupMember.x25519_key`**: remove (MLS uses `KeyPackage` instead). Add `KeyPackageMessage` for publishing/distributing key packages. |
 | `variance-messaging/src/storage.rs` | **Remove:** `store_group_key_encrypted`, `fetch_group_key_encrypted`, `store_versioned_group_key`, `fetch_all_group_keys`. **Add:** `store_mls_group_state` / `fetch_mls_group_state` (serialized `MlsGroup`), `store_key_package` / `fetch_key_packages`. OpenMLS can use its bundled `openmls_sqlite_storage` or we implement `openmls_traits::storage::StorageProvider` over sled. |
 
@@ -136,7 +124,7 @@ Replace both Olm and the group layer with MLS. Every conversation is an MLS grou
 |---|---|
 | `variance-app/src/api.rs` | Group API endpoints: adjust request/response types if GroupInvitation shape changes. |
 | `variance-app/src/identity_gen.rs` | **No change** (Olm account generation stays for DMs). Optionally generate initial MLS key packages here too. |
-| `variance-messaging/src/direct.rs` | **No change.** Olm stays for 1:1. |
+| `variance-messaging/src/direct.rs` | Unchanged. Olm stays for 1:1. |
 | `variance-messaging/src/offline.rs` | **No change** to envelope format; MLS ciphertext is just bytes in the existing `GroupMessage` field. |
 | `variance-messaging/src/error.rs` | Add MLS-specific error variants (`MlsGroupError`, `MlsWelcomeError`, etc.). |
 | `variance-messaging/src/lib.rs` | **No change.** |
@@ -151,50 +139,19 @@ Replace both Olm and the group layer with MLS. Every conversation is an MLS grou
 | `variance-cli/` | CLI command handlers just call into `variance-app`. |
 | `app/` (frontend) | TypeScript client sends/receives JSON over HTTP — crypto is transparent. |
 
-## Migration Strategy
+## Migration Notes
 
-### Phase 1: Add openmls plumbing (no behavior change)
+The migration from hand-rolled AES-256-GCM replaced `group.rs` with `mls.rs` in three phases:
 
-1. Add `openmls`, `openmls_rust_crypto`, `openmls_basic_credential` to `variance-messaging/Cargo.toml`.
-2. Implement `StorageProvider` for sled (or use `openmls_sqlite_storage` if migrating DB).
-3. Create `MlsGroupHandler` alongside existing `GroupMessageHandler`.
-4. Derive `CredentialWithKey` from existing Ed25519 signing key at boot.
-5. Generate initial `KeyPackage` and add to `IdentityFound` responses.
+1. **Plumbing:** Added `openmls`, `openmls_rust_crypto`, `openmls_basic_credential`; implemented `StorageProvider` over sled; derived `CredentialWithKey` from existing Ed25519 signing key; added `KeyPackage` to `IdentityFound` responses.
+2. **Wire-up:** Replaced `GroupMessageHandler` create/add/remove/send/receive with `MlsGroup` equivalents; updated proto definitions; updated `event_router` to handle MLS message types (Commit, Welcome, Application).
+3. **Cleanup:** Removed `x25519-dalek`; removed manual key rotation / versioned key maps; removed `GroupKey`, `GroupMember.x25519_key`, old `GroupInvitation` fields from proto.
 
-### Phase 2: Wire up MLS groups
+### Storage migration for existing groups
 
-1. Replace `GroupMessageHandler.create_group()` → `MlsGroup::new()`.
-2. Replace `add_member()` → `MlsGroup::add_members()` (produces `Commit` + `Welcome`).
-3. Replace `remove_member()` → `MlsGroup::remove_members()` (produces `Commit`).
-4. Replace `send_message()` → `MlsGroup::create_message()`.
-5. Replace `receive_message()` → `MlsGroup::process_message()`.
-6. Update proto definitions.
-7. Update event_router to handle MLS message types.
-
-### Phase 3: Clean up
-
-1. Remove `x25519-dalek` dependency.
-2. Remove manual key rotation / versioning code.
-3. Remove `GroupKey`, `GroupMember.x25519_key`, old `GroupInvitation` fields from proto.
-4. Run full test suite; add MLS-specific integration tests.
-
-### Storage migration
-
-Existing group data (messages, metadata) in sled needs a migration path:
-- **Old messages:** Keep as-is; they were encrypted with old AES keys that are still in sled. Mark with a `pre_mls: bool` flag.
-- **Active groups:** On first use after upgrade, the admin re-creates the group as an MLS group and sends Welcome messages to all members. This is a one-time "group upgrade" flow.
-- **Group keys:** Old versioned keys stay in sled for decrypting old messages. New MLS epochs are managed by openmls internally.
-
-## Effort Estimate
-
-| Phase | Estimated effort |
-|---|---|
-| Phase 1: plumbing | 2–3 days |
-| Phase 2: wire up | 4–5 days |
-| Phase 3: cleanup + tests | 2–3 days |
-| **Total** | **~10 days** |
-
-The bulk of the work is in `group.rs` (1691 lines of custom key management replaced by MLS delegation) and the proto changes (which ripple into event_router, api, and storage).
+- **Old messages (pre-MLS):** Kept as-is in sled; still decryptable with old AES keys stored alongside them.
+- **Active groups:** On first use after upgrade, admin re-creates the group as an MLS group and sends Welcome messages to all members (one-time "group upgrade" flow).
+- **Group keys:** Old versioned keys remain in sled for decrypting pre-MLS history. New MLS epochs are managed by openmls internally.
 
 ## Dependency Cost
 
@@ -217,13 +174,12 @@ openmls_basic_credential = "0.5"  # Basic credential type
 4. **Offline members:** MLS commits require all members' key packages. If a member is offline during an add/remove, we need to buffer the commit and deliver it when they come online — this fits our existing offline relay infrastructure.
 5. **Group size performance:** MLS ratchet tree operations are O(log n). For small groups (<100) this is irrelevant. For very large channels, it matters — but we don't support those yet.
 
-## Conclusion
+## Key Design Considerations
 
-The group encryption layer is the weakest part of our crypto stack — hand-rolled AES key management without per-message forward secrecy or post-compromise security. MLS directly addresses these gaps with an IETF-standardized, formally audited protocol.
+### Commit ordering in P2P
 
-Integration is feasible in ~10 days because:
-- Our Ed25519 keys are already MLS-compatible.
-- The impact is scoped to `group.rs`, proto definitions, and storage — DMs are untouched.
-- openmls provides a high-level API (`MlsGroup`) that replaces our entire manual key management.
+MLS assumes a delivery service that orders commits. GossipSub doesn't guarantee ordering. Concurrent commits / conflicts are handled using the openmls `fork-resolution` feature. The offline relay infrastructure handles buffering commits for offline members.
 
-The main architectural question is handling commit ordering in a P2P environment without a central delivery service. This is solvable with the `fork-resolution` feature and our existing offline relay — but it's the area that needs the most design attention.
+### Ciphersuite
+
+`MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` — X25519 DH, AES-128-GCM, SHA-256, Ed25519 signatures. Our existing `ed25519-dalek` keys serve as MLS credentials directly.
