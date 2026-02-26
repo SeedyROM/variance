@@ -176,6 +176,7 @@ export function NewConversationModal({ open, onClose, onCreated }: NewConversati
           value={initialText}
           onChange={(e) => setInitialText(e.target.value)}
           placeholder="Hello!"
+          allowSuggestions
         />
 
         {mutation.error && <p className="text-xs text-red-500">{String(mutation.error)}</p>}

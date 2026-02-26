@@ -60,6 +60,9 @@ export function RecoverStep({ onBack, onComplete }: RecoverStepProps) {
           value={phrase}
           onChange={(e) => setPhrase(e.target.value)}
           placeholder="word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12"
+          autoCorrect="off"
+          autoCapitalize="none"
+          spellCheck={false}
           className="w-full resize-none rounded-lg border border-surface-300 bg-surface-50 p-3 font-mono text-sm text-surface-900 placeholder:text-surface-400 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-surface-800 dark:bg-surface-900 dark:text-surface-50"
         />
         <p className="text-xs text-surface-500">

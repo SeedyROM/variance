@@ -4,10 +4,12 @@ import { cn } from "../../utils/cn";
 interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label?: string;
   error?: string;
+  /** Allow OS typing suggestions (autocorrect, autocapitalize, spellcheck). Default: false. */
+  allowSuggestions?: boolean;
 }
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(
-  ({ className, label, error, id, ...props }, ref) => {
+  ({ className, label, error, id, allowSuggestions = false, ...props }, ref) => {
     const inputId = id ?? label?.toLowerCase().replace(/\s+/g, "-");
 
     return (
@@ -23,6 +25,9 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
         <input
           ref={ref}
           id={inputId}
+          autoCorrect={allowSuggestions ? "on" : "off"}
+          autoCapitalize={allowSuggestions ? "sentences" : "none"}
+          spellCheck={allowSuggestions}
           className={cn(
             "w-full rounded-lg border border-surface-300 bg-surface-50 px-3 py-2 text-sm text-surface-900 placeholder:text-surface-400",
             "focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20",
