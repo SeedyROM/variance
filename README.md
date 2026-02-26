@@ -56,7 +56,7 @@ variance/
 - **Serialization**: Protocol Buffers (prost)
 - **Tracing**: tracing + tracing-subscriber
 - **Errors**: snafu
-- **Crypto**: ed25519-dalek, vodozemac 0.9 (Olm/Double Ratchet for DMs), AES-256-GCM (group messages)
+- **Crypto**: ed25519-dalek, vodozemac 0.9 (Olm/Double Ratchet for DMs), OpenMLS / RFC 9420 (group messages)
 - **Storage**: sled (embedded KV store)
 - **Desktop**: Tauri 2.x (React/TypeScript frontend)
 - **Identity**: BIP39 (mnemonic recovery), IPFS/IPNS (storage)
@@ -276,7 +276,7 @@ See [docs/ARCHITECTURE-CORRECTIONS.md](docs/ARCHITECTURE-CORRECTIONS.md) for the
 **Messaging:**
 - [x] Protobuf message schemas
 - [x] Olm Double Ratchet encryption for direct messages (vodozemac 0.9)
-- [x] AES-256-GCM for group messages
+- [x] OpenMLS (RFC 9420) for group messages — per-message forward secrecy, post-compromise security
 - [x] Offline message relay protocol handler
 - [x] Local storage backend (sled) with ULID-sorted history
 - [x] GossipSub integration for groups
