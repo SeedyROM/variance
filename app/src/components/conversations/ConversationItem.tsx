@@ -28,7 +28,7 @@ export function ConversationItem({
   const isTyping = typingUsersSet !== undefined && typingUsersSet.size > 0;
 
   const isOnline = presenceMap.get(conversation.peer_did) ?? false;
-  const hasUnread = unreadConversations.has(conversation.id);
+  const hasUnread = (conversation.has_unread ?? false) || unreadConversations.has(conversation.id);
 
   // Display name priority: backend API → WS-cached peer name → truncated DID
   const displayName =

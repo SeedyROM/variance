@@ -98,6 +98,12 @@ export function useWebSocket() {
           void queryClient.invalidateQueries({ queryKey: ["conversations"] });
           break;
 
+        case "OfflineMessagesReceived":
+          // Relay delivered offline messages — refetch conversations so sled-computed
+          // has_unread reflects any messages that arrived before the WS connected.
+          void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+          break;
+
         default:
           break;
       }
