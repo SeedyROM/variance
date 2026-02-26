@@ -19,6 +19,7 @@
 //! path is untouched. Phase 2 will wire this into `AppState` and replace `group.rs`
 //! encrypt/decrypt calls.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
 
@@ -29,6 +30,7 @@ use openmls::prelude::tls_codec::{Deserialize, Serialize};
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
+use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 
 use crate::error::{Error, Result};
 
@@ -524,6 +526,129 @@ impl MlsGroupHandler {
     pub fn local_did(&self) -> &str {
         &self.local_did
     }
+
+    /// Serialize the full MLS provider state to bytes for persistent storage.
+    ///
+    /// The snapshot contains the complete openmls `MemoryStorage` key-value map —
+    /// ratchet trees, epoch secrets, leaf nodes, the local signature keypair — plus
+    /// the list of active group IDs. Passing this to `restore_in_place` on a fresh
+    /// handler reconstructs all groups exactly as they were.
+    ///
+    /// Call this after every mutating operation (`create_group`, `add_member`,
+    /// `remove_member`, `join_group_from_welcome`, `encrypt_message`,
+    /// `process_message`) and persist the result via `MessageStorage::store_mls_state`.
+    pub fn export_state(&self) -> Result<Vec<u8>> {
+        let values = self
+            .provider
+            .storage()
+            .values
+            .read()
+            .expect("MLS storage lock poisoned");
+
+        let storage_entries: Vec<[String; 2]> = values
+            .iter()
+            .map(|(k, v)| [hex::encode(k), hex::encode(v)])
+            .collect();
+
+        let group_ids: Vec<String> = self.groups.iter().map(|e| e.key().clone()).collect();
+
+        let snapshot = MlsStateSnapshot {
+            group_ids,
+            storage_entries,
+        };
+
+        serde_json::to_vec(&snapshot).map_err(|e| Error::MlsGroup {
+            message: format!("Failed to serialize MLS state snapshot: {e}"),
+        })
+    }
+
+    /// Restore MLS group state in-place from a snapshot produced by `export_state`.
+    ///
+    /// Replaces the provider's in-memory key store with the persisted state, then
+    /// reloads each `MlsGroup` object from the restored store. Safe to call on a
+    /// handler that was just constructed with `new()` — any state written by `new()`
+    /// (the initial keypair store) is replaced by the snapshot, which already
+    /// contains the keypair.
+    ///
+    /// Returns the number of groups successfully restored.
+    pub fn restore_in_place(&self, state_bytes: &[u8]) -> Result<usize> {
+        let snapshot: MlsStateSnapshot =
+            serde_json::from_slice(state_bytes).map_err(|e| Error::MlsGroup {
+                message: format!("Failed to deserialize MLS state snapshot: {e}"),
+            })?;
+
+        // Decode hex pairs back to binary and build the restored map.
+        let mut restored_map: HashMap<Vec<u8>, Vec<u8>> =
+            HashMap::with_capacity(snapshot.storage_entries.len());
+
+        for [k_hex, v_hex] in &snapshot.storage_entries {
+            let k = hex::decode(k_hex).map_err(|e| Error::MlsGroup {
+                message: format!("Corrupted MLS snapshot: bad hex key: {e}"),
+            })?;
+            let v = hex::decode(v_hex).map_err(|e| Error::MlsGroup {
+                message: format!("Corrupted MLS snapshot: bad hex value: {e}"),
+            })?;
+            restored_map.insert(k, v);
+        }
+
+        // Atomically replace the provider's storage with the restored map.
+        // The snapshot includes the keypair that was written during new(), so
+        // we don't lose it. We re-store the keypair afterwards as a safety net
+        // for snapshots taken before any group was created (edge case on first run).
+        {
+            let mut values = self
+                .provider
+                .storage()
+                .values
+                .write()
+                .expect("MLS storage lock poisoned");
+            *values = restored_map;
+        }
+
+        self.signature_keypair
+            .store(self.provider.storage())
+            .map_err(|e| Error::MlsKeyPackage {
+                message: format!("Failed to re-store signature keypair after restore: {e:?}"),
+            })?;
+
+        // Reload each MlsGroup from the restored provider storage.
+        let mut restored = 0;
+        for group_id in &snapshot.group_ids {
+            let gid = GroupId::from_slice(group_id.as_bytes());
+            match MlsGroup::load(self.provider.storage(), &gid) {
+                Ok(Some(group)) => {
+                    self.groups
+                        .insert(group_id.clone(), Arc::new(RwLock::new(group)));
+                    restored += 1;
+                    tracing::debug!("Restored MLS group '{}'", group_id);
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        "MLS group '{}' listed in snapshot but missing from storage — skipping",
+                        group_id
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to restore MLS group '{}': {:?}", group_id, e);
+                }
+            }
+        }
+
+        Ok(restored)
+    }
+}
+
+/// Serializable snapshot of `MlsGroupHandler` state.
+///
+/// `storage_entries` holds the raw `MemoryStorage` key-value pairs as hex strings.
+/// This captures the complete openmls key store: ratchet trees, epoch secrets,
+/// leaf nodes, and the local signature keypair. `group_ids` drives the `MlsGroup::load`
+/// calls needed to reconstruct the live group objects on restore.
+#[derive(SerdeSerialize, SerdeDeserialize)]
+struct MlsStateSnapshot {
+    group_ids: Vec<String>,
+    /// Hex-encoded `[key, value]` pairs from `MemoryStorage.values`.
+    storage_entries: Vec<[String; 2]>,
 }
 
 #[cfg(test)]
@@ -625,6 +750,90 @@ mod tests {
         // Sender credential should be Alice's DID
         let sender_did = String::from_utf8_lossy(decrypted.sender_credential.serialized_content());
         assert_eq!(sender_did, "did:key:alice");
+    }
+
+    #[test]
+    fn export_and_restore_roundtrip() {
+        let sk = test_signing_key();
+        let alice = MlsGroupHandler::new("did:key:alice".to_string(), &sk).unwrap();
+        alice.create_group("persist-test").unwrap();
+
+        // Export state from the live handler.
+        let snapshot = alice.export_state().unwrap();
+        assert!(!snapshot.is_empty());
+
+        // Restore into a fresh handler — it should know about the group.
+        let alice2 = MlsGroupHandler::new("did:key:alice".to_string(), &sk).unwrap();
+        assert!(!alice2.is_member("persist-test"), "fresh handler should have no groups");
+
+        let n = alice2.restore_in_place(&snapshot).unwrap();
+        assert_eq!(n, 1);
+        assert!(alice2.is_member("persist-test"));
+        assert_eq!(alice2.list_members("persist-test").unwrap(), vec!["did:key:alice"]);
+    }
+
+    #[test]
+    fn restored_handler_can_encrypt_and_decrypt() {
+        // Alice creates a group and adds Bob.
+        let alice_sk = test_signing_key();
+        let alice = MlsGroupHandler::new("did:key:alice".to_string(), &alice_sk).unwrap();
+        alice.create_group("restart-group").unwrap();
+
+        let bob_sk = test_signing_key();
+        let bob = MlsGroupHandler::new("did:key:bob".to_string(), &bob_sk).unwrap();
+        let bob_kp = bob.generate_key_package().unwrap();
+
+        let add = alice.add_member("restart-group", bob_kp).unwrap();
+        let welcome_bytes = MlsGroupHandler::serialize_message(&add.welcome).unwrap();
+        bob.join_group_from_welcome(MlsGroupHandler::deserialize_message(&welcome_bytes).unwrap())
+            .unwrap();
+
+        // Send a message before "restart".
+        let enc = alice
+            .encrypt_message("restart-group", b"pre-restart")
+            .unwrap();
+        let enc_bytes = MlsGroupHandler::serialize_message(&enc).unwrap();
+        let dec = bob
+            .process_message(
+                "restart-group",
+                MlsGroupHandler::deserialize_message(&enc_bytes).unwrap(),
+            )
+            .unwrap()
+            .expect("should be application message");
+        assert_eq!(dec.plaintext, b"pre-restart");
+
+        // Export Alice's state and restore into a new handler (simulated restart).
+        let snapshot = alice.export_state().unwrap();
+        let alice_r = MlsGroupHandler::new("did:key:alice".to_string(), &alice_sk).unwrap();
+        assert_eq!(alice_r.restore_in_place(&snapshot).unwrap(), 1);
+
+        // The restored handler can still encrypt messages that Bob decrypts.
+        let enc2 = alice_r
+            .encrypt_message("restart-group", b"post-restart")
+            .unwrap();
+        let enc2_bytes = MlsGroupHandler::serialize_message(&enc2).unwrap();
+        let dec2 = bob
+            .process_message(
+                "restart-group",
+                MlsGroupHandler::deserialize_message(&enc2_bytes).unwrap(),
+            )
+            .unwrap()
+            .expect("should be application message");
+        assert_eq!(dec2.plaintext, b"post-restart");
+    }
+
+    #[test]
+    fn restore_empty_snapshot_has_no_groups() {
+        let sk = test_signing_key();
+        // Export state with no groups created yet.
+        let handler = MlsGroupHandler::new("did:key:test".to_string(), &sk).unwrap();
+        let snapshot = handler.export_state().unwrap();
+
+        // Restore into a fresh handler — should succeed with 0 groups.
+        let handler2 = MlsGroupHandler::new("did:key:test".to_string(), &sk).unwrap();
+        let n = handler2.restore_in_place(&snapshot).unwrap();
+        assert_eq!(n, 0);
+        assert!(handler2.group_ids().is_empty());
     }
 
     #[test]

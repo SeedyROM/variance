@@ -147,6 +147,22 @@ pub trait MessageStorage: Send + Sync {
 
     /// Fetch all stored group metadata records (used at startup to restore in-memory state).
     async fn fetch_all_group_metadata(&self) -> Result<Vec<Group>>;
+
+    // ===== MLS provider state persistence =====
+
+    /// Persist the full MLS provider state for a local identity.
+    ///
+    /// `state` is the output of `MlsGroupHandler::export_state()`. It contains the
+    /// complete openmls `MemoryStorage` key-value map (ratchet trees, epoch secrets,
+    /// leaf nodes, signature keypair) plus the list of active group IDs. This single
+    /// blob is sufficient to fully reconstruct `MlsGroupHandler` on restart via
+    /// `restore_in_place()`.
+    async fn store_mls_state(&self, local_did: &str, state: &[u8]) -> Result<()>;
+
+    /// Fetch the persisted MLS provider state for a local identity.
+    ///
+    /// Returns `None` on first run or if no groups have been created yet.
+    async fn fetch_mls_state(&self, local_did: &str) -> Result<Option<Vec<u8>>>;
 }
 
 /// Local storage implementation using sled
@@ -219,6 +235,13 @@ impl LocalMessageStorage {
     fn group_metadata_tree(&self) -> Result<sled::Tree> {
         self.db
             .open_tree("group_metadata")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
+    /// MLS provider state tree (local_did → serialized MlsStateSnapshot JSON bytes)
+    fn mls_state_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("mls_provider_state")
             .map_err(|e| Error::Storage { source: e })
     }
 
@@ -857,6 +880,21 @@ impl MessageStorage for LocalMessageStorage {
                 let bytes: [u8; 8] = v.as_ref().try_into().unwrap_or([0u8; 8]);
                 i64::from_le_bytes(bytes)
             }))
+    }
+
+    async fn store_mls_state(&self, local_did: &str, state: &[u8]) -> Result<()> {
+        let tree = self.mls_state_tree()?;
+        tree.insert(local_did.as_bytes(), state)
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    async fn fetch_mls_state(&self, local_did: &str) -> Result<Option<Vec<u8>>> {
+        let tree = self.mls_state_tree()?;
+        Ok(tree
+            .get(local_did.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?
+            .map(|v| v.to_vec()))
     }
 }
 

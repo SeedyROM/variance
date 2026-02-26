@@ -8199,6 +8199,7 @@ dependencies = [
  "dashmap",
  "ed25519-dalek",
  "futures",
+ "hex",
  "hkdf",
  "libp2p",
  "openmls",

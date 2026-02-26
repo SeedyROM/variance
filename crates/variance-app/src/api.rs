@@ -1145,6 +1145,26 @@ pub struct MlsAcceptWelcomeRequest {
     pub mls_welcome: String,
 }
 
+/// Persist the current MLS group state to storage after a mutation.
+///
+/// Called after every operation that changes the openmls key store (create, add, remove,
+/// join, send, process). Logs a warning on failure — the group still works, it just won't
+/// survive a restart until the next successful persist.
+async fn persist_mls_state(state: &AppState) {
+    match state.mls_groups.export_state() {
+        Ok(bytes) => {
+            if let Err(e) = state
+                .storage
+                .store_mls_state(&state.local_did, &bytes)
+                .await
+            {
+                tracing::warn!("Failed to persist MLS state: {}", e);
+            }
+        }
+        Err(e) => tracing::warn!("Failed to export MLS state for persistence: {}", e),
+    }
+}
+
 /// Create a new MLS group. The local user is the sole initial member.
 async fn mls_create_group(
     State(state): State<AppState>,
@@ -1158,6 +1178,8 @@ async fn mls_create_group(
         .map_err(|e| Error::App {
             message: format!("Failed to create MLS group: {}", e),
         })?;
+
+    persist_mls_state(&state).await;
 
     let topic = format!("/variance/group/{}", group_id);
     if let Err(e) = state.node_handle.subscribe_to_topic(topic).await {
@@ -1201,6 +1223,8 @@ async fn mls_invite_to_group(
         .map_err(|e| Error::App {
             message: format!("Failed to add member to MLS group: {}", e),
         })?;
+
+    persist_mls_state(&state).await;
 
     let welcome_bytes =
         MlsGroupHandler::serialize_message(&result.welcome).map_err(|e| Error::App {
@@ -1256,6 +1280,7 @@ async fn mls_leave_group(
     }
 
     state.mls_groups.remove_group(&id);
+    persist_mls_state(&state).await;
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -1286,6 +1311,8 @@ async fn mls_remove_member(
         .map_err(|e| Error::App {
             message: format!("Failed to remove member from MLS group: {}", e),
         })?;
+
+    persist_mls_state(&state).await;
 
     let commit_bytes =
         MlsGroupHandler::serialize_message(&result.commit).map_err(|e| Error::App {
@@ -1376,6 +1403,9 @@ async fn mls_send_group_message(
         tracing::warn!("Failed to store MLS group message locally: {}", e);
     }
 
+    // Persist MLS state — encrypt_message advances the ratchet.
+    persist_mls_state(&state).await;
+
     if let Some(ref channels) = state.event_channels {
         channels.send_group_message(GroupMessageEvent::MessageSent {
             message_id: message_id.clone(),
@@ -1412,6 +1442,8 @@ async fn mls_accept_welcome(
         .map_err(|e| Error::App {
             message: format!("Failed to join group from MLS Welcome: {}", e),
         })?;
+
+    persist_mls_state(&state).await;
 
     // Subscribe to the group's GossipSub topic
     let topic = format!("/variance/group/{}", group_id);

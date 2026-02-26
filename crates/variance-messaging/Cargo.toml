@@ -51,6 +51,9 @@ sled = { workspace = true }
 # ULID for message IDs
 ulid = "1.1"
 
+# Hex encoding for MLS state snapshots
+hex = { workspace = true }
+
 # Time
 chrono = "0.4"
 

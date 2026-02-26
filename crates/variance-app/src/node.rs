@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
+use variance_messaging::storage::MessageStorage;
 
 /// A fully initialized Variance node ready to serve HTTP requests
 ///
@@ -236,6 +237,20 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         tracing::warn!("Failed to restore Olm sessions: {} (starting fresh)", e);
     }
 
+    // Restore persisted MLS group state (ratchet trees, epoch keys, group membership).
+    // Must run before the re-subscribe loop so group_ids() returns the restored groups.
+    match app_state.storage.fetch_mls_state(&app_state.local_did).await {
+        Ok(Some(state_bytes)) => match app_state.mls_groups.restore_in_place(&state_bytes) {
+            Ok(n) => tracing::info!("Restored {} MLS group(s) from persistent storage", n),
+            Err(e) => tracing::warn!(
+                "Failed to restore MLS groups: {} — starting with empty group state",
+                e
+            ),
+        },
+        Ok(None) => tracing::debug!("No persisted MLS state found (first run or no groups yet)"),
+        Err(e) => tracing::warn!("Failed to fetch persisted MLS state: {}", e),
+    }
+
     // Re-subscribe to GossipSub topics for all MLS groups
     for group_id in app_state.mls_groups.group_ids() {
         let topic = format!("/variance/group/{}", group_id);
@@ -319,6 +334,8 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         node_handle: app_state.node_handle.clone(),
         username_registry: app_state.username_registry.clone(),
         typing: app_state.typing.clone(),
+        storage: app_state.storage.clone(),
+        local_did: app_state.local_did.clone(),
     });
     event_router.start((*event_channels).clone());
     tracing::debug!("EventRouter started");

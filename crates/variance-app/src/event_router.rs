@@ -9,7 +9,10 @@ use tracing::{debug, warn};
 use variance_identity::username::UsernameRegistry;
 use variance_media::{CallManager, SignalingHandler};
 use variance_messaging::{
-    direct::DirectMessageHandler, mls::MlsGroupHandler, typing::TypingHandler,
+    direct::DirectMessageHandler,
+    mls::MlsGroupHandler,
+    storage::{LocalMessageStorage, MessageStorage},
+    typing::TypingHandler,
 };
 use variance_p2p::{
     EventChannels, IdentityEvent, NodeHandle, OfflineMessageEvent, SignalingEvent, TypingEvent,
@@ -25,6 +28,10 @@ pub struct EventRouterDeps {
     pub node_handle: NodeHandle,
     pub username_registry: Arc<UsernameRegistry>,
     pub typing: Arc<TypingHandler>,
+    /// Message storage — used to persist MLS state after every group operation.
+    pub storage: Arc<LocalMessageStorage>,
+    /// Local DID — key under which MLS state is persisted.
+    pub local_did: String,
 }
 
 /// Bridges P2P events to WebSocket clients
@@ -37,6 +44,8 @@ pub struct EventRouter {
     node_handle: NodeHandle,
     username_registry: Arc<UsernameRegistry>,
     typing: Arc<TypingHandler>,
+    storage: Arc<LocalMessageStorage>,
+    local_did: String,
 }
 
 impl EventRouter {
@@ -50,6 +59,8 @@ impl EventRouter {
             node_handle,
             username_registry,
             typing,
+            storage,
+            local_did,
         } = deps;
 
         Self {
@@ -61,6 +72,8 @@ impl EventRouter {
             node_handle,
             username_registry,
             typing,
+            storage,
+            local_did,
         }
     }
 
@@ -311,6 +324,8 @@ impl EventRouter {
         // Spawn task for group message events
         let ws_manager = self.ws_manager.clone();
         let mls_groups = self.mls_groups.clone();
+        let storage = self.storage.clone();
+        let local_did = self.local_did.clone();
         let events_clone = events.clone();
         tokio::spawn(async move {
             use variance_p2p::events::GroupMessageEvent;
@@ -338,15 +353,21 @@ impl EventRouter {
                             Ok(mls_msg) => match mls_groups.process_message(&group_id, mls_msg) {
                                 Ok(Some(_decrypted)) => {
                                     let msg = WsMessage::GroupMessageReceived {
-                                        group_id,
+                                        group_id: group_id.clone(),
                                         from,
                                         message_id,
                                         timestamp,
                                     };
                                     ws_manager.broadcast(msg);
+
+                                    // Decrypt advanced the ratchet — persist the new state.
+                                    persist_mls_state_async(&mls_groups, &storage, &local_did)
+                                        .await;
                                 }
                                 Ok(None) => {
-                                    // Commit or proposal — state updated, no application message
+                                    // Commit or proposal processed — epoch or tree changed.
+                                    persist_mls_state_async(&mls_groups, &storage, &local_did)
+                                        .await;
                                 }
                                 Err(e) => {
                                     warn!(
@@ -532,6 +553,25 @@ impl EventRouter {
     }
 }
 
+/// Persist MLS state to storage after any mutation.
+///
+/// Logs a warning on failure but never panics — persistence failure degrades gracefully
+/// (groups still work, they just won't survive a restart until the next persist succeeds).
+async fn persist_mls_state_async(
+    mls_groups: &MlsGroupHandler,
+    storage: &LocalMessageStorage,
+    local_did: &str,
+) {
+    match mls_groups.export_state() {
+        Ok(bytes) => {
+            if let Err(e) = storage.store_mls_state(local_did, &bytes).await {
+                warn!("Failed to persist MLS state to storage: {}", e);
+            }
+        }
+        Err(e) => warn!("Failed to export MLS state for persistence: {}", e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,6 +593,8 @@ mod tests {
             node_handle: state.node_handle.clone(),
             username_registry: state.username_registry.clone(),
             typing: state.typing.clone(),
+            storage: state.storage.clone(),
+            local_did: state.local_did.clone(),
         })
     }
 
@@ -605,6 +647,8 @@ mod tests {
             node_handle: state.node_handle.clone(),
             username_registry: state.username_registry.clone(),
             typing: state.typing.clone(),
+            storage: state.storage.clone(),
+            local_did: state.local_did.clone(),
         });
         let events = EventChannels::default();
 
