@@ -28,14 +28,14 @@ message DIDDocument {
 
 message VerificationMethod {
   string id = 1;
-  string type = 2;  // "Ed25519VerificationKey2020", etc.
+  string type = 2; // "Ed25519VerificationKey2020", etc.
   string controller = 3;
   bytes public_key_multibase = 4;
 }
 
 message Service {
   string id = 1;
-  string type = 2;  // "Libp2pPeer", etc.
+  string type = 2; // "Libp2pPeer", etc.
   string service_endpoint = 3;
   map<string, string> metadata = 4;
 }
@@ -83,6 +83,9 @@ message IdentityFound {
   // The requester should pick exactly one and use it with olm_identity_key to
   // call create_outbound_session().
   repeated bytes one_time_keys = 6;
+  // MLS KeyPackage (TLS-serialized) for adding this peer to MLS groups.
+  // Single-use: each inviter should request a fresh one from the peer.
+  optional bytes mls_key_package = 7;
 }
 
 message IdentityNotFound {
@@ -124,7 +127,7 @@ message IdentityProvider {
   string username = 1;
   optional uint32 discriminator = 2;
   string subnet_id = 3;
-  string peer_id = 4;  // libp2p PeerID
+  string peer_id = 4; // libp2p PeerID
   repeated string multiaddrs = 5;
   int64 provided_at = 6;
 }

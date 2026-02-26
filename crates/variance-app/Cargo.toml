@@ -23,6 +23,7 @@ futures = { workspace = true }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+prost = { workspace = true }
 
 # Error handling
 anyhow = { workspace = true }
@@ -50,6 +51,7 @@ chrono = { workspace = true }
 
 # WebSocket & identifiers
 uuid = { version = "1.11", features = ["v4", "serde"] }
+ulid = { workspace = true }
 dashmap = { workspace = true }
 
 [dev-dependencies]

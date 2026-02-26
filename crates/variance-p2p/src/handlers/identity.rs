@@ -16,6 +16,8 @@ struct LocalIdentity {
     did: String,
     olm_identity_key: Vec<u8>,
     one_time_keys: Vec<Vec<u8>>,
+    /// TLS-serialized MLS KeyPackage for group invitations.
+    mls_key_package: Option<Vec<u8>>,
     /// Registered username (if any), e.g. "alice"
     username: Option<String>,
     /// 4-digit discriminator paired with username, e.g. 42
@@ -56,16 +58,19 @@ impl IdentityHandler {
     /// Called after the Olm account is initialized and OTKs are generated.
     /// `one_time_keys` should be all available unpublished keys; the full list is
     /// returned in every response so the requester can pick one.
+    /// `mls_key_package` is a TLS-serialized MLS KeyPackage for group invitations.
     pub async fn set_local_identity(
         &self,
         did: String,
         olm_identity_key: Vec<u8>,
         one_time_keys: Vec<Vec<u8>>,
+        mls_key_package: Option<Vec<u8>>,
     ) {
         *self.local_identity.write().await = Some(LocalIdentity {
             did,
             olm_identity_key,
             one_time_keys,
+            mls_key_package,
             username: None,
             discriminator: None,
         });
@@ -158,6 +163,7 @@ impl IdentityHandler {
                     olm_identity_key: local_id.olm_identity_key.clone(),
                     one_time_keys: local_id.one_time_keys.clone(),
                     discriminator: local_id.discriminator,
+                    mls_key_package: local_id.mls_key_package.clone(),
                     ..Default::default()
                 };
                 return Ok(IdentityResponse {

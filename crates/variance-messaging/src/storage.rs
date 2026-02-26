@@ -133,28 +133,6 @@ pub trait MessageStorage: Send + Sync {
 
     /// Fetch all stored group metadata records (used at startup to restore in-memory state).
     async fn fetch_all_group_metadata(&self) -> Result<Vec<Group>>;
-
-    /// Persist an AES-256-GCM encrypted group key blob (nonce || ciphertext).
-    async fn store_group_key_encrypted(&self, group_id: &str, encrypted: &[u8]) -> Result<()>;
-
-    /// Fetch the encrypted group key blob for a group, or None if not stored.
-    async fn fetch_group_key_encrypted(&self, group_id: &str) -> Result<Option<Vec<u8>>>;
-
-    /// Persist a versioned encrypted group key blob.
-    ///
-    /// Key format in sled: `{group_id}:{version:010}` (zero-padded so lex order == numeric order).
-    async fn store_versioned_group_key(
-        &self,
-        group_id: &str,
-        version: u32,
-        encrypted: &[u8],
-    ) -> Result<()>;
-
-    /// Fetch all versioned encrypted group key blobs for a group, in ascending version order.
-    ///
-    /// Returns `(version, encrypted_blob)` pairs. The caller decrypts each blob with the
-    /// at-rest key and inserts into the versioned in-memory map.
-    async fn fetch_all_group_keys(&self, group_id: &str) -> Result<Vec<(u32, Vec<u8>)>>;
 }
 
 /// Local storage implementation using sled
@@ -227,23 +205,6 @@ impl LocalMessageStorage {
     fn group_metadata_tree(&self) -> Result<sled::Tree> {
         self.db
             .open_tree("group_metadata")
-            .map_err(|e| Error::Storage { source: e })
-    }
-
-    /// Encrypted group keys tree (group_id → nonce || AES-256-GCM ciphertext)
-    fn group_keys_encrypted_tree(&self) -> Result<sled::Tree> {
-        self.db
-            .open_tree("group_keys_encrypted")
-            .map_err(|e| Error::Storage { source: e })
-    }
-
-    /// Versioned encrypted group keys tree
-    ///
-    /// Key format: `{group_id}:{version:010}` — zero-padded version ensures
-    /// lexicographic order equals numeric order for prefix scans.
-    fn group_keys_v2_tree(&self) -> Result<sled::Tree> {
-        self.db
-            .open_tree("group_keys_v2")
             .map_err(|e| Error::Storage { source: e })
     }
 
@@ -836,54 +797,6 @@ impl MessageStorage for LocalMessageStorage {
         }
         Ok(groups)
     }
-
-    async fn store_group_key_encrypted(&self, group_id: &str, encrypted: &[u8]) -> Result<()> {
-        let tree = self.group_keys_encrypted_tree()?;
-        tree.insert(group_id.as_bytes(), encrypted)
-            .map_err(|e| Error::Storage { source: e })?;
-        Ok(())
-    }
-
-    async fn fetch_group_key_encrypted(&self, group_id: &str) -> Result<Option<Vec<u8>>> {
-        let tree = self.group_keys_encrypted_tree()?;
-        Ok(tree
-            .get(group_id.as_bytes())
-            .map_err(|e| Error::Storage { source: e })?
-            .map(|v| v.to_vec()))
-    }
-
-    async fn store_versioned_group_key(
-        &self,
-        group_id: &str,
-        version: u32,
-        encrypted: &[u8],
-    ) -> Result<()> {
-        let tree = self.group_keys_v2_tree()?;
-        let key = format!("{group_id}:{version:010}");
-        tree.insert(key.as_bytes(), encrypted)
-            .map_err(|e| Error::Storage { source: e })?;
-        Ok(())
-    }
-
-    async fn fetch_all_group_keys(&self, group_id: &str) -> Result<Vec<(u32, Vec<u8>)>> {
-        let tree = self.group_keys_v2_tree()?;
-        let prefix = format!("{group_id}:");
-        let mut result = Vec::new();
-
-        for entry in tree.scan_prefix(prefix.as_bytes()) {
-            let (key, value) = entry.map_err(|e| Error::Storage { source: e })?;
-            let key_str = String::from_utf8_lossy(&key);
-            // key format: {group_id}:{version:010} — version is the suffix after the last ':'
-            if let Some((_, ver_str)) = key_str.rsplit_once(':') {
-                if let Ok(version) = ver_str.parse::<u32>() {
-                    result.push((version, value.to_vec()));
-                }
-            }
-        }
-
-        // sled prefix scan is already in lex order; zero-padded versions = numeric order
-        Ok(result)
-    }
 }
 
 #[cfg(test)]
@@ -973,13 +886,10 @@ mod tests {
             id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
             sender_did: "did:variance:alice".to_string(),
             group_id: "group123".to_string(),
-            ciphertext: vec![1, 2, 3],
-            nonce: vec![],
-            signature: vec![],
             timestamp: 1000,
             r#type: MessageType::Text.into(),
             reply_to: None,
-            key_version: 1,
+            mls_ciphertext: vec![1, 2, 3],
         };
 
         storage.store_group(&message).await.unwrap();
@@ -1339,55 +1249,5 @@ mod tests {
             .get("idx:01OFFLINE_MSG_ID".as_bytes())
             .unwrap()
             .is_none());
-    }
-
-    #[tokio::test]
-    async fn test_store_and_fetch_versioned_group_keys() {
-        let dir = tempdir().unwrap();
-        let storage = LocalMessageStorage::new(dir.path()).unwrap();
-
-        let group_id = "test-group-123";
-        storage
-            .store_versioned_group_key(group_id, 1, b"key_v1_blob")
-            .await
-            .unwrap();
-        storage
-            .store_versioned_group_key(group_id, 2, b"key_v2_blob")
-            .await
-            .unwrap();
-        storage
-            .store_versioned_group_key(group_id, 3, b"key_v3_blob")
-            .await
-            .unwrap();
-
-        let keys = storage.fetch_all_group_keys(group_id).await.unwrap();
-        assert_eq!(keys.len(), 3);
-        // Ascending version order (lex = numeric for zero-padded)
-        assert_eq!(keys[0], (1, b"key_v1_blob".to_vec()));
-        assert_eq!(keys[1], (2, b"key_v2_blob".to_vec()));
-        assert_eq!(keys[2], (3, b"key_v3_blob".to_vec()));
-    }
-
-    #[tokio::test]
-    async fn test_versioned_group_keys_prefix_isolation() {
-        let dir = tempdir().unwrap();
-        let storage = LocalMessageStorage::new(dir.path()).unwrap();
-
-        storage
-            .store_versioned_group_key("group-alpha", 1, b"alpha_v1")
-            .await
-            .unwrap();
-        storage
-            .store_versioned_group_key("group-beta", 1, b"beta_v1")
-            .await
-            .unwrap();
-
-        let alpha_keys = storage.fetch_all_group_keys("group-alpha").await.unwrap();
-        let beta_keys = storage.fetch_all_group_keys("group-beta").await.unwrap();
-
-        assert_eq!(alpha_keys.len(), 1);
-        assert_eq!(alpha_keys[0], (1, b"alpha_v1".to_vec()));
-        assert_eq!(beta_keys.len(), 1);
-        assert_eq!(beta_keys[0], (1, b"beta_v1".to_vec()));
     }
 }

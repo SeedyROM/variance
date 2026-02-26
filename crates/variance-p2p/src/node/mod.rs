@@ -500,6 +500,7 @@ impl Node {
                 did,
                 olm_identity_key,
                 one_time_keys,
+                mls_key_package,
             } => {
                 // Store local DID for self-messaging support
                 *self.local_did.write().await = Some(did.clone());
@@ -507,7 +508,7 @@ impl Node {
                 let handler = self.identity_handler.clone();
                 tokio::spawn(async move {
                     handler
-                        .set_local_identity(did, olm_identity_key, one_time_keys)
+                        .set_local_identity(did, olm_identity_key, one_time_keys, mls_key_package)
                         .await;
                 });
             }

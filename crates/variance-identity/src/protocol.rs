@@ -152,6 +152,7 @@ pub fn create_success_response(did: &Did) -> identity_proto::IdentityResponse {
                 discriminator: None,
                 olm_identity_key: vec![],
                 one_time_keys: vec![],
+                mls_key_package: None,
             },
         )),
         timestamp: Utc::now().timestamp(),

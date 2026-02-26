@@ -236,28 +236,30 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         tracing::warn!("Failed to restore Olm sessions: {} (starting fresh)", e);
     }
 
-    // Restore group memberships and encrypted keys from disk
-    if let Err(e) = app_state.group_messaging.restore_groups().await {
-        tracing::warn!("Failed to restore group state: {} (starting fresh)", e);
-    }
-
-    // Re-subscribe to GossipSub topics for all restored groups
-    if let Ok(groups) = app_state.group_messaging.list_groups().await {
-        for group in groups {
-            let topic = format!("/variance/group/{}", group.id);
-            if let Err(e) = app_state.node_handle.subscribe_to_topic(topic.clone()).await {
-                tracing::warn!(
-                    "Failed to re-subscribe to group topic {} at startup: {}",
-                    topic,
-                    e
-                );
-            }
+    // Re-subscribe to GossipSub topics for all MLS groups
+    for group_id in app_state.mls_groups.group_ids() {
+        let topic = format!("/variance/group/{}", group_id);
+        if let Err(e) = app_state
+            .node_handle
+            .subscribe_to_topic(topic.clone())
+            .await
+        {
+            tracing::warn!(
+                "Failed to re-subscribe to group topic {} at startup: {}",
+                topic,
+                e
+            );
         }
     }
 
     if let Err(e) = app_state
         .node_handle
-        .set_local_identity(app_state.local_did.clone(), olm_identity_key, one_time_keys)
+        .set_local_identity(
+            app_state.local_did.clone(),
+            olm_identity_key,
+            one_time_keys,
+            generate_mls_key_package(&app_state),
+        )
         .await
     {
         tracing::warn!("Failed to register local identity with P2P handler: {}", e);
@@ -311,7 +313,7 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
     let event_router = EventRouter::new(EventRouterDeps {
         ws_manager: app_state.ws_manager.clone(),
         direct_messaging: app_state.direct_messaging.clone(),
-        group_messaging: app_state.group_messaging.clone(),
+        mls_groups: app_state.mls_groups.clone(),
         call_manager: app_state.calls.clone(),
         signaling: app_state.signaling.clone(),
         node_handle: app_state.node_handle.clone(),
@@ -332,4 +334,26 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         shutdown_tx,
         node_task,
     })
+}
+
+/// Generate a TLS-serialized MLS KeyPackage for advertising in identity responses.
+///
+/// Returns `None` (with a warning) if generation fails — MLS is additive, so a
+/// missing key package degrades gracefully to the legacy group crypto path.
+fn generate_mls_key_package(app_state: &AppState) -> Option<Vec<u8>> {
+    use variance_messaging::mls::MlsGroupHandler;
+
+    match app_state.mls_groups.generate_key_package() {
+        Ok(kp) => match MlsGroupHandler::serialize_message_bytes(&kp) {
+            Ok(bytes) => Some(bytes),
+            Err(e) => {
+                tracing::warn!("Failed to serialize MLS KeyPackage: {}", e);
+                None
+            }
+        },
+        Err(e) => {
+            tracing::warn!("Failed to generate MLS KeyPackage: {}", e);
+            None
+        }
+    }
 }

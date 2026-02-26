@@ -32,13 +32,18 @@ ed25519-dalek = { workspace = true }
 rand = { workspace = true }
 vodozemac = "0.9"
 
-# Crypto (for Group messaging)
+# Crypto (for Group messaging — legacy AES-GCM, being replaced by MLS)
 aes-gcm = "0.10"
 
-# Crypto (for at-rest plaintext encryption + group key encryption)
+# MLS (RFC 9420) group encryption
+openmls = "0.8"
+openmls_rust_crypto = "0.5"
+openmls_basic_credential = "0.5"
+openmls_traits = "0.5"
+
+# Crypto (for at-rest plaintext encryption)
 hkdf = { workspace = true }
 sha2 = { workspace = true }
-x25519-dalek = { workspace = true }
 
 # Storage
 sled = { workspace = true }
