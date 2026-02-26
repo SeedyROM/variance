@@ -213,6 +213,7 @@ pub struct ConversationResponse {
     pub peer_did: String,
     pub last_message_timestamp: i64,
     pub peer_username: Option<String>,
+    pub has_unread: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -540,19 +541,26 @@ async fn list_conversations(
             message: format!("Failed to list conversations: {}", e),
         })?;
 
-    let responses = conversations
-        .into_iter()
-        .map(|(peer_did, last_message_timestamp)| {
-            let id = conversation_id(&state.local_did, &peer_did);
-            let peer_username = state.username_registry.get_display_name(&peer_did);
-            ConversationResponse {
-                id,
-                peer_did,
-                last_message_timestamp,
-                peer_username,
-            }
-        })
-        .collect();
+    let mut responses = Vec::with_capacity(conversations.len());
+    for (peer_did, last_message_timestamp, last_peer_timestamp) in conversations {
+        let id = conversation_id(&state.local_did, &peer_did);
+        let peer_username = state.username_registry.get_display_name(&peer_did);
+        let last_read = state
+            .storage
+            .fetch_last_read_at(&state.local_did, &peer_did)
+            .await
+            .unwrap_or(None)
+            .unwrap_or(0);
+        // Only count messages FROM the peer — never flag our own sent messages as unread.
+        let has_unread = last_peer_timestamp.is_some_and(|ts| ts > last_read);
+        responses.push(ConversationResponse {
+            id,
+            peer_did,
+            last_message_timestamp,
+            peer_username,
+            has_unread,
+        });
+    }
 
     Ok(Json(responses))
 }
@@ -570,7 +578,7 @@ async fn start_conversation(
         .list_direct_conversations(&state.local_did)
         .await
         .unwrap_or_default();
-    let conversation_exists = existing.iter().any(|(did, _)| did == &req.recipient_did);
+    let conversation_exists = existing.iter().any(|(did, _, _)| did == &req.recipient_did);
 
     if conversation_exists && state.direct_messaging.has_session(&req.recipient_did).await {
         tracing::debug!(
@@ -1050,6 +1058,8 @@ async fn get_direct_messages(
     Path(did): Path<String>,
     Query(params): Query<DirectMessagesParams>,
 ) -> Result<Json<Vec<DirectMessageResponse>>> {
+    use variance_messaging::storage::MessageStorage;
+
     let limit = params.limit.unwrap_or(1024);
     let messages = state
         .storage
@@ -1059,6 +1069,13 @@ async fn get_direct_messages(
         .map_err(|e| Error::App {
             message: format!("Failed to get messages: {}", e),
         })?;
+
+    // Opening a conversation marks it read.
+    let now = chrono::Utc::now().timestamp_millis();
+    let _ = state
+        .storage
+        .store_last_read_at(&state.local_did, &did, now)
+        .await;
 
     // Decrypt each message (uses cache for sent messages, decrypts received messages)
     let mut responses = Vec::new();
@@ -2135,6 +2152,85 @@ mod tests {
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["peer_did"], "did:variance:peer");
         assert_eq!(arr[0]["last_message_timestamp"], 9999);
+        // Local user sent this message, so no unread badge
+        assert_eq!(arr[0]["has_unread"], false);
+    }
+
+    #[tokio::test]
+    async fn test_has_unread_before_and_after_fetch() {
+        use variance_messaging::storage::MessageStorage;
+        use variance_proto::messaging_proto::{DirectMessage, MessageType};
+
+        let state = test_state();
+
+        // Simulate a message received from "did:variance:peer"
+        let msg = DirectMessage {
+            id: "test-unread-001".to_string(),
+            sender_did: "did:variance:peer".to_string(),
+            recipient_did: "did:variance:test".to_string(),
+            ciphertext: vec![],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: 5000,
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+        state.storage.store_direct(&msg).await.unwrap();
+
+        let app = create_router(state);
+
+        // Before opening the conversation: has_unread should be true
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/conversations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["has_unread"], true);
+
+        // Open the conversation — GET /messages/direct/:did marks it read
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/messages/direct/did:variance:peer")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // After opening: has_unread should be false
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/conversations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["has_unread"], false);
     }
 
     #[tokio::test]
