@@ -88,3 +88,13 @@ chrono = "0.4"
 ulid = "1.1"
 tempfile = "3.14"
 dirs = "5.0"
+
+# Dev profile optimizations for size and speed
+[profile.dev]
+incremental = true
+opt-level = 0
+debug = true
+
+[profile.dev.package."*"]
+opt-level = 1
+debug = false
