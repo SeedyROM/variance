@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Avatar } from "../ui/Avatar";
 import { ScrollArea } from "../ui/ScrollArea";
 import { StatusDot, StatusLabel } from "../ui/StatusIndicator";
@@ -7,11 +7,11 @@ import { MessageBubble } from "./MessageBubble";
 import { MessageInput } from "./MessageInput";
 import { TypingIndicator } from "./TypingIndicator";
 import { DateDivider } from "./DateDivider";
-import { messagesApi } from "../../api/client";
+import { messagesApi, reactionsApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { isDifferentDay } from "../../utils/time";
-import type { DirectMessage } from "../../api/types";
+import type { DirectMessage, ReactionSummary } from "../../api/types";
 
 interface MessageViewProps {
   peerDid: string;
@@ -20,8 +20,52 @@ interface MessageViewProps {
 // Must match the backend default limit in get_direct_messages.
 const PAGE_SIZE = 1024;
 
+/** Squash reaction messages into per-message, per-emoji counts. */
+function aggregateReactions(
+  reactionMsgs: DirectMessage[],
+  localDid: string | null
+): Map<string, ReactionSummary[]> {
+  // For each target message, track the latest action per reactor per emoji.
+  const byMessage = new Map<string, Map<string, Map<string, "add" | "remove">>>();
+
+  // Process in chronological order so later actions overwrite earlier ones.
+  const sorted = [...reactionMsgs].sort((a, b) => a.timestamp - b.timestamp);
+  for (const msg of sorted) {
+    const meta = msg.metadata ?? {};
+    const targetId = meta.message_id;
+    const emoji = meta.emoji;
+    const action = meta.action as "add" | "remove" | undefined;
+    if (!targetId || !emoji || !action) continue;
+
+    if (!byMessage.has(targetId)) byMessage.set(targetId, new Map());
+    const byEmoji = byMessage.get(targetId)!;
+    if (!byEmoji.has(emoji)) byEmoji.set(emoji, new Map());
+    byEmoji.get(emoji)!.set(msg.sender_did, action);
+  }
+
+  const result = new Map<string, ReactionSummary[]>();
+  for (const [msgId, byEmoji] of byMessage) {
+    const summaries: ReactionSummary[] = [];
+    for (const [emoji, reactors] of byEmoji) {
+      let count = 0;
+      let reactedByMe = false;
+      for (const [did, action] of reactors) {
+        if (action === "add") {
+          count++;
+          if (did === localDid) reactedByMe = true;
+        }
+      }
+      const safeCount = Math.max(0, count);
+      if (safeCount > 0) summaries.push({ emoji, count: safeCount, reacted_by_me: reactedByMe });
+    }
+    if (summaries.length > 0) result.set(msgId, summaries);
+  }
+  return result;
+}
+
 export function MessageView({ peerDid }: MessageViewProps) {
   const localDid = useIdentityStore((s) => s.did);
+  const queryClient = useQueryClient();
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const topSentinelRef = useRef<HTMLDivElement>(null);
@@ -55,9 +99,32 @@ export function MessageView({ peerDid }: MessageViewProps) {
   const typingUsers = typingUsersSet ? Array.from(typingUsersSet) : [];
 
   // Merge older pages with the current page, deduplicate, sort chronologically.
-  const sortedMessages = [...olderMessages, ...messages]
+  const allMessages = [...olderMessages, ...messages]
     .filter((msg, i, arr) => arr.findIndex((m) => m.id === msg.id) === i)
     .sort((a, b) => a.timestamp - b.timestamp);
+
+  // Split reaction messages from regular messages.
+  const reactionMessages = allMessages.filter((m) => m.metadata?.type === "reaction");
+  const sortedMessages = allMessages.filter((m) => m.metadata?.type !== "reaction");
+  const reactionsByMsgId = aggregateReactions(reactionMessages, localDid);
+
+  const handleReact = useCallback(
+    async (messageId: string, emoji: string) => {
+      const myReactions = reactionsByMsgId.get(messageId) ?? [];
+      const existing = myReactions.find((r) => r.emoji === emoji);
+      try {
+        if (existing?.reacted_by_me) {
+          await reactionsApi.remove(messageId, emoji, peerDid);
+        } else {
+          await reactionsApi.add(messageId, emoji, peerDid);
+        }
+        void queryClient.invalidateQueries({ queryKey: ["messages", peerDid] });
+      } catch (e) {
+        console.error("Failed to send reaction:", e);
+      }
+    },
+    [reactionsByMsgId, peerDid, queryClient]
+  );
 
   const loadOlder = useCallback(async () => {
     if (loadingOlder || !hasMore) return;
@@ -181,7 +248,13 @@ export function MessageView({ peerDid }: MessageViewProps) {
               return (
                 <div key={msg.id}>
                   {showDivider && <DateDivider timestamp={msg.timestamp} />}
-                  <MessageBubble message={msg} isOwn={msg.sender_did === localDid} />
+                  <MessageBubble
+                    message={msg}
+                    isOwn={msg.sender_did === localDid}
+                    reactions={reactionsByMsgId.get(msg.id) ?? []}
+                    onReact={handleReact}
+                    peerDid={peerDid}
+                  />
                 </div>
               );
             })}

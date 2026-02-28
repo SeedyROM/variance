@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 @variant dark (&:where([data-theme="dark"] *));
 
@@ -34,6 +35,54 @@ html[data-theme="dark"] {
 * {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* TipTap editor placeholder */
+.tiptap p.is-editor-empty:first-child::before {
+  color: oklch(0.6 0 0);
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+/* TipTap editor resets — strip default prose margins for inline chat feel */
+.tiptap p {
+  margin: 0 !important;
+}
+
+/* Strip prose paragraph margins inside chat message bubbles */
+.prose p {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+/* Chat-scaled headings — smaller than typical prose but still distinct.
+   Applied to both the TipTap editor and rendered message bubbles.
+   !important overrides Tailwind's @layer utilities prose-sm sizes. */
+.tiptap h1,
+.prose h1 {
+  font-size: 1.2rem !important;
+  margin: 0.25em 0 !important;
+}
+.tiptap h2,
+.prose h2 {
+  font-size: 1.1rem !important;
+  margin: 0.2em 0 !important;
+}
+.tiptap h3,
+.prose h3 {
+  font-size: 1rem !important;
+  margin: 0.15em 0 !important;
+}
+.tiptap h4,
+.tiptap h5,
+.tiptap h6,
+.prose h4,
+.prose h5,
+.prose h6 {
+  font-size: 1em !important;
+  margin: 0 !important;
 }
 
 /* Scrollbar styling */

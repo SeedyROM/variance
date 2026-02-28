@@ -10,8 +10,7 @@ import { useIdentityStore } from "./stores/identityStore";
 import { useAppStore } from "./stores/appStore";
 import { useMessagingStore } from "./stores/messagingStore";
 import { useQuery } from "@tanstack/react-query";
-import { identityApi } from "./api/client";
-import { resetApiBase } from "./api/client";
+import { identityApi, conversationsApi, resetApiBase } from "./api/client";
 
 function LoadingScreen() {
   return (
@@ -68,11 +67,7 @@ function MainShell() {
   // Fetch conversations
   const { data: conversations = [] } = useQuery({
     queryKey: ["conversations"],
-    queryFn: async () => {
-      const { conversationsApi } = await import("./api/client");
-      return conversationsApi.list();
-    },
-    enabled: true,
+    queryFn: () => conversationsApi.list(),
   });
 
   // Derive the peer DID from active conversation ID

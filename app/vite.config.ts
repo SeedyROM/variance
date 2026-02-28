@@ -13,4 +13,9 @@ export default defineConfig({
       ignored: ["**/src-tauri/**"],
     },
   },
+  build: {
+    // Tauri bundles everything locally — no CDN caching benefit from aggressive
+    // chunk splitting. Suppress the warning for the single-bundle output.
+    chunkSizeWarningLimit: 10000,
+  },
 });
