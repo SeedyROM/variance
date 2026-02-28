@@ -21,6 +21,7 @@ export function MessageBubble({ message, isOwn, reactions, onReact }: MessageBub
   const [isHovering, setIsHovering] = useState(false);
   const [showEmojiBar, setShowEmojiBar] = useState(false);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const emojiBarHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Timestamp fades in after 300ms hover
   useEffect(() => {
@@ -44,9 +45,22 @@ export function MessageBubble({ message, isOwn, reactions, onReact }: MessageBub
     }
   };
 
+  // Schedule hiding the emoji bar after a short delay so the mouse has time to
+  // travel from the bubble into the absolutely-positioned bar without it vanishing.
+  const scheduleHideEmojiBar = () => {
+    emojiBarHideTimer.current = setTimeout(() => setShowEmojiBar(false), 150);
+  };
+
+  const cancelHideEmojiBar = () => {
+    if (emojiBarHideTimer.current) {
+      clearTimeout(emojiBarHideTimer.current);
+      emojiBarHideTimer.current = null;
+    }
+  };
+
   const handleLeave = () => {
     setIsHovering(false);
-    setShowEmojiBar(false);
+    scheduleHideEmojiBar();
     cancelLongPress();
   };
 
@@ -76,8 +90,11 @@ export function MessageBubble({ message, isOwn, reactions, onReact }: MessageBub
           {showEmojiBar && (
             <div
               className={cn("absolute bottom-full mb-1 z-10", isOwn ? "right-0" : "left-0")}
-              // Keep bar alive while user moves mouse onto it
-              onMouseEnter={() => setIsHovering(true)}
+              // Cancel the pending hide so the bar survives the mouse travelling up to it
+              onMouseEnter={() => {
+                setIsHovering(true);
+                cancelHideEmojiBar();
+              }}
               onMouseLeave={handleLeave}
             >
               <EmojiBar
@@ -136,12 +153,7 @@ export function MessageBubble({ message, isOwn, reactions, onReact }: MessageBub
 
       {/* Reaction pills */}
       {visibleReactions.length > 0 && (
-        <div
-          className={cn(
-            "flex flex-wrap gap-1 mb-0.5",
-            isOwn ? "justify-end" : "justify-start"
-          )}
-        >
+        <div className={cn("flex flex-wrap gap-1 mb-0.5", isOwn ? "justify-end" : "justify-start")}>
           {visibleReactions.map((r) => (
             <button
               key={r.emoji}
