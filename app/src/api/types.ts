@@ -51,6 +51,13 @@ export interface DirectMessage {
   reply_to?: string;
   status?: "sent" | "pending" | "failed";
   sender_username?: string;
+  metadata?: Record<string, string>;
+}
+
+export interface ReactionSummary {
+  emoji: string;
+  count: number;
+  reacted_by_me: boolean;
 }
 
 export interface GroupMessage {

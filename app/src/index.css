@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 @variant dark (&:where([data-theme="dark"] *));
 
@@ -34,6 +35,20 @@ html[data-theme="dark"] {
 * {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* TipTap editor placeholder */
+.tiptap p.is-editor-empty:first-child::before {
+  color: oklch(0.6 0 0);
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+/* TipTap editor resets — strip default prose margins for inline chat feel */
+.tiptap p {
+  margin: 0;
 }
 
 /* Scrollbar styling */

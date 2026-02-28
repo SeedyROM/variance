@@ -17,6 +17,7 @@ import type {
   TypingUsers,
 } from "./types";
 
+
 // Module-level cache for the API base URL. Avoids re-invoking Tauri on every request.
 let _apiBase: string | null = null;
 
@@ -102,6 +103,21 @@ export const messagesApi = {
 
   getGroup: (groupId: string) =>
     request<GroupMessage[]>(`/messages/group/${encodeURIComponent(groupId)}`),
+};
+
+// ===== Reactions =====
+
+export const reactionsApi = {
+  add: (messageId: string, emoji: string, recipientDid: string) =>
+    request<MessageResponse>(`/messages/direct/${encodeURIComponent(messageId)}/reactions`, {
+      method: "POST",
+      body: JSON.stringify({ emoji, recipient_did: recipientDid }),
+    }),
+  remove: (messageId: string, emoji: string, recipientDid: string) =>
+    request<MessageResponse>(
+      `/messages/direct/${encodeURIComponent(messageId)}/reactions/${encodeURIComponent(emoji)}?recipient_did=${encodeURIComponent(recipientDid)}`,
+      { method: "DELETE" }
+    ),
 };
 
 // ===== Typing =====

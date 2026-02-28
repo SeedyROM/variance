@@ -7,6 +7,7 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
@@ -47,6 +48,14 @@ pub fn create_router(state: AppState) -> Router {
         // Message endpoints
         .route("/messages/direct", post(send_direct_message))
         .route("/messages/direct/{did}", get(get_direct_messages))
+        .route(
+            "/messages/direct/{message_id}/reactions",
+            post(add_reaction),
+        )
+        .route(
+            "/messages/direct/{message_id}/reactions/{emoji}",
+            axum::routing::delete(remove_reaction),
+        )
         // Call endpoints
         .route("/calls/create", post(create_call))
         .route("/calls/active", get(list_active_calls))
@@ -187,6 +196,18 @@ pub struct DirectMessageResponse {
     pub reply_to: Option<String>,
     pub status: Option<String>, // "sent", "pending", or "failed"
     pub sender_username: Option<String>,
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddReactionRequest {
+    pub emoji: String,
+    pub recipient_did: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoveReactionParams {
+    pub recipient_did: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1080,11 +1101,11 @@ async fn get_direct_messages(
     // Decrypt each message (uses cache for sent messages, decrypts received messages)
     let mut responses = Vec::new();
     for m in messages {
-        let text = match state.direct_messaging.get_message_content(&m).await {
-            Ok(content) => content.text,
+        let (text, metadata) = match state.direct_messaging.get_message_content(&m).await {
+            Ok(content) => (content.text, content.metadata),
             Err(e) => {
                 tracing::warn!("Failed to get message content for {}: {}", m.id, e);
-                "[decryption failed]".to_string()
+                ("[decryption failed]".to_string(), Default::default())
             }
         };
 
@@ -1111,10 +1132,155 @@ async fn get_direct_messages(
             reply_to: m.reply_to.clone(),
             status,
             sender_username: state.username_registry.get_display_name(&m.sender_did),
+            metadata,
         });
     }
 
     Ok(Json(responses))
+}
+
+// ===== Reaction Handlers =====
+
+/// Send a reaction to a direct message.
+///
+/// Reactions are regular encrypted messages with special metadata so they travel
+/// through the same Olm path and get stored in the same sled tree. The frontend
+/// squashes them into per-emoji counts when rendering.
+async fn add_reaction(
+    State(state): State<AppState>,
+    Path(message_id): Path<String>,
+    Json(req): Json<AddReactionRequest>,
+) -> Result<Json<MessageResponse>> {
+    if !state.direct_messaging.has_session(&req.recipient_did).await {
+        return Err(Error::SessionRequired {
+            message: "No session with peer — open a conversation first".to_string(),
+        });
+    }
+
+    let mut metadata = HashMap::new();
+    metadata.insert("type".to_string(), "reaction".to_string());
+    metadata.insert("message_id".to_string(), message_id.clone());
+    metadata.insert("emoji".to_string(), req.emoji.clone());
+    metadata.insert("action".to_string(), "add".to_string());
+
+    let content = MessageContent {
+        text: String::new(),
+        attachments: vec![],
+        mentions: vec![],
+        reply_to: None,
+        metadata,
+    };
+
+    let message = state
+        .direct_messaging
+        .send_message(req.recipient_did.clone(), content)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to send reaction: {}", e),
+        })?;
+
+    let status = match state
+        .node_handle
+        .send_direct_message(req.recipient_did.clone(), message.clone())
+        .await
+    {
+        Ok(_) => "sent",
+        Err(e) => {
+            if e.to_string().contains("Unknown peer DID") {
+                let _ = state
+                    .direct_messaging
+                    .queue_pending_message(&req.recipient_did, message.clone())
+                    .await;
+                "pending"
+            } else {
+                "sent"
+            }
+        }
+    };
+
+    if let Some(ref channels) = state.event_channels {
+        channels.send_direct_message(DirectMessageEvent::MessageSent {
+            message_id: message.id.clone(),
+            recipient: req.recipient_did.clone(),
+        });
+    }
+
+    Ok(Json(MessageResponse {
+        message_id: message.id,
+        success: true,
+        message: format!("Reaction {}", status),
+    }))
+}
+
+/// Remove a reaction from a direct message (sends a reaction message with action="remove").
+async fn remove_reaction(
+    State(state): State<AppState>,
+    Path((message_id, emoji)): Path<(String, String)>,
+    Query(params): Query<RemoveReactionParams>,
+) -> Result<Json<MessageResponse>> {
+    if !state
+        .direct_messaging
+        .has_session(&params.recipient_did)
+        .await
+    {
+        return Err(Error::SessionRequired {
+            message: "No session with peer".to_string(),
+        });
+    }
+
+    let mut metadata = HashMap::new();
+    metadata.insert("type".to_string(), "reaction".to_string());
+    metadata.insert("message_id".to_string(), message_id.clone());
+    metadata.insert("emoji".to_string(), emoji.clone());
+    metadata.insert("action".to_string(), "remove".to_string());
+
+    let content = MessageContent {
+        text: String::new(),
+        attachments: vec![],
+        mentions: vec![],
+        reply_to: None,
+        metadata,
+    };
+
+    let message = state
+        .direct_messaging
+        .send_message(params.recipient_did.clone(), content)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to send reaction removal: {}", e),
+        })?;
+
+    let status = match state
+        .node_handle
+        .send_direct_message(params.recipient_did.clone(), message.clone())
+        .await
+    {
+        Ok(_) => "sent",
+        Err(e) => {
+            if e.to_string().contains("Unknown peer DID") {
+                let _ = state
+                    .direct_messaging
+                    .queue_pending_message(&params.recipient_did, message.clone())
+                    .await;
+                "pending"
+            } else {
+                "sent"
+            }
+        }
+    };
+
+    if let Some(ref channels) = state.event_channels {
+        channels.send_direct_message(DirectMessageEvent::MessageSent {
+            message_id: message.id.clone(),
+            recipient: params.recipient_did.clone(),
+        });
+    }
+
+    Ok(Json(MessageResponse {
+        message_id: message.id,
+        success: true,
+        message: format!("Reaction removed {}", status),
+    }))
 }
 
 // ===== MLS Group Handlers =====
