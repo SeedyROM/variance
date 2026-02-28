@@ -1,10 +1,13 @@
 import { useState, useRef, useEffect } from "react";
 import { CheckCheck, Clock } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import remarkBreaks from "remark-breaks";
+
+import type { DirectMessage, ReactionSummary } from "../../api/types";
 import { cn } from "../../utils/cn";
 import { shortTime } from "../../utils/time";
+
 import { EmojiBar } from "./EmojiBar";
-import type { DirectMessage, ReactionSummary } from "../../api/types";
 
 interface MessageBubbleProps {
   message: DirectMessage;
@@ -120,11 +123,11 @@ export function MessageBubble({ message, isOwn, reactions, onReact }: MessageBub
           >
             <div
               className={cn(
-                "prose prose-sm max-w-none break-words select-text",
+                "prose prose-sm max-w-none wrap-break-word select-text",
                 isOwn ? "prose-invert" : "dark:prose-invert"
               )}
             >
-              <ReactMarkdown>{message.text}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkBreaks]}>{message.text}</ReactMarkdown>
             </div>
             {isOwn && message.status && (
               <div className="mt-0.5 flex items-center justify-end gap-1">

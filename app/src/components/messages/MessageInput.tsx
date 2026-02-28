@@ -60,17 +60,67 @@ export function MessageInput({ peerDid }: MessageInputProps) {
   });
 
   const editor = useEditor({
-    extensions: [StarterKit, Markdown, Placeholder.configure({ placeholder: "Message" })],
+    extensions: [
+      StarterKit.configure({
+        hardBreak: false, // We handle Shift+Enter ourselves in handleKeyDown
+        heading: { levels: [1, 2, 3] },
+      }),
+      Markdown.configure({ breaks: true }),
+      Placeholder.configure({ placeholder: "Message" }),
+    ],
     content: "",
     editorProps: {
       attributes: {
         class:
           "max-h-40 overflow-y-auto text-sm text-surface-900 dark:text-surface-50 focus:outline-none prose prose-sm dark:prose-invert max-w-none",
       },
-      handleKeyDown(_view, event) {
+      handleKeyDown(view, event) {
         if (event.key === "Enter" && !event.shiftKey) {
           event.preventDefault();
           sendRef.current();
+          return true;
+        }
+        // Shift+Enter: new line, but clear block-level formatting (Slack-style).
+        // Handled here because ProseMirror's handleKeyDown fires before plugin
+        // keymaps, so we must intercept before HardBreak inserts a <br>.
+        if (event.key === "Enter" && event.shiftKey) {
+          const { state, dispatch } = view;
+          const { $from } = state.selection;
+          const parentType = $from.parent.type.name;
+
+          if (parentType === "heading" || parentType === "blockquote") {
+            // Split to new block, then convert it to a paragraph
+            const tr = state.tr.split(state.selection.from);
+            const pos = tr.selection.from;
+            tr.setNodeMarkup(
+              tr.doc.resolve(pos).before(tr.doc.resolve(pos).depth),
+              state.schema.nodes.paragraph
+            );
+            dispatch(tr);
+          } else {
+            // Default: split block (new paragraph, not a <br>)
+            const tr = state.tr.split(state.selection.from);
+            dispatch(tr);
+          }
+          return true;
+        }
+        // Escape: clear all inline marks (bold, italic, etc.) at cursor.
+        // Matches Slack/Discord behaviour — quick way to "reset" formatting
+        // when the cursor gets stuck inside a mark after editing.
+        if (event.key === "Escape") {
+          const { state, dispatch } = view;
+          const { $from } = state.selection;
+          // Only act when there are active marks at cursor
+          const marks = $from.marks();
+          if (marks.length > 0) {
+            dispatch(state.tr.setStoredMarks([]));
+            return true;
+          }
+          return false;
+        }
+        // Prevent Tab from stealing focus; it has no useful meaning in chat input
+        if (event.key === "Tab") {
+          event.preventDefault();
           return true;
         }
         return false;
