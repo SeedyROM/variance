@@ -134,16 +134,29 @@ pub async fn start_node(state: State<'_, NodeState>, identity_path: String) -> R
     std::fs::create_dir_all(&base_dir)
         .map_err(|e| format!("Failed to create data directory: {}", e))?;
 
-    // AppConfig::default() already uses the same dirs::data_local_dir() path,
-    // so we only need to override the storage block to keep everything consistent.
-    let config = AppConfig {
-        storage: StorageConfig {
-            identity_path: base_dir.join("identity.json"),
-            identity_cache_dir: base_dir.join("identity_cache"),
-            message_db_path: base_dir.join("messages.db"),
-            base_dir,
-        },
-        ..AppConfig::default()
+    // Load config from {data_dir}/config.toml, creating it with defaults if absent.
+    // Storage paths are always derived from base_dir at runtime and override whatever
+    // is in the file, so the file only needs to carry user-editable settings (relay
+    // peers, bootstrap peers, etc.).
+    let config_path = base_dir.join("config.toml");
+    let mut config = if config_path.exists() {
+        AppConfig::from_file(config_path.to_str().unwrap_or_default())
+            .map_err(|e| format!("Failed to load config.toml: {}", e))?
+    } else {
+        let default_cfg = AppConfig::default();
+        if let Err(e) = default_cfg.to_file(config_path.to_str().unwrap_or_default()) {
+            tracing::warn!("Failed to write default config.toml: {}", e);
+        }
+        default_cfg
+    };
+
+    // Always derive storage paths from the runtime base_dir so multiple instances
+    // (each with their own VARIANCE_DATA_DIR) get correct, non-overlapping paths.
+    config.storage = StorageConfig {
+        identity_path: base_dir.join("identity.json"),
+        identity_cache_dir: base_dir.join("identity_cache"),
+        message_db_path: base_dir.join("messages.db"),
+        base_dir,
     };
 
     let identity_file_path = std::path::Path::new(&identity_path);

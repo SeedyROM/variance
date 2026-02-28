@@ -17,7 +17,7 @@ pub mod state;
 pub mod websocket;
 
 pub use api::create_router;
-pub use config::{AppConfig, StorageConfig};
+pub use config::{AppConfig, P2PConfig, RelayPeerConfig, StorageConfig};
 pub use error::{Error, Result};
 pub use event_router::EventRouter;
 pub use node::{start_node, RunningNode};

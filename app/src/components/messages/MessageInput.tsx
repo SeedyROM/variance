@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Send } from "lucide-react";
 import { messagesApi, typingApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { cn } from "../../utils/cn";
 import type { DirectMessage } from "../../api/types";
 
@@ -21,6 +22,7 @@ export function MessageInput({ peerDid }: MessageInputProps) {
   const lastTypingSentRef = useRef<number>(0);
   const queryClient = useQueryClient();
   const localDid = useIdentityStore((s) => s.did);
+  const tabSize = useSettingsStore((s) => s.tabSize);
 
   const sendMutation = useMutation({
     mutationFn: (message: string) =>
@@ -83,6 +85,17 @@ export function MessageInput({ peerDid }: MessageInputProps) {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const el = e.currentTarget;
+      const { selectionStart, selectionEnd, value } = el;
+      const spaces = " ".repeat(tabSize);
+      const next = value.slice(0, selectionStart) + spaces + value.slice(selectionEnd);
+      setText(next);
+      requestAnimationFrame(() => {
+        el.selectionStart = el.selectionEnd = selectionStart + tabSize;
+      });
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();

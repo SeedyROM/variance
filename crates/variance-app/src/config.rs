@@ -41,8 +41,17 @@ pub struct P2PConfig {
     /// Listen addresses for libp2p
     pub listen_addrs: Vec<String>,
 
-    /// Bootstrap peers
+    /// Bootstrap peers (format: "peer_id@multiaddr")
     pub bootstrap_peers: Vec<String>,
+
+    /// Relay peers for NAT traversal
+    pub relay_peers: Vec<RelayPeerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayPeerConfig {
+    pub peer_id: String,
+    pub multiaddr: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +104,7 @@ impl Default for AppConfig {
             p2p: P2PConfig {
                 listen_addrs: vec!["/ip4/0.0.0.0/tcp/0".to_string()],
                 bootstrap_peers: vec![],
+                relay_peers: vec![],
             },
             identity: IdentityConfig {
                 ipfs_api: "http://127.0.0.1:5001".to_string(),

@@ -10,7 +10,7 @@ use super::Node;
 
 use libp2p::dcutr::Event as DcutrEvent;
 use libp2p::swarm::SwarmEvent;
-use libp2p::{gossipsub, identify, kad, mdns, ping, relay, request_response, Multiaddr, PeerId};
+use libp2p::{gossipsub, identify, kad, mdns, ping, relay, request_response, PeerId};
 use prost::Message;
 use tracing::{debug, info, warn};
 use variance_proto::identity_proto::{IdentityRequest, IdentityResponse};
@@ -955,12 +955,17 @@ impl Node {
 
         // If this is a configured relay peer, reserve a circuit slot so we're
         // reachable via it. Circuit listen only works after the connection is up.
+        // The full relay address must be used — libp2p rejects bare /p2p/{id}/p2p-circuit
+        // addresses without a transport prefix (returns MultiaddrNotSupported).
         if self.relay_peer_ids.contains(&peer_id) {
-            let circuit_addr: Multiaddr = format!("/p2p/{}/p2p-circuit", peer_id)
-                .parse()
-                .expect("valid circuit addr");
+            let relay_transport_addr = endpoint.get_remote_address().clone();
+            let circuit_addr = relay_transport_addr
+                .with(libp2p::multiaddr::Protocol::P2p(peer_id))
+                .with(libp2p::multiaddr::Protocol::P2pCircuit);
             if let Err(e) = self.swarm.listen_on(circuit_addr) {
-                warn!("Failed to listen on relay circuit for {}: {}", peer_id, e);
+                // Expected on the first ConnectionEstablished (fires before relay protocol
+                // is negotiated). The second event succeeds — no action needed.
+                debug!("Relay circuit listen deferred for {}: {}", peer_id, e);
             }
         }
     }

@@ -135,9 +135,20 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         }
     }
 
+    let mut relay_peers = Vec::new();
+    for relay in &config.p2p.relay_peers {
+        relay_peers.push(variance_p2p::BootstrapPeer {
+            peer_id: relay.peer_id.clone(),
+            multiaddr: relay.multiaddr.parse().map_err(|e| crate::Error::App {
+                message: format!("Invalid relay peer address {}: {}", relay.multiaddr, e),
+            })?,
+        });
+    }
+
     let p2p_config = variance_p2p::Config {
         listen_addresses,
         bootstrap_peers,
+        relay_peers,
         enable_mdns: true,
         storage_path: config.storage.base_dir.clone(),
         ..Default::default()

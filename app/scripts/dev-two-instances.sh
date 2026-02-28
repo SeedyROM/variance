@@ -62,6 +62,45 @@ trap cleanup EXIT INT TERM
 
 mkdir -p "$ALICE_DIR" "$BOB_DIR"
 
+# Write a shared relay config into each instance's data dir so both peers can
+# reach the relay at startup. Users can edit config.toml in the data dir to
+# change relay peers permanently; this only writes it if the file is absent.
+RELAY_PEER_ID="${VARIANCE_RELAY_PEER_ID:-12D3KooWRHcV1jjQg5E39ZAVckaCTXVFrizrvGZQbJ5LbLqpC6GB}"
+RELAY_MULTIADDR="${VARIANCE_RELAY_MULTIADDR:-/ip4/127.0.0.1/tcp/4001}"
+
+for DIR in "$ALICE_DIR" "$BOB_DIR"; do
+  if [[ ! -f "$DIR/config.toml" ]]; then
+    cat > "$DIR/config.toml" <<TOML
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[p2p]
+listen_addrs = ["/ip4/0.0.0.0/tcp/0"]
+bootstrap_peers = []
+
+[[p2p.relay_peers]]
+peer_id = "$RELAY_PEER_ID"
+multiaddr = "$RELAY_MULTIADDR"
+
+[identity]
+ipfs_api = "http://127.0.0.1:5001"
+cache_ttl_secs = 3600
+
+[media]
+stun_servers = ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]
+turn_servers = []
+
+[storage]
+base_dir = "$DIR"
+identity_path = "$DIR/identity.json"
+identity_cache_dir = "$DIR/identity_cache"
+message_db_path = "$DIR/messages.db"
+TOML
+    echo "  ✓ Wrote relay config → $DIR/config.toml"
+  fi
+done
+
 echo "Launching Alice → $ALICE_DIR"
 RUST_LOG=debug VARIANCE_DATA_DIR="$ALICE_DIR" "$BINARY" >/tmp/variance-alice.log 2>&1 &
 ALICE_PID=$!

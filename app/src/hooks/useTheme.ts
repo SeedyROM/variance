@@ -1,8 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import { useSettingsStore, type Theme } from "../stores/settingsStore";
 
-export type Theme = "light" | "dark" | "system";
-
-const STORAGE_KEY = "variance-theme";
+export type { Theme };
 
 function applyTheme(theme: Theme) {
   const resolved =
@@ -16,9 +15,8 @@ function applyTheme(theme: Theme) {
 }
 
 export function useTheme() {
-  const [theme, setThemeState] = useState<Theme>(() => {
-    return (localStorage.getItem(STORAGE_KEY) as Theme | null) ?? "system";
-  });
+  const theme = useSettingsStore((s) => s.theme);
+  const setTheme = useSettingsStore((s) => s.setTheme);
 
   useEffect(() => {
     applyTheme(theme);
@@ -32,11 +30,6 @@ export function useTheme() {
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
   }, [theme]);
-
-  const setTheme = (next: Theme) => {
-    localStorage.setItem(STORAGE_KEY, next);
-    setThemeState(next);
-  };
 
   const resolvedTheme: "light" | "dark" =
     theme === "system"
