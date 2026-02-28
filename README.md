@@ -25,9 +25,9 @@ variance/
 │   └── variance-cli/        # Standalone CLI (headless/debugging only)
 ├── app/                     # Tauri desktop application (React/TypeScript)
 │   ├── src/                 # UI components (onboarding, conversations, messages)
-│   └── src-tauri/          # Tauri host (embeds variance_app in-process via FFI)
+│   └── src-tauri/           # Tauri host (embeds variance_app in-process via FFI)
 ├── docs/                    # Architecture documentation
-└── Cargo.toml              # Workspace manifest
+└── Cargo.toml               # Workspace manifest
 ```
 
 ### Crate Overview
