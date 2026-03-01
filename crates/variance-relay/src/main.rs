@@ -6,13 +6,13 @@ use libp2p::{
     identity::Keypair,
     noise, ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux, Multiaddr, SwarmBuilder,
+    tcp, yamux, Multiaddr, PeerId, SwarmBuilder,
 };
 use std::{
+    collections::HashMap,
     fs::{self, read_to_string},
     num::NonZeroU32,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
 use tracing::{debug, info, warn};
@@ -53,35 +53,74 @@ struct Args {
 }
 
 /// Tracks relay activity for operational monitoring.
+///
+/// All fields are plain integers — this struct is only accessed from the
+/// single-threaded tokio event loop so atomics aren't needed.
 struct RelayStats {
-    active_reservations: AtomicUsize,
-    active_circuits: AtomicUsize,
-    total_reservations: AtomicUsize,
-    total_circuits: AtomicUsize,
-    denied_reservations: AtomicUsize,
-    denied_circuits: AtomicUsize,
+    active_reservations: usize,
+    active_circuits: usize,
+    total_reservations: usize,
+    total_circuits: usize,
+    denied_reservations: usize,
+    denied_circuits: usize,
+    /// Tracks how many active reservations each peer holds so we can clean up
+    /// when the peer fully disconnects (all connections closed).
+    peer_reservations: HashMap<PeerId, usize>,
 }
 
 impl RelayStats {
     fn new() -> Self {
         Self {
-            active_reservations: AtomicUsize::new(0),
-            active_circuits: AtomicUsize::new(0),
-            total_reservations: AtomicUsize::new(0),
-            total_circuits: AtomicUsize::new(0),
-            denied_reservations: AtomicUsize::new(0),
-            denied_circuits: AtomicUsize::new(0),
+            active_reservations: 0,
+            active_circuits: 0,
+            total_reservations: 0,
+            total_circuits: 0,
+            denied_reservations: 0,
+            denied_circuits: 0,
+            peer_reservations: HashMap::new(),
+        }
+    }
+
+    fn reservation_accepted(&mut self, peer: PeerId) {
+        self.active_reservations += 1;
+        self.total_reservations += 1;
+        *self.peer_reservations.entry(peer).or_insert(0) += 1;
+    }
+
+    fn reservation_timed_out(&mut self, peer: &PeerId) {
+        self.active_reservations = self.active_reservations.saturating_sub(1);
+        if let Some(count) = self.peer_reservations.get_mut(peer) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.peer_reservations.remove(peer);
+            }
+        }
+    }
+
+    /// Called when a peer fully disconnects (num_established == 0).
+    /// Removes all reservations attributed to this peer.
+    fn peer_disconnected(&mut self, peer: &PeerId) {
+        if let Some(count) = self.peer_reservations.remove(peer) {
+            if count > 0 {
+                info!(
+                    peer = %peer,
+                    orphaned_reservations = count,
+                    "Cleaning up reservations for disconnected peer"
+                );
+                self.active_reservations = self.active_reservations.saturating_sub(count);
+            }
         }
     }
 
     fn log_summary(&self) {
         info!(
-            active_reservations = self.active_reservations.load(Ordering::Relaxed),
-            active_circuits = self.active_circuits.load(Ordering::Relaxed),
-            total_reservations = self.total_reservations.load(Ordering::Relaxed),
-            total_circuits = self.total_circuits.load(Ordering::Relaxed),
-            denied_reservations = self.denied_reservations.load(Ordering::Relaxed),
-            denied_circuits = self.denied_circuits.load(Ordering::Relaxed),
+            active_reservations = self.active_reservations,
+            active_circuits = self.active_circuits,
+            total_reservations = self.total_reservations,
+            total_circuits = self.total_circuits,
+            denied_reservations = self.denied_reservations,
+            denied_circuits = self.denied_circuits,
+            tracked_peers = self.peer_reservations.len(),
             "Relay stats"
         );
     }
@@ -192,7 +231,7 @@ async fn main() -> Result<()> {
         peer_id, args.port
     );
 
-    let stats = RelayStats::new();
+    let mut stats = RelayStats::new();
 
     // Optional periodic stats reporting
     let stats_interval = if args.stats_interval_secs > 0 {
@@ -215,11 +254,14 @@ async fn main() -> Result<()> {
                     Some(SwarmEvent::ConnectionEstablished { peer_id: remote, .. }) => {
                         debug!("Connection established with {}", remote);
                     }
-                    Some(SwarmEvent::ConnectionClosed { peer_id: remote, cause, .. }) => {
+                    Some(SwarmEvent::ConnectionClosed { peer_id: remote, num_established, cause, .. }) => {
                         debug!("Connection closed with {}: {:?}", remote, cause);
+                        if num_established == 0 {
+                            stats.peer_disconnected(&remote);
+                        }
                     }
                     Some(SwarmEvent::Behaviour(RelayBehaviourEvent::Relay(event))) => {
-                        handle_relay_event(event, &stats);
+                        handle_relay_event(event, &mut stats);
                     }
                     Some(SwarmEvent::Behaviour(RelayBehaviourEvent::Identify(
                         identify::Event::Received { peer_id: remote, info, .. },
@@ -267,34 +309,33 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn handle_relay_event(event: relay::Event, stats: &RelayStats) {
+fn handle_relay_event(event: relay::Event, stats: &mut RelayStats) {
     match event {
         relay::Event::ReservationReqAccepted { src_peer_id, .. } => {
-            stats.active_reservations.fetch_add(1, Ordering::Relaxed);
-            stats.total_reservations.fetch_add(1, Ordering::Relaxed);
+            stats.reservation_accepted(src_peer_id);
             info!(peer = %src_peer_id, "Relay reservation accepted");
         }
         relay::Event::ReservationReqDenied { src_peer_id } => {
-            stats.denied_reservations.fetch_add(1, Ordering::Relaxed);
+            stats.denied_reservations += 1;
             warn!(peer = %src_peer_id, "Relay reservation denied");
         }
         relay::Event::ReservationTimedOut { src_peer_id } => {
-            stats.active_reservations.fetch_sub(1, Ordering::Relaxed);
+            stats.reservation_timed_out(&src_peer_id);
             debug!(peer = %src_peer_id, "Relay reservation timed out");
         }
         relay::Event::CircuitReqAccepted {
             src_peer_id,
             dst_peer_id,
         } => {
-            stats.active_circuits.fetch_add(1, Ordering::Relaxed);
-            stats.total_circuits.fetch_add(1, Ordering::Relaxed);
+            stats.active_circuits += 1;
+            stats.total_circuits += 1;
             info!(src = %src_peer_id, dst = %dst_peer_id, "Circuit accepted");
         }
         relay::Event::CircuitReqDenied {
             src_peer_id,
             dst_peer_id,
         } => {
-            stats.denied_circuits.fetch_add(1, Ordering::Relaxed);
+            stats.denied_circuits += 1;
             debug!(src = %src_peer_id, dst = %dst_peer_id, "Circuit denied");
         }
         relay::Event::CircuitClosed {
@@ -302,7 +343,7 @@ fn handle_relay_event(event: relay::Event, stats: &RelayStats) {
             dst_peer_id,
             error,
         } => {
-            stats.active_circuits.fetch_sub(1, Ordering::Relaxed);
+            stats.active_circuits = stats.active_circuits.saturating_sub(1);
             if let Some(e) = error {
                 debug!(src = %src_peer_id, dst = %dst_peer_id, error = %e, "Circuit closed with error");
             } else {
