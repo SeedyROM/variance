@@ -29,6 +29,7 @@ use crate::{
     error::*,
     events::{DirectMessageEvent, EventChannels},
     handlers::{identity, offline, signaling},
+    peer_store::PeerStore,
     rate_limiter::PeerRateLimiter,
 };
 
@@ -58,8 +59,10 @@ pub struct Node {
     pending_identity_requests: HashMap<OutboundRequestId, IdentityRequestOneshot>,
     /// Pending get_providers queries: query_id → (accumulated peers, response sender)
     pending_provider_queries: HashMap<kad::QueryId, ProviderQueryResult>,
-    /// DID to PeerId mapping for routing signaling messages
+    /// DID to PeerId mapping for routing signaling messages (connected peers only)
     did_to_peer: Arc<sync::RwLock<HashMap<String, PeerId>>>,
+    /// Persistent DID→PeerId store backed by sled (survives restarts)
+    peer_store: PeerStore,
     /// Broadcast DID resolution: DID → (remaining request count, response sender).
     /// Fires on the first Found response; if all requests fail, fires an error.
     pending_did_broadcasts: HashMap<String, BroadcastResolve>,
@@ -229,6 +232,8 @@ impl Node {
 
         let relay_discovery_interval_secs = config.relay_discovery_interval_secs;
 
+        let peer_store = PeerStore::open(&config.storage_path)?;
+
         let node = Node {
             swarm,
             peer_id,
@@ -241,6 +246,7 @@ impl Node {
             pending_identity_requests: HashMap::new(),
             pending_provider_queries: HashMap::new(),
             did_to_peer: Arc::new(sync::RwLock::new(HashMap::new())),
+            peer_store,
             pending_did_broadcasts: HashMap::new(),
             pending_resolve_requests: HashMap::new(),
             pending_auto_discovery: HashMap::new(),
@@ -441,14 +447,18 @@ impl Node {
                 message,
                 response_tx,
             } => {
-                // Look up peer ID from DID
+                // Look up peer ID from DID (in-memory, then persisted store)
                 let did_to_peer = self.did_to_peer.read().await;
-                if let Some(peer) = did_to_peer.get(&peer_did) {
+                let peer = did_to_peer
+                    .get(&peer_did)
+                    .copied()
+                    .or_else(|| self.peer_store.get(&peer_did));
+                if let Some(peer) = peer {
                     debug!("Sending signaling message to {} ({})", peer_did, peer);
                     self.swarm
                         .behaviour_mut()
                         .signaling
-                        .send_request(peer, message);
+                        .send_request(&peer, message);
                     let _ = response_tx.send(Ok(()));
                 } else {
                     warn!(
@@ -623,12 +633,16 @@ impl Node {
                 drop(local_did);
 
                 let did_to_peer = self.did_to_peer.read().await;
-                if let Some(peer) = did_to_peer.get(&peer_did) {
+                let peer = did_to_peer
+                    .get(&peer_did)
+                    .copied()
+                    .or_else(|| self.peer_store.get(&peer_did));
+                if let Some(peer) = peer {
                     debug!("Sending direct message to {} ({})", peer_did, peer);
                     self.swarm
                         .behaviour_mut()
                         .direct_messages
-                        .send_request(peer, message);
+                        .send_request(&peer, message);
                     let _ = response_tx.send(Ok(()));
                 } else {
                     warn!("Cannot send direct message: unknown peer DID {}", peer_did);
@@ -647,11 +661,15 @@ impl Node {
                 indicator,
             } => {
                 let did_to_peer = self.did_to_peer.read().await;
-                if let Some(peer) = did_to_peer.get(&peer_did) {
+                let peer = did_to_peer
+                    .get(&peer_did)
+                    .copied()
+                    .or_else(|| self.peer_store.get(&peer_did));
+                if let Some(peer) = peer {
                     self.swarm
                         .behaviour_mut()
                         .typing_indicators
-                        .send_request(peer, indicator);
+                        .send_request(&peer, indicator);
                 } else {
                     debug!(
                         "Cannot send typing indicator: unknown peer DID {}",

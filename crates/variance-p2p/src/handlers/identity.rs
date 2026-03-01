@@ -164,6 +164,7 @@ impl IdentityHandler {
                     one_time_keys: local_id.one_time_keys.clone(),
                     discriminator: local_id.discriminator,
                     mls_key_package: local_id.mls_key_package.clone(),
+                    username: local_id.username.clone(),
                     ..Default::default()
                 };
                 return Ok(IdentityResponse {

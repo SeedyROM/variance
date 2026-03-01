@@ -40,6 +40,9 @@ pub enum Error {
     #[snafu(display("Invalid message: {message}"))]
     InvalidMessage { message: String },
 
+    #[snafu(display("Storage error: {message}"))]
+    Storage { message: String },
+
     #[snafu(display("I/O error: {source}"))]
     Io { source: std::io::Error },
 }

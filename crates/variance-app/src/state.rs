@@ -237,8 +237,10 @@ impl AppState {
         tokio::spawn(async move {
             while let Some(command) = command_rx.recv().await {
                 // Respond to all commands with success
+
+                use variance_p2p::NodeCommand;
                 match command {
-                    variance_p2p::NodeCommand::SendIdentityRequest { response_tx, .. } => {
+                    NodeCommand::SendIdentityRequest { response_tx, .. } => {
                         let _ = response_tx.send(Ok(
                             variance_proto::identity_proto::IdentityResponse {
                                 result: None,
@@ -246,55 +248,57 @@ impl AppState {
                             },
                         ));
                     }
-                    variance_p2p::NodeCommand::SendSignalingMessage { response_tx, .. } => {
+                    NodeCommand::SendSignalingMessage { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
-                    variance_p2p::NodeCommand::PublishGroupMessage { response_tx, .. } => {
+                    NodeCommand::PublishGroupMessage { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
-                    variance_p2p::NodeCommand::SubscribeToTopic { response_tx, .. } => {
+                    NodeCommand::SubscribeToTopic { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
-                    variance_p2p::NodeCommand::UnsubscribeFromTopic { response_tx, .. } => {
+                    NodeCommand::UnsubscribeFromTopic { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
-                    variance_p2p::NodeCommand::ProvideUsername { response_tx, .. } => {
+                    NodeCommand::ProvideUsername { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
-                    variance_p2p::NodeCommand::FindUsernameProviders { response_tx, .. } => {
+                    NodeCommand::FindUsernameProviders { response_tx, .. } => {
                         let _ = response_tx.send(Ok(vec![]));
                     }
-                    variance_p2p::NodeCommand::SendDirectMessage { response_tx, .. } => {
+                    NodeCommand::SendDirectMessage { response_tx, .. } => {
                         let _ = response_tx.send(Ok(()));
                     }
-                    variance_p2p::NodeCommand::SetLocalIdentity { .. } => {
+                    NodeCommand::SetLocalIdentity { .. } => {
                         // No response channel, nothing to do
                     }
-                    variance_p2p::NodeCommand::UpdateOneTimeKeys { .. } => {
+                    NodeCommand::UpdateOneTimeKeys { .. } => {
                         // No response channel, nothing to do
                     }
-                    variance_p2p::NodeCommand::SetLocalUsername { .. } => {
+                    NodeCommand::SetLocalUsername { .. } => {
                         // No response channel, nothing to do
                     }
-                    variance_p2p::NodeCommand::ResolveIdentityByDid { response_tx, .. } => {
-                        let _ =
-                            response_tx.send(Ok(variance_proto::identity_proto::IdentityFound {
-                                did_document: None,
-                                ipns_key: None,
-                                multiaddrs: vec![],
-                                discriminator: None,
-                                olm_identity_key: vec![],
-                                one_time_keys: vec![],
-                                mls_key_package: None,
-                            }));
+                    NodeCommand::ResolveIdentityByDid { response_tx, .. } => {
+                        use variance_proto::identity_proto;
+
+                        let _ = response_tx.send(Ok(identity_proto::IdentityFound {
+                            did_document: None,
+                            ipns_key: None,
+                            multiaddrs: vec![],
+                            discriminator: None,
+                            olm_identity_key: vec![],
+                            one_time_keys: vec![],
+                            mls_key_package: None,
+                            username: None,
+                        }));
                     }
-                    variance_p2p::NodeCommand::GetConnectedDids { response_tx } => {
+                    NodeCommand::GetConnectedDids { response_tx } => {
                         let _ = response_tx.send(vec![]);
                     }
-                    variance_p2p::NodeCommand::SendTypingIndicator { .. } => {
+                    NodeCommand::SendTypingIndicator { .. } => {
                         // Fire-and-forget, no response channel
                     }
-                    variance_p2p::NodeCommand::BroadcastUsernameChange { .. } => {
+                    NodeCommand::BroadcastUsernameChange { .. } => {
                         // Fire-and-forget, no response channel
                     }
                 }
@@ -307,9 +311,11 @@ impl AppState {
     /// Create a new application state with a custom database path (for testing only)
     #[cfg(test)]
     pub fn with_db_path(local_did: String, db_path: &str) -> Self {
+        use ed25519_dalek::SigningKey;
+
         let storage = Arc::new(LocalMessageStorage::new(db_path).unwrap());
-        let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
-        let signaling_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+        let signing_key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let signaling_key = SigningKey::generate(&mut rand::rngs::OsRng);
 
         Self {
             direct_messaging: Arc::new(DirectMessageHandler::new(

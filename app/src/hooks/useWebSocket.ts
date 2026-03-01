@@ -77,6 +77,17 @@ export function useWebSocket() {
           break;
         }
 
+        case "MlsGroupJoined": {
+          console.log(
+            "[WebSocket] Auto-joined MLS group",
+            event.group_id,
+            "via invite from",
+            event.inviter
+          );
+          void queryClient.invalidateQueries({ queryKey: ["groups"] });
+          break;
+        }
+
         case "ReceiptDelivered":
         case "ReceiptRead":
           void queryClient.invalidateQueries({ queryKey: ["receipts"] });

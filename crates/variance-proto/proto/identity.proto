@@ -86,6 +86,9 @@ message IdentityFound {
   // MLS KeyPackage (TLS-serialized) for adding this peer to MLS groups.
   // Single-use: each inviter should request a fresh one from the peer.
   optional bytes mls_key_package = 7;
+  // Registered username of the responding peer (e.g. "alice").
+  // Use together with discriminator to form "alice#0042".
+  optional string username = 8;
 }
 
 message IdentityNotFound {

@@ -68,6 +68,7 @@ export interface GroupMessage {
   timestamp: number;
   reply_to?: string;
   sender_username?: string;
+  metadata?: Record<string, string>;
 }
 
 export interface MlsGroupInfo {
@@ -127,6 +128,7 @@ export type WsEvent =
       reply_to?: string;
     }
   | { type: "GroupMessageReceived"; group_id: string; message_id: string }
+  | { type: "MlsGroupJoined"; group_id: string; inviter: string }
   | { type: "TypingStarted"; from: string; recipient: string }
   | { type: "TypingStopped"; from: string; recipient: string }
   | { type: "ReceiptDelivered"; message_id: string }

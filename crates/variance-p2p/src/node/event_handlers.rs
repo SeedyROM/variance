@@ -515,10 +515,12 @@ impl Node {
                 let events = self.events.clone();
                 let did_id = did_doc.id.clone();
                 let did_to_peer = self.did_to_peer.clone();
+                let peer_store = self.peer_store.clone();
                 let peer_id = peer;
                 tokio::spawn(async move {
                     if let Ok(did) = variance_identity::did::Did::from_proto(did_doc) {
                         did_to_peer.write().await.insert(did_id.clone(), peer_id);
+                        peer_store.insert(&did_id, &peer_id);
 
                         if handler.cache_did(did).await.is_ok() {
                             events.send_identity(IdentityEvent::DidCached { did: did_id });
@@ -831,6 +833,7 @@ impl Node {
                         let mut did_to_peer = self.did_to_peer.write().await;
                         did_to_peer.insert(request.sender_did.clone(), peer);
                     }
+                    self.peer_store.insert(&request.sender_did, &peer);
 
                     self.events
                         .send_direct_message(DirectMessageEvent::MessageReceived {

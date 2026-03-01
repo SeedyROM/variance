@@ -13,16 +13,14 @@ interface ManageGroupPanelProps {
 }
 
 export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelProps) {
-  const [inviteeDid, setInviteeDid] = useState("");
-  const [keyPackage, setKeyPackage] = useState("");
+  const [invitee, setInvitee] = useState("");
   const [confirmLeave, setConfirmLeave] = useState(false);
   const queryClient = useQueryClient();
 
   const inviteMutation = useMutation({
-    mutationFn: () => groupsApi.invite(group.id, inviteeDid.trim(), keyPackage.trim()),
+    mutationFn: () => groupsApi.invite(group.id, invitee.trim()),
     onSuccess: () => {
-      setInviteeDid("");
-      setKeyPackage("");
+      setInvitee("");
       void queryClient.invalidateQueries({ queryKey: ["groups"] });
     },
   });
@@ -35,7 +33,7 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
     },
   });
 
-  const canInvite = inviteeDid.trim().length > 0 && keyPackage.trim().length > 0;
+  const canInvite = invitee.trim().length > 0;
 
   return (
     <Dialog open onClose={onClose} title={group.name}>
@@ -54,25 +52,13 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
             Invite member
           </p>
           <div>
-            <label className="block text-xs text-surface-500 mb-1">DID</label>
+            <label className="block text-xs text-surface-500 mb-1">Username or DID</label>
             <input
               type="text"
-              value={inviteeDid}
-              onChange={(e) => setInviteeDid(e.target.value)}
-              placeholder="did:variance:..."
+              value={invitee}
+              onChange={(e) => setInvitee(e.target.value)}
+              placeholder="alice or alice#0042 or did:variance:..."
               className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm
-                dark:border-surface-600 dark:bg-surface-800 dark:text-surface-50
-                focus:outline-none focus:ring-2 focus:ring-primary-500"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-surface-500 mb-1">MLS key package (hex)</label>
-            <input
-              type="text"
-              value={keyPackage}
-              onChange={(e) => setKeyPackage(e.target.value)}
-              placeholder="Paste hex-encoded key package"
-              className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm font-mono
                 dark:border-surface-600 dark:bg-surface-800 dark:text-surface-50
                 focus:outline-none focus:ring-2 focus:ring-primary-500"
             />

@@ -237,9 +237,13 @@ impl EventRouter {
 
         // Spawn task for direct message events
         // Decrypts incoming messages using the Double Ratchet handler before broadcasting.
+        // Also detects MLS Welcome messages (metadata type=mls_welcome) and auto-joins groups.
         let ws_manager = self.ws_manager.clone();
         let direct_messaging = self.direct_messaging.clone();
         let node_handle = self.node_handle.clone();
+        let mls_groups_dm = self.mls_groups.clone();
+        let storage_dm = self.storage.clone();
+        let local_did_dm = self.local_did.clone();
         let events_clone = events.clone();
         tokio::spawn(async move {
             use variance_p2p::events::DirectMessageEvent;
@@ -259,14 +263,52 @@ impl EventRouter {
 
                         match direct_messaging.receive_message(message).await {
                             Ok(content) => {
-                                let msg = WsMessage::DirectMessageReceived {
-                                    from,
-                                    message_id,
-                                    text: content.text,
-                                    timestamp,
-                                    reply_to,
-                                };
-                                ws_manager.broadcast(msg);
+                                // Check for MLS Welcome delivered via DM
+                                if content.metadata.get("type").map(|s| s.as_str())
+                                    == Some("mls_welcome")
+                                {
+                                    if let Some(welcome_hex) = content.metadata.get("mls_welcome") {
+                                        match Self::handle_mls_welcome_dm(
+                                            &mls_groups_dm,
+                                            &storage_dm,
+                                            &local_did_dm,
+                                            &node_handle,
+                                            welcome_hex,
+                                            content.metadata.get("group_id"),
+                                        )
+                                        .await
+                                        {
+                                            Ok(group_id) => {
+                                                debug!(
+                                                    "EventRouter: Auto-joined MLS group {} \
+                                                     from Welcome sent by {}",
+                                                    group_id, from
+                                                );
+                                                ws_manager.broadcast(WsMessage::MlsGroupJoined {
+                                                    group_id,
+                                                    inviter: from.clone(),
+                                                });
+                                            }
+                                            Err(e) => {
+                                                warn!(
+                                                    "EventRouter: Failed to auto-join MLS \
+                                                     group from Welcome DM: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
+                                    // Don't broadcast mls_welcome as a normal DM
+                                } else {
+                                    let msg = WsMessage::DirectMessageReceived {
+                                        from,
+                                        message_id,
+                                        text: content.text,
+                                        timestamp,
+                                        reply_to,
+                                    };
+                                    ws_manager.broadcast(msg);
+                                }
 
                                 // If this was a PreKey message, it consumed an OTK.
                                 // Refresh the P2P handler's OTK list so other peers don't
@@ -523,21 +565,25 @@ impl EventRouter {
                         ) = response.result
                         {
                             if let Some(ref doc) = found.did_document {
-                                if let Some(ref display_name) = doc.display_name {
-                                    // Parse "name#0042" → ("name", 42)
-                                    if let Some((name, disc_str)) = display_name.rsplit_once('#') {
-                                        if let Ok(disc) = disc_str.parse::<u32>() {
-                                            debug!(
-                                                "EventRouter: Caching username {} for {}",
-                                                display_name, doc.id
-                                            );
-                                            username_registry.cache_mapping(
-                                                name.to_string(),
-                                                disc,
-                                                doc.id.clone(),
-                                            );
-                                        }
+                                // Prefer the dedicated username/discriminator proto
+                                // fields; fall back to parsing display_name "name#0042".
+                                let cached = match (&found.username, found.discriminator) {
+                                    (Some(name), Some(disc)) if !name.is_empty() && disc > 0 => {
+                                        Some((name.clone(), disc))
                                     }
+                                    _ => doc.display_name.as_ref().and_then(|dn| {
+                                        let (name, disc_str) = dn.rsplit_once('#')?;
+                                        let disc = disc_str.parse::<u32>().ok()?;
+                                        Some((name.to_string(), disc))
+                                    }),
+                                };
+
+                                if let Some((name, disc)) = cached {
+                                    debug!(
+                                        "EventRouter: Caching username {}#{:04} for {}",
+                                        name, disc, doc.id
+                                    );
+                                    username_registry.cache_mapping(name, disc, doc.id.clone());
                                 }
                             }
                         }
@@ -612,6 +658,55 @@ impl EventRouter {
         });
 
         debug!("EventRouter: All event listeners started");
+    }
+
+    /// Process an incoming MLS Welcome that was delivered via encrypted DM.
+    ///
+    /// Deserializes the Welcome, calls `join_group_from_welcome`, persists
+    /// MLS state, and subscribes to the group's GossipSub topic.
+    /// Returns the group ID on success.
+    async fn handle_mls_welcome_dm(
+        mls_groups: &MlsGroupHandler,
+        storage: &LocalMessageStorage,
+        local_did: &str,
+        node_handle: &variance_p2p::commands::NodeHandle,
+        welcome_hex: &str,
+        group_id_hint: Option<&String>,
+    ) -> std::result::Result<String, String> {
+        use variance_messaging::mls::MlsGroupHandler;
+
+        let welcome_bytes =
+            hex::decode(welcome_hex).map_err(|e| format!("Invalid Welcome hex: {}", e))?;
+
+        let welcome_msg = MlsGroupHandler::deserialize_message(&welcome_bytes)
+            .map_err(|e| format!("Failed to deserialize MLS Welcome: {}", e))?;
+
+        let group_id = mls_groups
+            .join_group_from_welcome(welcome_msg)
+            .map_err(|e| format!("Failed to join group from Welcome: {}", e))?;
+
+        persist_mls_state_async(mls_groups, storage, local_did).await;
+
+        // Subscribe to the group's GossipSub topic
+        let topic = format!("/variance/group/{}", group_id);
+        if let Err(e) = node_handle.subscribe_to_topic(topic).await {
+            warn!(
+                "EventRouter: Failed to subscribe to group topic after Welcome join: {}",
+                e
+            );
+        }
+
+        // Log if the group_id from the metadata hint differs (shouldn't happen)
+        if let Some(hint) = group_id_hint {
+            if *hint != group_id {
+                warn!(
+                    "EventRouter: Welcome produced group_id {} but metadata hinted {}",
+                    group_id, hint
+                );
+            }
+        }
+
+        Ok(group_id)
     }
 }
 

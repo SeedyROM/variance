@@ -108,6 +108,11 @@ pub enum WsMessage {
         message_id: String,
         timestamp: i64,
     },
+    /// Auto-joined an MLS group after receiving a Welcome via DM.
+    MlsGroupJoined {
+        group_id: String,
+        inviter: String,
+    },
     OfflineMessagesReceived {
         count: usize,
     },

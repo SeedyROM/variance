@@ -95,7 +95,12 @@ pub struct StorageConfig {
 
     /// Maximum age in days for group messages before they are purged.
     /// Cleanup runs hourly alongside expired offline message cleanup.
+    #[serde(default = "default_group_message_max_age_days")]
     pub group_message_max_age_days: u64,
+}
+
+fn default_group_message_max_age_days() -> u64 {
+    90
 }
 
 impl Default for AppConfig {

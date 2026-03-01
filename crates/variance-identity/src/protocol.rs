@@ -1,99 +1,13 @@
+//! Helper functions for constructing identity protocol request/response messages.
+//!
+//! The actual protocol codec (`IdentityCodec`) and libp2p behaviour types live
+//! in `variance-p2p::protocols::identity` — this module only provides
+//! convenience constructors so callers don't have to build protobuf structs
+//! by hand.
+
 use crate::did::Did;
-use async_trait::async_trait;
 use chrono::Utc;
-use futures::prelude::*;
-use libp2p::request_response::{self, ProtocolSupport};
-use libp2p::StreamProtocol;
-use std::io;
 use variance_proto::identity_proto;
-
-/// Protocol name for identity resolution
-pub const IDENTITY_PROTOCOL: &str = "/variance/identity/1.0.0";
-
-/// Identity resolution codec using protobuf
-#[derive(Debug, Clone, Default)]
-pub struct IdentityCodec;
-
-#[async_trait]
-impl request_response::Codec for IdentityCodec {
-    type Protocol = StreamProtocol;
-    type Request = identity_proto::IdentityRequest;
-    type Response = identity_proto::IdentityResponse;
-
-    async fn read_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-    ) -> io::Result<Self::Request>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
-        prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-    }
-
-    async fn read_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-    ) -> io::Result<Self::Response>
-    where
-        T: AsyncRead + Unpin + Send,
-    {
-        let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
-        prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-    }
-
-    async fn write_request<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-        req: Self::Request,
-    ) -> io::Result<()>
-    where
-        T: AsyncWrite + Unpin + Send,
-    {
-        let mut buf = Vec::new();
-        prost::Message::encode(&req, &mut buf)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        io.write_all(&buf).await?;
-        io.close().await
-    }
-
-    async fn write_response<T>(
-        &mut self,
-        _protocol: &Self::Protocol,
-        io: &mut T,
-        res: Self::Response,
-    ) -> io::Result<()>
-    where
-        T: AsyncWrite + Unpin + Send,
-    {
-        let mut buf = Vec::new();
-        prost::Message::encode(&res, &mut buf)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        io.write_all(&buf).await?;
-        io.close().await
-    }
-}
-
-/// Identity protocol behaviour
-pub type IdentityBehaviour = request_response::Behaviour<IdentityCodec>;
-
-/// Create identity protocol configuration
-pub fn create_identity_behaviour() -> IdentityBehaviour {
-    let protocol = StreamProtocol::new(IDENTITY_PROTOCOL);
-    request_response::Behaviour::new(
-        [(protocol, ProtocolSupport::Full)],
-        request_response::Config::default(),
-    )
-}
-
-/// Events from the identity protocol
-pub type IdentityEvent =
-    request_response::Event<identity_proto::IdentityRequest, identity_proto::IdentityResponse>;
 
 /// Helper to create an identity request for a username
 pub fn create_username_request(
@@ -153,6 +67,7 @@ pub fn create_success_response(did: &Did) -> identity_proto::IdentityResponse {
                 olm_identity_key: vec![],
                 one_time_keys: vec![],
                 mls_key_package: None,
+                username: None,
             },
         )),
         timestamp: Utc::now().timestamp(),

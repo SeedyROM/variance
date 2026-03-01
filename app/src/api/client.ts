@@ -119,18 +119,22 @@ export const groupsApi = {
   getMessages: (groupId: string) =>
     request<GroupMessage[]>(`/messages/group/${encodeURIComponent(groupId)}`),
 
-  sendMessage: (groupId: string, text: string) =>
-    request<MessageResponse>("/mls/messages/group", {
+  sendMessage: (
+    groupId: string,
+    text: string,
+    opts?: { reply_to?: string; metadata?: Record<string, string> }
+  ) =>
+    request<MessageResponse>("/messages/group", {
       method: "POST",
-      body: JSON.stringify({ group_id: groupId, text }),
+      body: JSON.stringify({ group_id: groupId, text, ...opts }),
     }),
 
-  invite: (groupId: string, inviteeDid: string, mlsKeyPackage: string) =>
-    request<{ success: boolean; mls_welcome: string; mls_commit: string }>(
+  invite: (groupId: string, invitee: string) =>
+    request<{ success: boolean; group_id: string; invitee_did: string }>(
       `/mls/groups/${encodeURIComponent(groupId)}/invite`,
       {
         method: "POST",
-        body: JSON.stringify({ invitee_did: inviteeDid, mls_key_package: mlsKeyPackage }),
+        body: JSON.stringify({ invitee }),
       }
     ),
 
@@ -152,6 +156,17 @@ export const reactionsApi = {
     request<MessageResponse>(
       `/messages/direct/${encodeURIComponent(messageId)}/reactions/${encodeURIComponent(emoji)}?recipient_did=${encodeURIComponent(recipientDid)}`,
       { method: "DELETE" }
+    ),
+
+  addGroup: (messageId: string, emoji: string, groupId: string) =>
+    request<MessageResponse>(`/messages/group/${encodeURIComponent(messageId)}/reactions`, {
+      method: "POST",
+      body: JSON.stringify({ emoji, group_id: groupId }),
+    }),
+  removeGroup: (messageId: string, emoji: string, groupId: string) =>
+    request<MessageResponse>(
+      `/messages/group/${encodeURIComponent(messageId)}/reactions/${encodeURIComponent(emoji)}`,
+      { method: "DELETE", body: JSON.stringify({ group_id: groupId }) }
     ),
 };
 
