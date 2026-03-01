@@ -13,7 +13,7 @@ pub const MAX_USERNAME_LENGTH: usize = 32;
 /// Maximum random attempts to find an available discriminator
 const MAX_DISCRIMINATOR_ATTEMPTS: usize = 100;
 
-/// Username registry using provider records (NOT DHT values)
+/// Username registry using DHT provider records
 ///
 /// Architecture:
 /// - DHT provider records map username -> peer providing that username

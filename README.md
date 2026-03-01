@@ -239,20 +239,15 @@ RUST_LOG=variance=trace,libp2p=debug just dev
 
 ## Key Design Decisions
 
-This Rust implementation **corrects critical architectural flaws** from the [original Go implementation](https://github.com/SeedyROM/variance-go):
-
-1. **DHT is NOT a database**: We use Kademlia DHT for peer discovery only, not data storage
+1. **DHT for peer discovery**: Kademlia DHT used for provider records and peer routing
 2. **IPFS/IPNS for identity**: DID documents stored in IPFS, mutable pointers via IPNS
-3. **Custom libp2p protocols**: Direct peer queries instead of expensive DHT lookups
+3. **Custom libp2p protocols**: Direct peer queries with multi-layer caching
 4. **Protobuf everywhere**: Type-safe schemas for all P2P communication
-
-See [docs/ARCHITECTURE-CORRECTIONS.md](docs/ARCHITECTURE-CORRECTIONS.md) for the full breakdown.
 
 ## Documentation
 
 ### Architecture
-- [ARCHITECTURE-CORRECTIONS.md](docs/ARCHITECTURE-CORRECTIONS.md) - **Read this first!** Explains why the Go design was wrong and how we fix it
-- [variance-go](https://github.com/SeedyROM/variance-go) - Original broken implementation (for reference)
+- [docs/](docs/) - Architecture documentation
 
 ### Usage as standalone node (debugging/testing only)
 - [CLI-USAGE.md](docs/CLI-USAGE.md) - CLI reference (debugging/testing only)
@@ -332,5 +327,3 @@ Key areas for future work:
 - Mobile support (iOS/Android)
 
 ---
-
-**Note**: This project learns from the mistakes in the [variance-go](https://github.com/SeedyROM/variance-go) implementation. See ARCHITECTURE-CORRECTIONS.md for details on what we're doing differently.

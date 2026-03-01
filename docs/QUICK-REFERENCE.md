@@ -82,7 +82,6 @@ variance/
 │       └── src/                 # Rust: commands, state, lib
 │
 ├── docs/
-│   ├── ARCHITECTURE-CORRECTIONS.md  # Read this first!
 │   ├── QUICK-REFERENCE.md           # This file
 │   ├── PROTOCOL-GUIDE.md            # Protobuf usage
 │   └── CLI-USAGE.md                 # CLI command reference

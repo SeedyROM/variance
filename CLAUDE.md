@@ -1,15 +1,14 @@
-# Variance Project Instructions
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Context
 
-Variance is a P2P Discord alternative in Rust, correcting architectural flaws from the original Go implementation in `../variance-go/`. The Go design misused Kademlia DHT as a database; this implementation uses IPFS/IPNS for identity storage, custom libp2p protocols for queries, and multi-layer caching.
+Variance is a P2P Discord alternative in Rust using IPFS/IPNS for identity storage, custom libp2p protocols for queries, and multi-layer caching.
 
 **Key architectural documents:**
-- `docs/ARCHITECTURE-CORRECTIONS.md` - Critical: explains what was wrong and correct approach
 - `docs/QUICK-REFERENCE.md` - Workspace structure and patterns
 - `docs/PROTOCOL-GUIDE.md` - Protobuf usage
-
-**Reference (flawed):** `../variance-go/docs/` - Original design docs, contains DHT misuse
 
 ## Technology Stack
 
@@ -20,6 +19,94 @@ Variance is a P2P Discord alternative in Rust, correcting architectural flaws fr
 - **Axum 0.8** - HTTP API for Tauri frontend
 - **snafu** - Error handling (preferred over anyhow for libraries)
 - **tracing/tracing-subscriber** - Structured logging
+- **vodozemac 0.9** - Olm/Double Ratchet for direct message encryption (Matrix-compatible)
+- **openmls** - RFC 9420 MLS for group message encryption
+- **sled** - Embedded KV store for local persistence
+
+## Development Workflow
+
+```bash
+# Build (triggers protobuf codegen)
+cargo build
+
+# Check specific crate
+cargo check -p variance-identity
+
+# Run all tests
+just test                          # cargo test --all-features
+just test-package variance-messaging  # tests for one crate
+
+# Run a single test
+cargo test -p variance-messaging test_name
+
+# Lint and format
+just clippy    # cargo clippy --all-targets --all-features -- -D warnings
+just fmt       # cargo fmt --all
+
+# Run all checks (format + clippy + test)
+just all
+
+# Tauri desktop app
+just dev          # Dev mode with hot reload
+just dev-two      # Two instances for P2P testing
+just tauri-build  # Release bundle
+
+# CLI (headless/debugging)
+RUST_LOG=variance=debug cargo run --bin variance -- start
+
+# Force protobuf rebuild
+just proto
+```
+
+Frontend (in `app/`): managed with `pnpm`. Run `just frontend-install` once, then `just frontend-dev`.
+
+## Workspace Structure
+
+```
+crates/
+├── variance-proto/      # Protobuf schemas (foundation)
+├── variance-p2p/        # libp2p core + protocol handlers
+├── variance-identity/   # DID & identity (uses IPFS/IPNS)
+├── variance-messaging/  # Chat (Direct + GossipSub/MLS)
+├── variance-media/      # WebRTC signaling
+├── variance-app/        # HTTP API & state (axum)
+├── variance-relay/      # Standalone relay server binary
+└── variance-cli/        # Standalone CLI (headless/debugging only)
+app/
+├── src/                 # React/TypeScript UI
+└── src-tauri/           # Tauri desktop host (workspace member: variance-desktop)
+```
+
+**Primary runtime:** The Tauri desktop app (`variance-desktop`) embeds `variance-app` in-process — no sidecar process. The React frontend communicates via Tauri commands (FFI). `variance-cli` is for headless operation and debugging only.
+
+**Dependency flow:** cli → app → p2p → (identity, messaging, media) → proto
+*(app also depends directly on identity, messaging, media for HTTP API handlers)*
+
+## Key Architecture: NodeCommand / EventChannels
+
+The P2P node runs in its own task and is not `Send`/`Sync`. Communication happens through two channel types:
+
+- **`NodeCommand`** (tokio `mpsc`): app layer → swarm. E.g., `SendDirectMessage`, `PublishGroupMessage`, `BroadcastUsernameChange`. Commands use `oneshot` channels for responses.
+- **`EventChannels`** (tokio `broadcast`): swarm → app layer. Events like `IdentityEvent`, `SignalingEvent`, `RenameEvent`, `OfflineMessageEvent`.
+- **`EventRouter`** (`crates/variance-app/src/event_router.rs`): subscribes to all `EventChannels` at startup and forwards events to WebSocket clients via `WebSocketManager`. This is where inbound P2P events become frontend-visible state changes.
+
+When adding a new P2P feature:
+1. Add the `NodeCommand` variant in `crates/variance-p2p/src/commands.rs`
+2. Add the `Event` variant in `crates/variance-p2p/src/events.rs`
+3. Handle both in the swarm loop (or a protocols handler)
+4. Subscribe to the event in `EventRouter` and forward to `WsMessage`
+
+## Message Storage
+
+`LocalMessageStorage` (sled-backed) stores:
+- Direct messages: keyed as `nonce || AES-256-GCM ciphertext` (locally encrypted)
+- Group messages: same pattern
+- Offline relay queue: `OfflineMessageEnvelope` protobuf, 30-day TTL
+- Group metadata and MLS provider state
+
+Messages use ULID for IDs (lexicographically sortable by time). Pagination is cursor-based via `before: Option<i64>` (timestamp ms) for direct messages.
+
+MLS group state is serialized and persisted in sled under `local_did` after every MLS operation.
 
 ## Code Standards
 
@@ -61,8 +148,6 @@ Variance is a P2P Discord alternative in Rust, correcting architectural flaws fr
 ### Testing Requirements
 
 - **All features require tests** - unit tests and/or integration tests
-- No new feature should be untested
-- No lengthy documentation as substitute for tests
 - Test what matters: behavior, edge cases, error paths
 - Keep tests focused and maintainable
 - **Do not test generated code** - protobuf compilation output is prost-build's responsibility, not ours
@@ -89,19 +174,12 @@ Use `anyhow` only for application binaries (variance-app, variance-cli).
 
 ## Architecture Principles
 
-### DHT Usage (Critical)
+### DHT Usage
 
-**NEVER use DHT for data storage.** DHT is for peer/content routing only.
-
-**Correct:**
+DHT is for peer/content routing only:
 - Provider records: "who has X?"
 - Peer discovery
 - Content routing
-
-**Wrong:**
-- Storing DID documents directly
-- Storing messages
-- Storing user data
 
 ### Identity System
 
@@ -113,104 +191,19 @@ Use `anyhow` only for application binaries (variance-app, variance-cli).
 
 ### Message Storage
 
-- Direct messages: libp2p streams with Double Ratchet
+- Direct messages: vodozemac Olm (Double Ratchet) — session init uses PreKey messages; follow-up messages use Normal type
 - Group messages: GossipSub with OpenMLS (RFC 9420) — per-message forward secrecy, post-compromise security
-- Offline messages: **Relay nodes** with local DB, NOT DHT
+- Offline messages: **Relay nodes** (`variance-relay` binary) with local DB
 - TTL: 30 days on relay storage
 
 ### Protobuf
 
 All P2P communication uses Protocol Buffers (defined in `crates/variance-proto/proto/`):
-- `identity.proto` - DID, resolution protocol
+- `identity.proto` - DID, resolution protocol, `UsernameChanged`
 - `messaging.proto` - Direct/group messages, receipts
 - `media.proto` - WebRTC signaling
 
 Auto-generated via `prost-build` in build.rs.
-
-## Workspace Structure
-
-```
-crates/
-├── variance-proto/      # Protobuf schemas (foundation)
-├── variance-p2p/        # libp2p core + protocol handlers
-├── variance-identity/   # DID & identity (uses IPFS/IPNS)
-├── variance-messaging/  # Chat (Direct + GossipSub)
-├── variance-media/      # WebRTC signaling
-├── variance-app/        # HTTP API & state (axum)
-└── variance-cli/        # Standalone CLI (headless/debugging only)
-app/
-├── src/                 # React/TypeScript UI
-└── src-tauri/           # Tauri desktop host (workspace member: variance-desktop)
-```
-
-**Primary runtime:** The Tauri desktop app (`variance-desktop`) embeds `variance-app` in-process — no sidecar process. The React frontend communicates with the node via Tauri commands (FFI), which call into the Rust node directly.
-
-**`variance-cli`** exists for headless operation, debugging, and testing (e.g. `identity generate`, running a second node). It is not the normal way users interact with Variance.
-
-**Dependency flow:** cli → app → p2p → (identity, messaging, media) → proto
-*(app also depends directly on identity, messaging, media for business logic access)*
-
-## Common Patterns
-
-### Multi-Layer Caching
-
-```rust
-// L1: Hot (5 min) → L2: Warm (1 hour) → L3: Disk (24 hour) → Network
-if let Some(v) = l1.get(key) { return Ok(v); }
-if let Some(v) = l2.get(key) { l1.insert(key, v.clone()); return Ok(v); }
-// ... continue down layers
-```
-
-### Custom libp2p Protocols
-
-Use `request_response::cbor::Behaviour` with protobuf types:
-
-```rust
-const PROTOCOL: &str = "/variance/identity/1.0.0";
-let protocol = request_response::cbor::Behaviour::<Request, Response>::new(...);
-```
-
-### IPFS/IPNS Flow
-
-```rust
-// Store identity
-let cid = ipfs.add_json(&did_doc).await?;
-ipfs.name_publish(&cid, &keypair).await?;
-
-// Update identity
-let new_cid = ipfs.add_json(&updated_doc).await?;
-ipfs.name_publish(&new_cid, &keypair).await?;  // Same key, new CID
-```
-
-## Development Workflow
-
-```bash
-# Build with protobuf codegen
-cargo build
-
-# Check specific crate
-cargo check -p variance-identity
-
-# Run with debug logs
-RUST_LOG=variance=debug cargo run --bin variance -- start
-
-# Use justfile recipes (requires `just`)
-just test        # Run all tests
-just clippy      # Lint
-just dev         # Dev server
-just dev-two     # Two instances for P2P testing
-just tauri-build # Build Tauri desktop app
-```
-
-## Key Differences from Go Implementation
-
-| Aspect | Go (Wrong) | Rust (Correct) |
-|--------|-----------|----------------|
-| Identity storage | DHT values | IPFS + IPNS |
-| Offline messages | DHT values | Relay nodes + local DB |
-| Username lookup | Brute-force 9999 DHT queries | Provider records + custom protocol |
-| Serialization | JSON | Protocol Buffers |
-| Caching | None | Multi-layer (memory + disk) |
 
 ## References
 
