@@ -352,7 +352,40 @@ impl EventRouter {
                             &message.mls_ciphertext,
                         ) {
                             Ok(mls_msg) => match mls_groups.process_message(&group_id, mls_msg) {
-                                Ok(Some(_decrypted)) => {
+                                Ok(Some(decrypted)) => {
+                                    // Store the raw message so history fetches include it.
+                                    use variance_messaging::storage::MessageStorage;
+                                    if let Err(e) = storage.store_group(&message).await {
+                                        warn!(
+                                            "EventRouter: Failed to store group message {}: {}",
+                                            message_id, e
+                                        );
+                                    }
+
+                                    // Cache the plaintext (at-rest encrypted) for history.
+                                    // MLS forward secrecy means we can't re-decrypt later.
+                                    #[allow(unused_imports)]
+                                    use prost::Message as _;
+                                    if let Ok(content) =
+                                        variance_proto::messaging_proto::MessageContent::decode(
+                                            decrypted.plaintext.as_slice(),
+                                        )
+                                    {
+                                        if let Err(e) = mls_groups
+                                            .persist_group_plaintext(
+                                                &storage,
+                                                &message_id,
+                                                &content,
+                                            )
+                                            .await
+                                        {
+                                            warn!(
+                                                "EventRouter: Failed to cache group plaintext {}: {}",
+                                                message_id, e
+                                            );
+                                        }
+                                    }
+
                                     let msg = WsMessage::GroupMessageReceived {
                                         group_id: group_id.clone(),
                                         from,

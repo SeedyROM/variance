@@ -140,6 +140,26 @@ impl Node {
                     providers,
                     ..
                 })) => {
+                    // Relay discovery: dial any new relay providers we found.
+                    if self.pending_relay_query == Some(id) {
+                        for peer_id in &providers {
+                            if self.relay_peer_ids.contains(peer_id) {
+                                continue; // already connected to this relay
+                            }
+                            info!("Discovered relay via DHT: {}", peer_id);
+                            self.relay_peer_ids.insert(*peer_id);
+                            // Dial by PeerId; addresses come from the peer store
+                            // populated by the DHT routing table during get_providers.
+                            if let Err(e) = self
+                                .swarm
+                                .dial(libp2p::swarm::dial_opts::DialOpts::peer_id(*peer_id).build())
+                            {
+                                debug!("Failed to dial DHT-discovered relay {}: {}", peer_id, e);
+                            }
+                        }
+                    }
+
+                    // Username provider queries (application-layer oneshot).
                     if let Some((peers, _)) = self.pending_provider_queries.get_mut(&id) {
                         peers.extend(providers);
                     }
@@ -147,11 +167,22 @@ impl Node {
                 kad::QueryResult::GetProviders(Ok(
                     kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. },
                 )) => {
+                    // Clear relay query on completion.
+                    if self.pending_relay_query == Some(id) {
+                        debug!("Relay DHT discovery query finished");
+                        self.pending_relay_query = None;
+                    }
+
                     if let Some((peers, tx)) = self.pending_provider_queries.remove(&id) {
                         let _ = tx.send(Ok(peers));
                     }
                 }
                 kad::QueryResult::GetProviders(Err(e)) => {
+                    if self.pending_relay_query == Some(id) {
+                        warn!("Relay DHT discovery failed: {:?}", e);
+                        self.pending_relay_query = None;
+                    }
+
                     if let Some((_, tx)) = self.pending_provider_queries.remove(&id) {
                         let _ = tx.send(Err(Error::Kad {
                             message: format!("get_providers failed: {:?}", e),

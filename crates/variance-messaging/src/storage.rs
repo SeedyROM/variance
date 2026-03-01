@@ -58,11 +58,9 @@ pub trait MessageStorage: Send + Sync {
     /// Delete offline message (after delivery)
     async fn delete_offline(&self, message_id: &str) -> Result<()>;
 
-    /// Clean up expired offline messages (TTL enforcement)
+    /// Clean up expired offline messages (TTL enforcement).
     ///
-    /// TODO: Implement automatic cleanup scheduling
-    /// This method exists but needs to be called periodically.
-    /// Should add background task that runs cleanup every hour.
+    /// Called hourly by the background cleanup task in `variance-app`.
     async fn cleanup_expired(&self) -> Result<usize>;
 
     /// Store a read receipt
@@ -898,6 +896,81 @@ impl MessageStorage for LocalMessageStorage {
     }
 }
 
+impl LocalMessageStorage {
+    /// Persist the at-rest-encrypted plaintext blob for a group message.
+    ///
+    /// `blob` is `nonce (12 bytes) || AES-256-GCM ciphertext` produced by
+    /// `MlsGroupHandler::persist_group_plaintext`. Stored in a dedicated tree
+    /// keyed by message_id to keep it separate from the DM plaintext cache.
+    pub async fn store_group_plaintext(&self, message_id: &str, blob: &[u8]) -> Result<()> {
+        let tree = self
+            .db
+            .open_tree("group_plaintext_cache")
+            .map_err(|e| Error::Storage { source: e })?;
+        tree.insert(message_id.as_bytes(), blob)
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    /// Retrieve a previously stored group message plaintext blob.
+    pub async fn fetch_group_plaintext(&self, message_id: &str) -> Result<Option<Vec<u8>>> {
+        let tree = self
+            .db
+            .open_tree("group_plaintext_cache")
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(tree
+            .get(message_id.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?
+            .map(|v| v.to_vec()))
+    }
+
+    /// Delete group messages older than `max_age`.
+    ///
+    /// Group message keys are `{group_id}:{timestamp:020}:{message_id}` where
+    /// timestamp is milliseconds since Unix epoch. Entries whose timestamp
+    /// predates `now - max_age` are removed.
+    ///
+    /// Returns the number of messages deleted.
+    pub async fn cleanup_old_group_messages(&self, max_age: std::time::Duration) -> Result<usize> {
+        let tree = self.group_tree()?;
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - max_age.as_millis() as i64;
+
+        let mut to_delete: Vec<Vec<u8>> = Vec::new();
+
+        for entry in tree.iter() {
+            let (key, _) = entry.map_err(|e| Error::Storage { source: e })?;
+            let key_str = String::from_utf8_lossy(&key);
+
+            // Key format: {group_id}:{timestamp:020}:{message_id}
+            // Parse timestamp by splitting from the right (message_id and timestamp have no colons).
+            if let Some(ts) = Self::parse_group_key_timestamp(&key_str) {
+                if ts < cutoff_ms {
+                    to_delete.push(key.to_vec());
+                }
+            }
+        }
+
+        let deleted = to_delete.len();
+        for key in to_delete {
+            tree.remove(key).map_err(|e| Error::Storage { source: e })?;
+        }
+
+        Ok(deleted)
+    }
+
+    /// Extract the timestamp (ms) from a group message key.
+    ///
+    /// Key format: `{group_id}:{timestamp:020}:{message_id}`.
+    /// Neither the 20-digit timestamp nor the ULID message ID contain colons,
+    /// so we can split from the right unambiguously regardless of the group ID.
+    fn parse_group_key_timestamp(key: &str) -> Option<i64> {
+        let last = key.rfind(':')?;
+        let before_id = &key[..last];
+        let ts_start = before_id.rfind(':')?;
+        before_id[ts_start + 1..].parse::<i64>().ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1426,5 +1499,52 @@ mod tests {
 
         assert_eq!(bob_ts, Some(1000));
         assert_eq!(charlie_ts, Some(2000));
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_old_group_messages() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+
+        // Old message: 100 days ago (should be deleted with a 90-day cutoff)
+        let old_ts = now_ms - 100 * 86_400_000i64;
+        let old_msg = GroupMessage {
+            id: "01ARZ3NDEKTSV4RRFFQ69G5FAA".to_string(),
+            group_id: "test-group".to_string(),
+            sender_did: "did:key:alice".to_string(),
+            mls_ciphertext: vec![1],
+            timestamp: old_ts,
+            ..Default::default()
+        };
+
+        // Recent message: 1 day ago (should survive)
+        let recent_ts = now_ms - 86_400_000i64;
+        let recent_msg = GroupMessage {
+            id: "01ARZ3NDEKTSV4RRFFQ69G5FBB".to_string(),
+            group_id: "test-group".to_string(),
+            sender_did: "did:key:alice".to_string(),
+            mls_ciphertext: vec![2],
+            timestamp: recent_ts,
+            ..Default::default()
+        };
+
+        storage.store_group(&old_msg).await.unwrap();
+        storage.store_group(&recent_msg).await.unwrap();
+
+        // Verify both stored before cleanup.
+        let before = storage.fetch_group("test-group", 10, None).await.unwrap();
+        assert_eq!(before.len(), 2);
+
+        let deleted = storage
+            .cleanup_old_group_messages(std::time::Duration::from_secs(90 * 86400))
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1, "only the 100-day-old message should be deleted");
+
+        let after = storage.fetch_group("test-group", 10, None).await.unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, "01ARZ3NDEKTSV4RRFFQ69G5FBB");
     }
 }

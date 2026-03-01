@@ -99,14 +99,15 @@ export function NewConversationModal({ open, onClose, onCreated }: NewConversati
     mutationFn: async () => {
       const did = resolvedDid ?? (await resolveRecipient());
       if (!did) throw new Error("Could not resolve recipient");
-      return conversationsApi.start({
+      const data = await conversationsApi.start({
         recipient_did: did,
         text: initialText,
       });
+      return { data, peerDid: did };
     },
-    onSuccess: (data) => {
+    onSuccess: ({ peerDid }) => {
       void queryClient.invalidateQueries({ queryKey: ["conversations"] });
-      onCreated(data.conversation_id);
+      onCreated(peerDid);
       setRecipient("");
       setInitialText("Hello!");
       resetResolution();

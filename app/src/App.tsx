@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { OnboardingShell } from "./components/onboarding/OnboardingShell";
 import { ConversationList } from "./components/conversations/ConversationList";
 import { MessageView } from "./components/messages/MessageView";
+import { GroupView } from "./components/messages/GroupView";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { usePresencePolling } from "./hooks/usePresencePolling";
 import { useNodeReady } from "./hooks/useNodeReady";
@@ -38,7 +39,7 @@ function LoadingScreen() {
 }
 
 function MainShell() {
-  const activeId = useMessagingStore((s) => s.activeConversationId);
+  const activeConversation = useMessagingStore((s) => s.activeConversation);
   const setIdentity = useIdentityStore((s) => s.setIdentity);
   const setUsernameStore = useIdentityStore((s) => s.setUsername);
 
@@ -51,7 +52,6 @@ function MainShell() {
       if (id.username && id.discriminator != null && id.display_name) {
         setUsernameStore(id.username, id.discriminator, id.display_name);
       } else {
-        // Clear stale username data from a previous session
         useIdentityStore.getState().clearUsername();
       }
       return id;
@@ -64,22 +64,26 @@ function MainShell() {
   // Poll presence as a fallback (WS events are primary)
   usePresencePolling();
 
-  // Fetch conversations
+  // Fetch conversations (needed for DM peer_did lookup)
   const { data: conversations = [] } = useQuery({
     queryKey: ["conversations"],
     queryFn: () => conversationsApi.list(),
   });
 
-  // Derive the peer DID from active conversation ID
-  const activePeerDid = activeId
-    ? (conversations.find((c) => c.id === activeId)?.peer_did ?? null)
-    : null;
+  // Derive the peer DID for DM conversations
+  const activePeerDid =
+    activeConversation?.type === "dm"
+      ? (conversations.find((c) => c.peer_did === activeConversation.peerId)?.peer_did ??
+        activeConversation.peerId)
+      : null;
 
   return (
     <div className="flex h-screen bg-surface-100 dark:bg-surface-950 overscroll-none select-none">
       <ConversationList />
       <main className="flex-1 overflow-hidden">
-        {activePeerDid ? (
+        {activeConversation?.type === "group" ? (
+          <GroupView key={activeConversation.groupId} groupId={activeConversation.groupId} />
+        ) : activePeerDid ? (
           <MessageView key={activePeerDid} peerDid={activePeerDid} />
         ) : (
           <div className="flex h-full items-center justify-center">

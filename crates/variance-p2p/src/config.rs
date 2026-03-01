@@ -30,6 +30,15 @@ pub struct Config {
     /// Storage path for local data
     #[serde(default = "default_storage_path")]
     pub storage_path: PathBuf,
+
+    /// How often to query the DHT for relay providers (seconds).
+    /// 0 disables auto-discovery. Default: 300 (5 minutes).
+    #[serde(default = "default_relay_discovery_interval_secs")]
+    pub relay_discovery_interval_secs: u64,
+}
+
+fn default_relay_discovery_interval_secs() -> u64 {
+    300
 }
 
 fn default_storage_path() -> PathBuf {
@@ -51,6 +60,7 @@ impl Default for Config {
             kad_config: KadConfig::default(),
             gossipsub_config: GossipsubConfig::default(),
             storage_path: default_storage_path(),
+            relay_discovery_interval_secs: 300,
         }
     }
 }

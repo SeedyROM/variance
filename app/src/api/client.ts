@@ -6,6 +6,7 @@ import type {
   HealthResponse,
   IdentityStatus,
   MessageResponse,
+  MlsGroupInfo,
   RegisterUsernameResponse,
   ResolvedIdentity,
   ResolvedUsername,
@@ -16,7 +17,6 @@ import type {
   TypingRequest,
   TypingUsers,
 } from "./types";
-
 
 // Module-level cache for the API base URL. Avoids re-invoking Tauri on every request.
 let _apiBase: string | null = null;
@@ -103,6 +103,41 @@ export const messagesApi = {
 
   getGroup: (groupId: string) =>
     request<GroupMessage[]>(`/messages/group/${encodeURIComponent(groupId)}`),
+};
+
+// ===== Groups =====
+
+export const groupsApi = {
+  list: () => request<MlsGroupInfo[]>("/mls/groups"),
+
+  create: (name: string) =>
+    request<{ success: boolean; group_id: string; name: string }>("/mls/groups", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+
+  getMessages: (groupId: string) =>
+    request<GroupMessage[]>(`/messages/group/${encodeURIComponent(groupId)}`),
+
+  sendMessage: (groupId: string, text: string) =>
+    request<MessageResponse>("/mls/messages/group", {
+      method: "POST",
+      body: JSON.stringify({ group_id: groupId, text }),
+    }),
+
+  invite: (groupId: string, inviteeDid: string, mlsKeyPackage: string) =>
+    request<{ success: boolean; mls_welcome: string; mls_commit: string }>(
+      `/mls/groups/${encodeURIComponent(groupId)}/invite`,
+      {
+        method: "POST",
+        body: JSON.stringify({ invitee_did: inviteeDid, mls_key_package: mlsKeyPackage }),
+      }
+    ),
+
+  leave: (groupId: string) =>
+    request<{ success: boolean }>(`/mls/groups/${encodeURIComponent(groupId)}/leave`, {
+      method: "POST",
+    }),
 };
 
 // ===== Reactions =====

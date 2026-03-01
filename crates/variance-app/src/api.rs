@@ -68,7 +68,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/signaling/ice", post(send_ice_candidate))
         .route("/signaling/control", post(send_control))
         // MLS group endpoints (RFC 9420)
-        .route("/mls/groups", post(mls_create_group))
+        .route("/mls/groups", get(mls_list_groups).post(mls_create_group))
         .route("/mls/groups/{id}/invite", post(mls_invite_to_group))
         .route("/mls/groups/{id}/leave", post(mls_leave_group))
         .route(
@@ -77,6 +77,7 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route("/mls/messages/group", post(mls_send_group_message))
         .route("/mls/welcome/accept", post(mls_accept_welcome))
+        .route("/messages/group/{id}", get(get_group_messages))
         // Receipt endpoints
         .route("/receipts/delivered", post(send_delivered_receipt))
         .route("/receipts/read", post(send_read_receipt))
@@ -1286,6 +1287,68 @@ async fn remove_reaction(
     }))
 }
 
+// ===== Group Message Handlers =====
+
+#[derive(Deserialize)]
+struct GroupMessagesParams {
+    /// Cursor: exclusive upper bound key for pagination (pass the key of the oldest message on the current page).
+    before: Option<String>,
+    /// Max messages to return. Defaults to 50.
+    limit: Option<usize>,
+}
+
+/// Response type for a single decrypted group message.
+#[derive(Debug, Serialize)]
+pub struct GroupMessageResponse {
+    pub id: String,
+    pub group_id: String,
+    pub sender_did: String,
+    pub text: String,
+    pub timestamp: i64,
+}
+
+/// Fetch group messages for `GET /messages/group/{id}`.
+///
+/// Plaintext is served from the local AES-256-GCM cache written at send/receive
+/// time. MLS forward secrecy means historical ciphertexts cannot be re-decrypted
+/// — the cache is the only source for history older than the current session.
+async fn get_group_messages(
+    State(state): State<AppState>,
+    Path(group_id): Path<String>,
+    Query(params): Query<GroupMessagesParams>,
+) -> Result<Json<Vec<GroupMessageResponse>>> {
+    let limit = params.limit.unwrap_or(50);
+    let messages = state
+        .storage
+        .fetch_group(&group_id, limit, params.before)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to fetch group messages: {}", e),
+        })?;
+
+    let mut responses = Vec::new();
+    for m in messages {
+        let text = match state
+            .mls_groups
+            .load_group_plaintext(&state.storage, &m.id)
+            .await
+        {
+            Ok(Some(content)) => content.text,
+            _ => String::new(),
+        };
+
+        responses.push(GroupMessageResponse {
+            id: m.id,
+            group_id: m.group_id,
+            sender_did: m.sender_did,
+            text,
+            timestamp: m.timestamp,
+        });
+    }
+
+    Ok(Json(responses))
+}
+
 // ===== MLS Group Handlers =====
 
 #[derive(Debug, Deserialize)]
@@ -1314,6 +1377,15 @@ pub struct MlsAcceptWelcomeRequest {
     pub mls_welcome: String,
 }
 
+/// Response type for `GET /mls/groups`.
+#[derive(Debug, Serialize)]
+pub struct MlsGroupInfo {
+    pub id: String,
+    pub name: String,
+    pub member_count: usize,
+    pub last_message_timestamp: Option<i64>,
+}
+
 /// Persist the current MLS group state to storage after a mutation.
 ///
 /// Called after every operation that changes the openmls key store (create, add, remove,
@@ -1334,6 +1406,54 @@ async fn persist_mls_state(state: &AppState) {
     }
 }
 
+/// List all MLS groups the local user is a member of.
+async fn mls_list_groups(State(state): State<AppState>) -> Result<Json<Vec<MlsGroupInfo>>> {
+    let mut infos: Vec<MlsGroupInfo> = Vec::new();
+
+    // Fetch persisted metadata for name lookups.
+    let metadata = state
+        .storage
+        .fetch_all_group_metadata()
+        .await
+        .unwrap_or_default();
+    let metadata_by_id: std::collections::HashMap<String, variance_proto::messaging_proto::Group> =
+        metadata.into_iter().map(|g| (g.id.clone(), g)).collect();
+
+    for group_id in state.mls_groups.group_ids() {
+        let member_count = state
+            .mls_groups
+            .list_members(&group_id)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        let name = metadata_by_id
+            .get(&group_id)
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| group_id.clone());
+
+        // Get the timestamp of the most recent message for this group.
+        let last_message_timestamp = state
+            .storage
+            .fetch_group(&group_id, 1, None)
+            .await
+            .ok()
+            .and_then(|msgs| msgs.into_iter().next())
+            .map(|m| m.timestamp);
+
+        infos.push(MlsGroupInfo {
+            id: group_id,
+            name,
+            member_count,
+            last_message_timestamp,
+        });
+    }
+
+    // Sort by last activity descending (groups with no messages go last).
+    infos.sort_by(|a, b| b.last_message_timestamp.cmp(&a.last_message_timestamp));
+
+    Ok(Json(infos))
+}
+
 /// Create a new MLS group. The local user is the sole initial member.
 async fn mls_create_group(
     State(state): State<AppState>,
@@ -1349,6 +1469,16 @@ async fn mls_create_group(
         })?;
 
     persist_mls_state(&state).await;
+
+    // Persist the group name so list_groups can surface it.
+    let group_meta = variance_proto::messaging_proto::Group {
+        id: group_id.clone(),
+        name: req.name.clone(),
+        ..Default::default()
+    };
+    if let Err(e) = state.storage.store_group_metadata(&group_meta).await {
+        tracing::warn!("Failed to persist group metadata: {}", e);
+    }
 
     let topic = format!("/variance/group/{}", group_id);
     if let Err(e) = state.node_handle.subscribe_to_topic(topic).await {
@@ -1570,6 +1700,16 @@ async fn mls_send_group_message(
     // Store in local DB so it appears in message history
     if let Err(e) = state.storage.store_group(&message).await {
         tracing::warn!("Failed to store MLS group message locally: {}", e);
+    }
+
+    // Cache the plaintext (at-rest encrypted) so history fetches can read it.
+    // MLS forward secrecy means the ciphertext cannot be re-decrypted later.
+    if let Err(e) = state
+        .mls_groups
+        .persist_group_plaintext(&state.storage, &message_id, &content)
+        .await
+    {
+        tracing::warn!("Failed to cache group message plaintext: {}", e);
     }
 
     // Persist MLS state — encrypt_message advances the ratchet.

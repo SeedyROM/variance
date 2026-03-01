@@ -74,6 +74,10 @@ pub struct Node {
     known_peers: HashMap<PeerId, Vec<Multiaddr>>,
     /// Peer IDs of configured relay nodes, used to trigger circuit listen after connection.
     relay_peer_ids: HashSet<PeerId>,
+    /// In-flight DHT get_providers query for relay discovery (at most one at a time).
+    pending_relay_query: Option<kad::QueryId>,
+    /// How often to re-query the DHT for relay providers (seconds, 0 = disabled).
+    relay_discovery_interval_secs: u64,
 }
 
 impl Node {
@@ -223,6 +227,8 @@ impl Node {
             .filter_map(|r| r.peer_id.parse().ok())
             .collect();
 
+        let relay_discovery_interval_secs = config.relay_discovery_interval_secs;
+
         let node = Node {
             swarm,
             peer_id,
@@ -241,6 +247,8 @@ impl Node {
             rate_limiter: PeerRateLimiter::new(),
             known_peers: HashMap::new(),
             relay_peer_ids,
+            pending_relay_query: None,
+            relay_discovery_interval_secs,
         };
 
         let handle = NodeHandle::new(command_tx);
@@ -321,10 +329,23 @@ impl Node {
     }
 
     pub async fn run(&mut self, mut shutdown: sync::mpsc::Receiver<()>) -> Result<()> {
-        // Delay the first tick so initial mDNS connections have time to establish.
+        // Delay first ticks so initial connections have time to establish.
         let start = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut reconnect_interval = tokio::time::interval_at(start, Duration::from_secs(30));
         reconnect_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        // Relay discovery: first tick at 30s, then every relay_discovery_interval_secs.
+        // Disabled when interval is 0.
+        let relay_interval_secs = self.relay_discovery_interval_secs;
+        let relay_interval = if relay_interval_secs > 0 {
+            let period = Duration::from_secs(relay_interval_secs);
+            let mut iv = tokio::time::interval_at(start, period);
+            iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            Some(iv)
+        } else {
+            None
+        };
+        tokio::pin!(relay_interval);
 
         loop {
             select! {
@@ -337,6 +358,14 @@ impl Node {
                 _ = reconnect_interval.tick() => {
                     self.reconnect_known_peers();
                 }
+                _ = async {
+                    match relay_interval.as_mut().as_pin_mut() {
+                        Some(mut iv) => iv.tick().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    self.trigger_relay_discovery();
+                }
                 _ = shutdown.recv() => {
                     info!("Shutdown signal received");
                     break;
@@ -345,6 +374,19 @@ impl Node {
         }
 
         Ok(())
+    }
+
+    /// Issue a DHT `get_providers` for the relay provider key.
+    /// Skipped if a query is already in flight.
+    fn trigger_relay_discovery(&mut self) {
+        if self.pending_relay_query.is_some() {
+            debug!("Relay discovery already in progress, skipping");
+            return;
+        }
+        let key = kad::RecordKey::new(&crate::protocols::RELAY_PROVIDER_KEY);
+        info!("Querying DHT for relay providers");
+        let query_id = self.swarm.behaviour_mut().kad.get_providers(key);
+        self.pending_relay_query = Some(query_id);
     }
 
     /// Periodically re-dial known peers that are not currently connected.

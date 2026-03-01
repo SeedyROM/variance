@@ -314,10 +314,10 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         }
     }
 
-    // Spawn a background task to periodically clean up expired offline messages.
-    // Without this they accumulate in sled indefinitely (30-day TTL is not self-enforcing).
+    // Spawn a background task to periodically clean up expired/old messages.
     let cleanup_storage = app_state.storage.clone();
     let cleanup_identity_cache = app_state.identity_cache.clone();
+    let group_max_age = Duration::from_secs(config.storage.group_message_max_age_days * 86400);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(3600));
         interval.tick().await; // skip the immediate first tick
@@ -332,6 +332,18 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!("Offline message cleanup failed: {}", e),
+            }
+
+            // Evict old group messages beyond the configured max age
+            match cleanup_storage
+                .cleanup_old_group_messages(group_max_age)
+                .await
+            {
+                Ok(n) if n > 0 => {
+                    tracing::info!("Cleaned up {} old group messages", n)
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("Group message cleanup failed: {}", e),
             }
 
             // Evict expired identity cache entries (L1 + L2 + L3)

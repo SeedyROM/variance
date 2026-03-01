@@ -1,0 +1,42 @@
+import { useState } from "react";
+import { Users, Settings } from "lucide-react";
+import { ManageGroupPanel } from "./ManageGroupPanel";
+import type { MlsGroupInfo } from "../../api/types";
+
+interface GroupHeaderProps {
+  group: MlsGroupInfo;
+  onLeave: () => void;
+}
+
+export function GroupHeader({ group, onLeave }: GroupHeaderProps) {
+  const [showManage, setShowManage] = useState(false);
+
+  return (
+    <>
+      <div className="flex items-center gap-3 border-b border-surface-200 px-4 py-3 dark:border-surface-800">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-200 dark:bg-surface-700 text-surface-600 dark:text-surface-300">
+          <Users className="h-4 w-4" />
+        </div>
+        <div className="cursor-default min-w-0 flex-1">
+          <p className="text-sm font-semibold text-surface-900 dark:text-surface-50 truncate">
+            {group.name}
+          </p>
+          <p className="text-xs text-surface-500">
+            {group.member_count} member{group.member_count !== 1 ? "s" : ""}
+          </p>
+        </div>
+        <button
+          onClick={() => setShowManage(true)}
+          className="rounded-lg p-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 text-surface-500"
+          title="Manage group"
+        >
+          <Settings className="h-4 w-4" />
+        </button>
+      </div>
+
+      {showManage && (
+        <ManageGroupPanel group={group} onClose={() => setShowManage(false)} onLeave={onLeave} />
+      )}
+    </>
+  );
+}

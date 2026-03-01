@@ -156,6 +156,7 @@ pub async fn start_node(state: State<'_, NodeState>, identity_path: String) -> R
         identity_path: base_dir.join("identity.json"),
         identity_cache_dir: base_dir.join("identity_cache"),
         message_db_path: base_dir.join("messages.db"),
+        group_message_max_age_days: config.storage.group_message_max_age_days,
         base_dir,
     };
 

@@ -23,16 +23,25 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
 
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
 use dashmap::DashMap;
 use ed25519_dalek::SigningKey;
+use hkdf::Hkdf;
 use openmls::messages::group_info::GroupInfo;
 use openmls::prelude::tls_codec::{Deserialize, Serialize};
 use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
+use prost::Message as ProstMessage;
+use rand::RngCore;
 use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
+use sha2::Sha256;
 
 use crate::error::{Error, Result};
+use crate::storage::LocalMessageStorage;
 
 /// The ciphersuite used for all Variance MLS groups.
 ///
@@ -66,6 +75,13 @@ pub struct MlsGroupHandler {
     /// `RwLock` is used because `MlsGroup` mutating methods take `&mut self`
     /// (e.g. `create_message`, `process_message`, `add_members`).
     groups: DashMap<String, Arc<RwLock<MlsGroup>>>,
+
+    /// AES-256-GCM key for at-rest encryption of decrypted group message plaintext.
+    ///
+    /// Derived from the Ed25519 signing key via HKDF-SHA256 with a label distinct
+    /// from the DM storage key so the two keys never alias. This ensures a stolen
+    /// sled database is unreadable without the identity file.
+    storage_key: [u8; 32],
 }
 
 /// The output of an `add_member` operation.
@@ -132,12 +148,21 @@ impl MlsGroupHandler {
             signature_key: signature_keypair.to_public_vec().into(),
         };
 
+        // Derive AES-256-GCM key for at-rest plaintext encryption.
+        // Label is distinct from the DM key ("variance-plaintext-storage-v1")
+        // so the two keys never alias even with the same signing key.
+        let hk = Hkdf::<Sha256>::new(None, signing_key.as_bytes());
+        let mut storage_key = [0u8; 32];
+        hk.expand(b"variance-group-plaintext-v1", &mut storage_key)
+            .expect("HKDF expand with 32-byte output always succeeds");
+
         Ok(Self {
             local_did,
             provider,
             signature_keypair,
             credential_with_key,
             groups: DashMap::new(),
+            storage_key,
         })
     }
 
@@ -527,6 +552,77 @@ impl MlsGroupHandler {
         &self.local_did
     }
 
+    /// Encrypt and persist the plaintext of a group message for later retrieval.
+    ///
+    /// Uses the same at-rest encryption pattern as `DirectMessageHandler::persist_plaintext`:
+    /// `random 12-byte nonce || AES-256-GCM ciphertext`. The storage key is derived from
+    /// the identity signing key via HKDF so the DB is unreadable without the identity file.
+    ///
+    /// Call this immediately after encrypting a sent message and after decrypting a
+    /// received one. Because MLS provides forward secrecy at the wire level, we
+    /// cannot re-decrypt historical messages — this cache is the only source for history.
+    pub async fn persist_group_plaintext(
+        &self,
+        storage: &LocalMessageStorage,
+        message_id: &str,
+        content: &variance_proto::messaging_proto::MessageContent,
+    ) -> Result<()> {
+        let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&self.storage_key);
+        let cipher = Aes256Gcm::new(key);
+
+        let mut nonce_bytes = [0u8; 12];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        let plaintext = content.encode_to_vec();
+        let ciphertext =
+            cipher
+                .encrypt(nonce, plaintext.as_slice())
+                .map_err(|_| Error::Encryption {
+                    message: "At-rest encryption of group plaintext failed".to_string(),
+                })?;
+
+        let mut blob = nonce_bytes.to_vec();
+        blob.extend_from_slice(&ciphertext);
+
+        storage.store_group_plaintext(message_id, &blob).await
+    }
+
+    /// Decrypt and return the cached plaintext for a group message.
+    ///
+    /// Returns `None` if no plaintext was persisted (e.g. message predates this feature).
+    pub async fn load_group_plaintext(
+        &self,
+        storage: &LocalMessageStorage,
+        message_id: &str,
+    ) -> Result<Option<variance_proto::messaging_proto::MessageContent>> {
+        let Some(blob) = storage.fetch_group_plaintext(message_id).await? else {
+            return Ok(None);
+        };
+
+        if blob.len() < 12 {
+            return Err(Error::Decryption {
+                message: "Stored group plaintext blob is too short".to_string(),
+            });
+        }
+
+        let (nonce_bytes, ciphertext) = blob.split_at(12);
+        let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&self.storage_key);
+        let cipher = Aes256Gcm::new(key);
+        let nonce = Nonce::from_slice(nonce_bytes);
+
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|_| Error::Decryption {
+                message: "At-rest decryption of group plaintext failed".to_string(),
+            })?;
+
+        let content = variance_proto::messaging_proto::MessageContent::decode(plaintext.as_slice())
+            .map_err(|e| Error::Protocol { source: e })?;
+
+        Ok(Some(content))
+    }
+
     /// Serialize the full MLS provider state to bytes for persistent storage.
     ///
     /// The snapshot contains the complete openmls `MemoryStorage` key-value map —
@@ -840,6 +936,182 @@ mod tests {
         let n = handler2.restore_in_place(&snapshot).unwrap();
         assert_eq!(n, 0);
         assert!(handler2.group_ids().is_empty());
+    }
+
+    #[test]
+    fn test_mls_group_survives_restart() {
+        // Set up Alice and Bob in a group.
+        let alice_sk = test_signing_key();
+        let alice = MlsGroupHandler::new("did:key:alice".to_string(), &alice_sk).unwrap();
+        alice.create_group("restart-both").unwrap();
+
+        let bob_sk = test_signing_key();
+        let bob = MlsGroupHandler::new("did:key:bob".to_string(), &bob_sk).unwrap();
+        let bob_kp = bob.generate_key_package().unwrap();
+
+        let add = alice.add_member("restart-both", bob_kp).unwrap();
+        bob.join_group_from_welcome(
+            MlsGroupHandler::deserialize_message(
+                &MlsGroupHandler::serialize_message(&add.welcome).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        // Verify pre-restart messaging.
+        let pre_enc = alice
+            .encrypt_message("restart-both", b"pre-restart")
+            .unwrap();
+        let pre_dec = bob
+            .process_message(
+                "restart-both",
+                MlsGroupHandler::deserialize_message(
+                    &MlsGroupHandler::serialize_message(&pre_enc).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .expect("application message");
+        assert_eq!(pre_dec.plaintext, b"pre-restart");
+
+        // Simulate restart: export both states, build fresh handlers, restore.
+        let alice_snapshot = alice.export_state().unwrap();
+        let bob_snapshot = bob.export_state().unwrap();
+
+        let alice_r = MlsGroupHandler::new("did:key:alice".to_string(), &alice_sk).unwrap();
+        assert_eq!(alice_r.restore_in_place(&alice_snapshot).unwrap(), 1);
+
+        let bob_r = MlsGroupHandler::new("did:key:bob".to_string(), &bob_sk).unwrap();
+        assert_eq!(bob_r.restore_in_place(&bob_snapshot).unwrap(), 1);
+
+        // Alice (restored) → Bob (restored)
+        let enc1 = alice_r
+            .encrypt_message("restart-both", b"alice-post-restart")
+            .unwrap();
+        let dec1 = bob_r
+            .process_message(
+                "restart-both",
+                MlsGroupHandler::deserialize_message(
+                    &MlsGroupHandler::serialize_message(&enc1).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .expect("application message");
+        assert_eq!(dec1.plaintext, b"alice-post-restart");
+
+        // Bob (restored) → Alice (restored)
+        let enc2 = bob_r
+            .encrypt_message("restart-both", b"bob-post-restart")
+            .unwrap();
+        let dec2 = alice_r
+            .process_message(
+                "restart-both",
+                MlsGroupHandler::deserialize_message(
+                    &MlsGroupHandler::serialize_message(&enc2).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .expect("application message");
+        assert_eq!(dec2.plaintext, b"bob-post-restart");
+    }
+
+    #[test]
+    fn test_mls_group_survives_multiple_messages_then_restart() {
+        // Set up Alice and Bob in a group.
+        let alice_sk = test_signing_key();
+        let alice = MlsGroupHandler::new("did:key:alice".to_string(), &alice_sk).unwrap();
+        alice.create_group("ratchet-restart").unwrap();
+
+        let bob_sk = test_signing_key();
+        let bob = MlsGroupHandler::new("did:key:bob".to_string(), &bob_sk).unwrap();
+        let bob_kp = bob.generate_key_package().unwrap();
+
+        let add = alice.add_member("ratchet-restart", bob_kp).unwrap();
+        bob.join_group_from_welcome(
+            MlsGroupHandler::deserialize_message(
+                &MlsGroupHandler::serialize_message(&add.welcome).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        // Advance the ratchet with 5 messages in each direction before restart.
+        for i in 0u8..5 {
+            let msg = format!("alice-msg-{i}");
+            let enc = alice
+                .encrypt_message("ratchet-restart", msg.as_bytes())
+                .unwrap();
+            let dec = bob
+                .process_message(
+                    "ratchet-restart",
+                    MlsGroupHandler::deserialize_message(
+                        &MlsGroupHandler::serialize_message(&enc).unwrap(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+                .expect("application message");
+            assert_eq!(dec.plaintext, msg.as_bytes());
+
+            let reply = format!("bob-msg-{i}");
+            let enc_r = bob
+                .encrypt_message("ratchet-restart", reply.as_bytes())
+                .unwrap();
+            let dec_r = alice
+                .process_message(
+                    "ratchet-restart",
+                    MlsGroupHandler::deserialize_message(
+                        &MlsGroupHandler::serialize_message(&enc_r).unwrap(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+                .expect("application message");
+            assert_eq!(dec_r.plaintext, reply.as_bytes());
+        }
+
+        // Simulate restart.
+        let alice_snapshot = alice.export_state().unwrap();
+        let bob_snapshot = bob.export_state().unwrap();
+
+        let alice_r = MlsGroupHandler::new("did:key:alice".to_string(), &alice_sk).unwrap();
+        assert_eq!(alice_r.restore_in_place(&alice_snapshot).unwrap(), 1);
+
+        let bob_r = MlsGroupHandler::new("did:key:bob".to_string(), &bob_sk).unwrap();
+        assert_eq!(bob_r.restore_in_place(&bob_snapshot).unwrap(), 1);
+
+        // Post-restart messages still decrypt correctly.
+        let enc = alice_r
+            .encrypt_message("ratchet-restart", b"after-5-rounds")
+            .unwrap();
+        let dec = bob_r
+            .process_message(
+                "ratchet-restart",
+                MlsGroupHandler::deserialize_message(
+                    &MlsGroupHandler::serialize_message(&enc).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .expect("application message");
+        assert_eq!(dec.plaintext, b"after-5-rounds");
+
+        let enc_b = bob_r
+            .encrypt_message("ratchet-restart", b"bob-after-5-rounds")
+            .unwrap();
+        let dec_b = alice_r
+            .process_message(
+                "ratchet-restart",
+                MlsGroupHandler::deserialize_message(
+                    &MlsGroupHandler::serialize_message(&enc_b).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .expect("application message");
+        assert_eq!(dec_b.plaintext, b"bob-after-5-rounds");
     }
 
     #[test]

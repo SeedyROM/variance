@@ -92,6 +92,10 @@ pub struct StorageConfig {
 
     /// Message database path
     pub message_db_path: PathBuf,
+
+    /// Maximum age in days for group messages before they are purged.
+    /// Cleanup runs hourly alongside expired offline message cleanup.
+    pub group_message_max_age_days: u64,
 }
 
 impl Default for AppConfig {
@@ -122,6 +126,7 @@ impl Default for AppConfig {
                 identity_path: variance_data_dir().join("identity.json"),
                 identity_cache_dir: variance_data_dir().join("identity_cache"),
                 message_db_path: variance_data_dir().join("messages.db"),
+                group_message_max_age_days: 90,
             },
         }
     }

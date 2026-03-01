@@ -4,18 +4,22 @@ use futures::StreamExt;
 use libp2p::{
     identify,
     identity::Keypair,
-    noise, ping, relay,
+    kad, noise, ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, SwarmBuilder,
 };
 use std::{
     collections::HashMap,
     fs::{self, read_to_string},
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroUsize},
     path::{Path, PathBuf},
     time::Duration,
 };
 use tracing::{debug, info, warn};
+
+/// DHT provider key advertised by relay nodes.
+/// MUST match `crates/variance-p2p/src/protocols.rs` constant.
+const RELAY_PROVIDER_KEY: &[u8] = b"/variance/relay/v1";
 
 #[derive(Parser)]
 #[command(
@@ -50,6 +54,12 @@ struct Args {
     /// How often to log relay stats (seconds, 0 = disabled)
     #[arg(long, default_value = "60")]
     stats_interval_secs: u64,
+
+    /// Bootstrap peers for DHT-based relay auto-discovery.
+    /// Format: PEER_ID@MULTIADDR (repeat for multiple peers).
+    /// Example: --bootstrap-peers 12D3...@/ip4/1.2.3.4/tcp/4001
+    #[arg(long, value_name = "PEERID@MULTIADDR")]
+    bootstrap_peers: Vec<String>,
 }
 
 /// Tracks relay activity for operational monitoring.
@@ -139,6 +149,7 @@ struct RelayBehaviour {
     relay: relay::Behaviour,
     identify: identify::Behaviour,
     ping: ping::Behaviour,
+    kad: kad::Behaviour<kad::store::MemoryStore>,
 }
 
 #[tokio::main]
@@ -201,6 +212,16 @@ async fn main() -> Result<()> {
 
             info!(?relay_config, "Relay behaviour configuration");
 
+            // Kademlia for relay auto-discovery: operate in server mode so peers
+            // can store and retrieve provider records through this node.
+            let store = kad::store::MemoryStore::new(keypair.public().to_peer_id());
+            let mut kad_config = kad::Config::default();
+            kad_config.set_replication_factor(NonZeroUsize::new(20).expect("20 > 0"));
+            kad_config.set_provider_record_ttl(Some(Duration::from_secs(24 * 60 * 60)));
+            let mut kad =
+                kad::Behaviour::with_config(keypair.public().to_peer_id(), store, kad_config);
+            kad.set_mode(Some(kad::Mode::Server));
+
             Ok(RelayBehaviour {
                 relay: relay::Behaviour::new(keypair.public().to_peer_id(), relay_config),
                 identify: identify::Behaviour::new(identify::Config::new(
@@ -208,6 +229,7 @@ async fn main() -> Result<()> {
                     keypair.public(),
                 )),
                 ping: ping::Behaviour::new(ping::Config::new()),
+                kad,
             })
         })
         .context("Failed to build relay behaviour")?
@@ -230,6 +252,39 @@ async fn main() -> Result<()> {
         "  relay_peers = [{{ peer_id = \"{}\", multiaddr = \"/ip4/<YOUR_IP>/tcp/{}\" }}]",
         peer_id, args.port
     );
+
+    // Add bootstrap peers and start DHT bootstrap for relay auto-discovery.
+    let mut has_bootstrap = false;
+    for spec in &args.bootstrap_peers {
+        match parse_bootstrap_peer(spec) {
+            Ok((bp_peer_id, bp_addr)) => {
+                swarm
+                    .behaviour_mut()
+                    .kad
+                    .add_address(&bp_peer_id, bp_addr.clone());
+                if let Err(e) = swarm.dial(bp_addr.clone()) {
+                    warn!("Failed to dial bootstrap peer {}: {}", bp_peer_id, e);
+                } else {
+                    info!("Dialing bootstrap peer {} at {}", bp_peer_id, bp_addr);
+                    has_bootstrap = true;
+                }
+            }
+            Err(e) => warn!("Invalid bootstrap peer '{}': {}", spec, e),
+        }
+    }
+    if has_bootstrap {
+        if let Err(e) = swarm.behaviour_mut().kad.bootstrap() {
+            warn!("DHT bootstrap failed: {:?}", e);
+        }
+    }
+
+    // Register as a relay provider in the DHT so clients can discover us.
+    // Kademlia will propagate this record to the network once bootstrapped.
+    let relay_key = kad::RecordKey::new(&RELAY_PROVIDER_KEY);
+    match swarm.behaviour_mut().kad.start_providing(relay_key) {
+        Ok(_) => info!("Registered as relay provider in DHT"),
+        Err(e) => warn!("Failed to register relay provider: {:?}", e),
+    }
 
     let mut stats = RelayStats::new();
 
@@ -273,8 +328,34 @@ async fn main() -> Result<()> {
                         );
                         // Add observed addresses from peers so the relay knows
                         // its own public address(es) for advertisement.
+                        for addr in &info.listen_addrs {
+                            swarm
+                                .behaviour_mut()
+                                .kad
+                                .add_address(&remote, addr.clone());
+                        }
                         for addr in info.listen_addrs {
                             swarm.add_external_address(addr);
+                        }
+                    }
+                    Some(SwarmEvent::Behaviour(RelayBehaviourEvent::Kad(event))) => {
+                        match event {
+                            kad::Event::OutboundQueryProgressed { result, .. } => match result {
+                                kad::QueryResult::StartProviding(Ok(ok)) => {
+                                    info!(
+                                        "DHT provider record published for key {:?}",
+                                        ok.key
+                                    );
+                                }
+                                kad::QueryResult::StartProviding(Err(e)) => {
+                                    warn!("Failed to publish DHT provider record: {:?}", e);
+                                }
+                                _ => {}
+                            },
+                            kad::Event::RoutingUpdated { peer, .. } => {
+                                debug!("DHT routing updated: {}", peer);
+                            }
+                            _ => {}
                         }
                     }
                     Some(SwarmEvent::OutgoingConnectionError { peer_id, error, .. }) => {
@@ -352,6 +433,20 @@ fn handle_relay_event(event: relay::Event, stats: &mut RelayStats) {
         }
         _ => {}
     }
+}
+
+/// Parse a bootstrap peer spec in `PEERID@MULTIADDR` format.
+fn parse_bootstrap_peer(spec: &str) -> Result<(PeerId, Multiaddr)> {
+    let (peer_id_str, addr_str) = spec
+        .split_once('@')
+        .with_context(|| format!("expected PEERID@MULTIADDR, got '{}'", spec))?;
+    let peer_id: PeerId = peer_id_str
+        .parse()
+        .with_context(|| format!("invalid PeerId: '{}'", peer_id_str))?;
+    let addr: Multiaddr = addr_str
+        .parse()
+        .with_context(|| format!("invalid multiaddr: '{}'", addr_str))?;
+    Ok((peer_id, addr))
 }
 
 /// Load keypair from `<data_dir>/keypair.json`, or generate and persist a new one.

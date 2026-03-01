@@ -70,6 +70,13 @@ export interface GroupMessage {
   sender_username?: string;
 }
 
+export interface MlsGroupInfo {
+  id: string;
+  name: string;
+  member_count: number;
+  last_message_timestamp: number | null;
+}
+
 export interface SendDirectMessageRequest {
   recipient_did: string;
   text: string;

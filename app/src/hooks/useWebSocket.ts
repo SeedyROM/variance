@@ -19,10 +19,11 @@ export function useWebSocket() {
   const localDid = useIdentityStore((s) => s.did);
   const queryClient = useQueryClient();
   const tickInboundMessage = useMessagingStore((s) => s.tickInboundMessage);
+  const tickGroupMessage = useMessagingStore((s) => s.tickGroupMessage);
   const setPresence = useMessagingStore((s) => s.setPresence);
   const setPeerName = useMessagingStore((s) => s.setPeerName);
   const markUnread = useMessagingStore((s) => s.markUnread);
-  const activeConversationId = useMessagingStore((s) => s.activeConversationId);
+  const activeConversation = useMessagingStore((s) => s.activeConversation);
   const setTyping = useMessagingStore((s) => s.setTyping);
 
   useEffect(() => {
@@ -48,7 +49,9 @@ export function useWebSocket() {
           if (localDid) {
             const dids = [localDid, event.from].sort();
             const conversationId = `${dids[0]}:${dids[1]}`;
-            if (conversationId !== activeConversationId) {
+            const isActive =
+              activeConversation?.type === "dm" && activeConversation.peerId === event.from;
+            if (!isActive) {
               markUnread(conversationId);
             }
           }
@@ -63,11 +66,16 @@ export function useWebSocket() {
           break;
         }
 
-        case "GroupMessageReceived":
-          void queryClient.invalidateQueries({
-            queryKey: ["messages", "group", event.group_id],
-          });
+        case "GroupMessageReceived": {
+          tickGroupMessage();
+          void queryClient.invalidateQueries({ queryKey: ["groups"] });
+          const isActiveGroup =
+            activeConversation?.type === "group" && activeConversation.groupId === event.group_id;
+          if (!isActiveGroup) {
+            markUnread(event.group_id);
+          }
           break;
+        }
 
         case "ReceiptDelivered":
         case "ReceiptRead":
@@ -124,10 +132,11 @@ export function useWebSocket() {
     nodeStatus,
     queryClient,
     tickInboundMessage,
+    tickGroupMessage,
     setPresence,
     setPeerName,
     markUnread,
-    activeConversationId,
+    activeConversation,
     localDid,
     setTyping,
   ]);
