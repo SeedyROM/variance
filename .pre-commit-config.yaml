@@ -50,9 +50,25 @@ repos:
         additional_dependencies:
           - prettier@3.4.2
 
-  # Local hooks for testing
+  # Local hooks
   - repo: local
     hooks:
+      - id: write-lint-stamp
+        name: record lint checks passed
+        entry: bash -c 'git write-tree > .git/.lint-stamp'
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+        always_run: true
+
+      - id: cargo-lint-push
+        name: cargo fmt + clippy + check (cached)
+        entry: scripts/pre-push-lint.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-push]
+        files: \.(rs|toml)$
+
       - id: cargo-test
         name: cargo test
         entry: cargo test
