@@ -1,8 +1,8 @@
 use crate::behaviour::VarianceBehaviourEvent;
 use crate::error::*;
 use crate::events::{
-    DirectMessageEvent, GroupMessageEvent, IdentityEvent, OfflineMessageEvent, SignalingEvent,
-    TypingEvent,
+    DirectMessageEvent, GroupMessageEvent, IdentityEvent, OfflineMessageEvent, RenameEvent,
+    SignalingEvent, TypingEvent,
 };
 use crate::rate_limiter::protocol as rl;
 
@@ -13,7 +13,7 @@ use libp2p::swarm::SwarmEvent;
 use libp2p::{gossipsub, identify, kad, mdns, ping, relay, request_response, PeerId};
 use prost::Message;
 use tracing::{debug, info, warn};
-use variance_proto::identity_proto::{IdentityRequest, IdentityResponse};
+use variance_proto::identity_proto::{IdentityRequest, IdentityResponse, UsernameChanged};
 use variance_proto::media_proto::SignalingMessage;
 use variance_proto::messaging_proto::{
     DirectMessage, DirectMessageAck, GroupMessage, OfflineMessageRequest, OfflineMessageResponse,
@@ -79,6 +79,9 @@ impl Node {
             }
             VarianceBehaviourEvent::TypingIndicators(e) => {
                 self.handle_typing_indicator_event(e).await;
+            }
+            VarianceBehaviourEvent::Rename(e) => {
+                self.handle_rename_event(e).await;
             }
         }
     }
@@ -921,6 +924,71 @@ impl Node {
             } => {
                 debug!(
                     "Typing indicator {:?} to {} failed (best-effort): {}",
+                    request_id, peer, error
+                );
+            }
+            _ => {}
+        }
+    }
+
+    // ── Rename Notifications ──────────────────────────────────────────
+
+    async fn handle_rename_event(
+        &mut self,
+        event: request_response::Event<UsernameChanged, UsernameChanged>,
+    ) {
+        use request_response::{Event, Message};
+
+        match event {
+            Event::Message {
+                peer,
+                message:
+                    Message::Request {
+                        request, channel, ..
+                    },
+                ..
+            } => {
+                if !self.rate_limiter.check(&peer, rl::RENAME).is_allowed() {
+                    debug!("Rate-limited rename notification from {}", peer);
+                    return;
+                }
+
+                debug!(
+                    "Received username rename from {}: {}#{:04}",
+                    peer, request.username, request.discriminator
+                );
+
+                self.events.send_rename(RenameEvent::PeerRenamed {
+                    did: request.did,
+                    username: request.username,
+                    discriminator: request.discriminator,
+                });
+
+                let _ = self
+                    .swarm
+                    .behaviour_mut()
+                    .rename
+                    .send_response(channel, UsernameChanged::default());
+            }
+            Event::OutboundFailure {
+                peer,
+                request_id,
+                error,
+                ..
+            } => {
+                debug!(
+                    "Rename notification {:?} to {} failed (best-effort): {}",
+                    request_id, peer, error
+                );
+            }
+            Event::InboundFailure {
+                peer,
+                request_id,
+                error,
+                ..
+            } => {
+                debug!(
+                    "Rename notification {:?} from {} failed (best-effort): {}",
                     request_id, peer, error
                 );
             }

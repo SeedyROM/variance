@@ -127,7 +127,8 @@ export type WsEvent =
   | { type: "CallIncoming"; call_id: string; from: string; call_type: string }
   | { type: "CallEnded"; call_id: string }
   | { type: "PresenceUpdated"; did: string; online: boolean; display_name?: string }
-  | { type: "OfflineMessagesReceived"; count: number };
+  | { type: "OfflineMessagesReceived"; count: number }
+  | { type: "PeerRenamed"; did: string; display_name: string };
 
 // ===== Tauri Commands =====
 

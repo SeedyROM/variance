@@ -129,6 +129,11 @@ pub enum WsMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         display_name: Option<String>,
     },
+    PeerRenamed {
+        did: String,
+        /// Formatted as "name#0042"
+        display_name: String,
+    },
 
     // Connection management
     Connected {

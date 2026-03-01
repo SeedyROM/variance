@@ -340,12 +340,6 @@ async fn register_username(
     )?;
 
     // Register locally with auto-assigned discriminator
-    // TODO: When changing an existing username, broadcast a rename notification to
-    // connected peers so they can update their cached display names. Without this,
-    // peers who already resolved the old name won't see the change until they
-    // re-resolve via DHT. Needs a custom libp2p protocol message (e.g.
-    // `/variance/identity/rename/1.0.0`) that pushes the new name+discriminator
-    // to all peers we have active sessions with.
     let (display_name, discriminator) = state
         .username_registry
         .register_local(req.username.clone(), state.local_did.clone())
@@ -375,6 +369,15 @@ async fn register_username(
         .await
     {
         tracing::warn!("Failed to update P2P handler with new username: {}", e);
+    }
+
+    // Notify connected peers of the rename so they update their cached display names
+    if let Err(e) = state
+        .node_handle
+        .broadcast_username_change(state.local_did.clone(), req.username.clone(), discriminator)
+        .await
+    {
+        tracing::warn!("Failed to broadcast username change: {}", e);
     }
 
     Ok(Json(serde_json::json!({

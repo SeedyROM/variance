@@ -122,6 +122,14 @@ message UsernameRegistration {
   bytes signature = 6;
 }
 
+// Username rename notification — broadcast to all connected peers when a user
+// changes their username. Used as both request and response (empty ACK).
+message UsernameChanged {
+  string did         = 1;
+  string username    = 2;
+  uint32 discriminator = 3;
+}
+
 // Provider record for "who has this identity?"
 message IdentityProvider {
   string username = 1;

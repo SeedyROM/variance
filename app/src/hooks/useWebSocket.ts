@@ -104,6 +104,13 @@ export function useWebSocket() {
           void queryClient.invalidateQueries({ queryKey: ["conversations"] });
           break;
 
+        case "PeerRenamed":
+          // A connected peer changed their username — update display name and
+          // refresh conversations so the new name appears immediately.
+          setPeerName(event.did, event.display_name);
+          void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+          break;
+
         default:
           break;
       }

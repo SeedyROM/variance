@@ -294,6 +294,9 @@ impl AppState {
                     variance_p2p::NodeCommand::SendTypingIndicator { .. } => {
                         // Fire-and-forget, no response channel
                     }
+                    variance_p2p::NodeCommand::BroadcastUsernameChange { .. } => {
+                        // Fire-and-forget, no response channel
+                    }
                 }
             }
         });

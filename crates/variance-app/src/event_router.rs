@@ -15,7 +15,8 @@ use variance_messaging::{
     typing::TypingHandler,
 };
 use variance_p2p::{
-    EventChannels, IdentityEvent, NodeHandle, OfflineMessageEvent, SignalingEvent, TypingEvent,
+    EventChannels, IdentityEvent, NodeHandle, OfflineMessageEvent, RenameEvent, SignalingEvent,
+    TypingEvent,
 };
 
 /// All dependencies needed by the EventRouter, grouped to avoid too-many-arguments.
@@ -436,6 +437,34 @@ impl EventRouter {
             }
 
             warn!("EventRouter: Typing event listener ended");
+        });
+
+        // Spawn task for rename events
+        let ws_manager_rename = self.ws_manager.clone();
+        let username_registry_rename = self.username_registry.clone();
+        let events_clone = events.clone();
+        tokio::spawn(async move {
+            let mut rx = events_clone.subscribe_rename();
+            debug!("EventRouter: Started rename event listener");
+
+            while let Ok(RenameEvent::PeerRenamed {
+                did,
+                username,
+                discriminator,
+            }) = rx.recv().await
+            {
+                username_registry_rename.cache_mapping(
+                    username.clone(),
+                    discriminator,
+                    did.clone(),
+                );
+                let display_name =
+                    UsernameRegistry::format_username(&username.to_lowercase(), discriminator);
+                debug!("EventRouter: Peer {} renamed to {}", did, display_name);
+                ws_manager_rename.broadcast(WsMessage::PeerRenamed { did, display_name });
+            }
+
+            warn!("EventRouter: Rename event listener ended");
         });
 
         // Spawn task for identity events (presence tracking + pending message flush)

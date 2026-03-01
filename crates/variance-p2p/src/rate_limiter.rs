@@ -75,6 +75,8 @@ pub mod protocol {
     pub const OFFLINE_MESSAGES: &str = "offline_messages";
     pub const TYPING_INDICATORS: &str = "typing_indicators";
     pub const SIGNALING: &str = "signaling";
+    /// Username rename notifications — tight limit since renames are rare.
+    pub const RENAME: &str = "rename";
     pub const GLOBAL: &str = "__global__";
 }
 
@@ -160,6 +162,10 @@ impl PeerRateLimiter {
         limiter
             .configs
             .insert(protocol::OFFLINE_MESSAGES, BucketConfig::from_window(3, 60));
+        // Rename notifications are extremely rare — 2 per minute is generous
+        limiter
+            .configs
+            .insert(protocol::RENAME, BucketConfig::from_window(2, 60));
 
         limiter
     }

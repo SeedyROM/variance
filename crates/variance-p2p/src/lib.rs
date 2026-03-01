@@ -17,6 +17,7 @@ pub use commands::{NodeCommand, NodeHandle};
 pub use config::{BootstrapPeer, Config};
 pub use error::{Error, Result};
 pub use events::{
-    EventChannels, IdentityEvent, OfflineMessageEvent, P2pEvent, SignalingEvent, TypingEvent,
+    EventChannels, IdentityEvent, OfflineMessageEvent, P2pEvent, RenameEvent, SignalingEvent,
+    TypingEvent,
 };
 pub use node::Node;

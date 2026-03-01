@@ -139,6 +139,17 @@ pub enum TypingEvent {
     },
 }
 
+/// Events from username rename notifications
+#[derive(Debug, Clone)]
+pub enum RenameEvent {
+    /// A connected peer changed their username.
+    PeerRenamed {
+        did: String,
+        username: String,
+        discriminator: u32,
+    },
+}
+
 /// Combined event type for all protocols
 #[derive(Debug, Clone)]
 pub enum P2pEvent {
@@ -148,6 +159,7 @@ pub enum P2pEvent {
     DirectMessage(DirectMessageEvent),
     GroupMessage(GroupMessageEvent),
     Typing(TypingEvent),
+    Rename(RenameEvent),
 }
 
 /// Event channels for protocol events
@@ -159,6 +171,7 @@ pub struct EventChannels {
     pub direct_messages: broadcast::Sender<DirectMessageEvent>,
     pub group_messages: broadcast::Sender<GroupMessageEvent>,
     pub typing: broadcast::Sender<TypingEvent>,
+    pub rename: broadcast::Sender<RenameEvent>,
 }
 
 impl EventChannels {
@@ -170,6 +183,7 @@ impl EventChannels {
         let (direct_tx, _) = broadcast::channel(buffer_size);
         let (group_tx, _) = broadcast::channel(buffer_size);
         let (typing_tx, _) = broadcast::channel(buffer_size);
+        let (rename_tx, _) = broadcast::channel(buffer_size);
 
         Self {
             identity: identity_tx,
@@ -178,6 +192,7 @@ impl EventChannels {
             direct_messages: direct_tx,
             group_messages: group_tx,
             typing: typing_tx,
+            rename: rename_tx,
         }
     }
 
@@ -211,6 +226,11 @@ impl EventChannels {
         self.typing.subscribe()
     }
 
+    /// Subscribe to rename events
+    pub fn subscribe_rename(&self) -> broadcast::Receiver<RenameEvent> {
+        self.rename.subscribe()
+    }
+
     /// Send an identity event
     pub fn send_identity(&self, event: IdentityEvent) {
         let _ = self.identity.send(event);
@@ -239,6 +259,11 @@ impl EventChannels {
     /// Send a typing event
     pub fn send_typing(&self, event: TypingEvent) {
         let _ = self.typing.send(event);
+    }
+
+    /// Send a rename event
+    pub fn send_rename(&self, event: RenameEvent) {
+        let _ = self.rename.send(event);
     }
 }
 

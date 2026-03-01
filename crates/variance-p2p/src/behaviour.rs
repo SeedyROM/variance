@@ -43,4 +43,7 @@ pub struct VarianceBehaviour {
     /// Custom protocol: Typing indicators (fire-and-forget)
     pub typing_indicators:
         request_response::Behaviour<crate::protocols::messaging::TypingIndicatorCodec>,
+
+    /// Custom protocol: Username rename notifications (fire-and-forget)
+    pub rename: request_response::Behaviour<crate::protocols::identity::RenameCodec>,
 }

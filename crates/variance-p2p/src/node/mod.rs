@@ -174,6 +174,7 @@ impl Node {
                     crate::protocols::messaging::create_direct_message_behaviour();
                 let typing_indicators =
                     crate::protocols::messaging::create_typing_indicator_behaviour();
+                let rename = crate::protocols::identity::create_rename_behaviour();
 
                 Ok(VarianceBehaviour {
                     relay_client,
@@ -188,6 +189,7 @@ impl Node {
                     signaling,
                     direct_messages,
                     typing_indicators,
+                    rename,
                 })
             })
             .map_err(|e| Error::Transport {
@@ -613,6 +615,28 @@ impl Node {
                         "Cannot send typing indicator: unknown peer DID {}",
                         peer_did
                     );
+                }
+            }
+            NodeCommand::BroadcastUsernameChange {
+                did,
+                username,
+                discriminator,
+            } => {
+                let notification = variance_proto::identity_proto::UsernameChanged {
+                    did,
+                    username,
+                    discriminator,
+                };
+                let peers: Vec<PeerId> = self.swarm.connected_peers().cloned().collect();
+                debug!(
+                    "Broadcasting username change to {} connected peer(s)",
+                    peers.len()
+                );
+                for peer in peers {
+                    self.swarm
+                        .behaviour_mut()
+                        .rename
+                        .send_request(&peer, notification.clone());
                 }
             }
         }

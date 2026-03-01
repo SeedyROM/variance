@@ -120,6 +120,13 @@ pub enum NodeCommand {
         peer_did: String,
         indicator: TypingIndicator,
     },
+
+    /// Broadcast our username change to all currently-connected peers (fire-and-forget).
+    BroadcastUsernameChange {
+        did: String,
+        username: String,
+        discriminator: u32,
+    },
 }
 
 /// Construct the DHT record key for a username, e.g. "alice#0001".
@@ -409,6 +416,27 @@ impl NodeHandle {
             .send(NodeCommand::SendTypingIndicator {
                 peer_did,
                 indicator,
+            })
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to send command to node".to_string(),
+            })
+    }
+
+    /// Broadcast a username change to all currently-connected peers (fire-and-forget).
+    ///
+    /// Failures are silently dropped — rename notifications are best-effort.
+    pub async fn broadcast_username_change(
+        &self,
+        did: String,
+        username: String,
+        discriminator: u32,
+    ) -> Result<()> {
+        self.command_tx
+            .send(NodeCommand::BroadcastUsernameChange {
+                did,
+                username,
+                discriminator,
             })
             .await
             .map_err(|_| crate::error::Error::Protocol {

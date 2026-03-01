@@ -68,11 +68,10 @@ impl UsernameRegistry {
         Self::validate_username(&username)?;
         let name = username.to_lowercase();
 
-        // Check if this DID already has a username registered
-        if self.reverse_cache.contains_key(&did) {
-            return Err(Error::UsernameTaken {
-                username: format!("{name} (DID already has a username)"),
-            });
+        // If this DID already has a username, remove it so we can replace it.
+        if let Some((_, (old_name, old_disc))) = self.reverse_cache.remove(&did) {
+            let old_key = Self::compound_key(&old_name, old_disc);
+            self.local_cache.remove(&old_key);
         }
 
         let mut rng = rand::thread_rng();
@@ -149,9 +148,17 @@ impl UsernameRegistry {
         self.reverse_cache.get(did).map(|v| v.clone())
     }
 
-    /// Cache a username → DID mapping from network lookup
+    /// Cache a username → DID mapping from network lookup.
+    ///
+    /// Evicts any stale entry for the DID before inserting the new one so that
+    /// both local and remote rename paths stay consistent.
     pub fn cache_mapping(&self, username: String, discriminator: u32, did: String) {
         let name = username.to_lowercase();
+        // Evict old entry if this DID already has a cached name
+        if let Some((_, (old_name, old_disc))) = self.reverse_cache.remove(&did) {
+            self.local_cache
+                .remove(&Self::compound_key(&old_name, old_disc));
+        }
         let key = Self::compound_key(&name, discriminator);
         self.local_cache.insert(key, did.clone());
         self.reverse_cache.insert(did, (name, discriminator));
@@ -234,17 +241,24 @@ mod tests {
     }
 
     #[test]
-    fn test_duplicate_did_rejected() {
+    fn test_did_can_change_username() {
         let registry = UsernameRegistry::new();
         let did = "did:peer:12D3KooWtest".to_string();
 
-        registry
+        let (_, disc1) = registry
             .register_local("alice".to_string(), did.clone())
             .unwrap();
 
-        // Same DID can't register a second username
-        let result = registry.register_local("bob".to_string(), did);
-        assert!(result.is_err());
+        // Changing username: old entry should be evicted, new one registered.
+        let (new_name, disc2) = registry
+            .register_local("bob".to_string(), did.clone())
+            .unwrap();
+        assert_eq!(new_name, "bob");
+
+        // Old username no longer maps to this DID.
+        assert_eq!(registry.lookup_exact("alice", disc1), None);
+        // New username resolves correctly.
+        assert_eq!(registry.lookup_exact("bob", disc2), Some(did));
     }
 
     #[test]
@@ -336,6 +350,28 @@ mod tests {
         assert_eq!(
             registry.get_display_name(&did),
             Some("bob#1234".to_string())
+        );
+    }
+
+    #[test]
+    fn test_cache_mapping_evicts_stale_entry_on_rename() {
+        let registry = UsernameRegistry::new();
+        let did = "did:peer:12D3KooWtest".to_string();
+
+        // Initial name
+        registry.cache_mapping("alice".to_string(), 42, did.clone());
+        assert_eq!(registry.lookup_exact("alice", 42), Some(did.clone()));
+
+        // Peer renames — old entry must be evicted
+        registry.cache_mapping("bob".to_string(), 99, did.clone());
+
+        // Old mapping is gone
+        assert_eq!(registry.lookup_exact("alice", 42), None);
+        // New mapping is present
+        assert_eq!(registry.lookup_exact("bob", 99), Some(did.clone()));
+        assert_eq!(
+            registry.get_display_name(&did),
+            Some("bob#0099".to_string())
         );
     }
 
