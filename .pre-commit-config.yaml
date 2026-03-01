@@ -27,13 +27,16 @@ repos:
       - id: fmt
         name: cargo fmt
         description: Run cargo fmt on Rust files
+        stages: [pre-commit]
       - id: clippy
         name: cargo clippy
         description: Run cargo clippy on Rust files with auto-fix
         args: ['--fix', '--allow-staged', '--allow-dirty', '--all-targets', '--all-features', '--', '-D', 'warnings']
+        stages: [pre-commit]
       - id: cargo-check
         name: cargo check
         description: Run cargo check
+        stages: [pre-commit]
 
   # JavaScript/TypeScript formatting and linting
   - repo: https://github.com/pre-commit/mirrors-prettier
