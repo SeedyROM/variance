@@ -1,8 +1,8 @@
 use crate::behaviour::VarianceBehaviourEvent;
 use crate::error::*;
 use crate::events::{
-    DirectMessageEvent, GroupMessageEvent, IdentityEvent, OfflineMessageEvent, RenameEvent,
-    SignalingEvent, TypingEvent,
+    DirectMessageEvent, GroupMessageEvent, GroupSyncEvent, IdentityEvent, OfflineMessageEvent,
+    RenameEvent, SignalingEvent, TypingEvent,
 };
 use crate::rate_limiter::protocol as rl;
 
@@ -16,8 +16,8 @@ use tracing::{debug, info, warn};
 use variance_proto::identity_proto::{IdentityRequest, IdentityResponse, UsernameChanged};
 use variance_proto::media_proto::SignalingMessage;
 use variance_proto::messaging_proto::{
-    DirectMessage, DirectMessageAck, GroupMessage, OfflineMessageRequest, OfflineMessageResponse,
-    TypingIndicator,
+    DirectMessage, DirectMessageAck, GroupMessage, GroupSyncRequest, GroupSyncResponse,
+    OfflineMessageRequest, OfflineMessageResponse, TypingIndicator,
 };
 
 impl Node {
@@ -82,6 +82,9 @@ impl Node {
             }
             VarianceBehaviourEvent::Rename(e) => {
                 self.handle_rename_event(e).await;
+            }
+            VarianceBehaviourEvent::GroupSync(e) => {
+                self.handle_group_sync_event(e).await;
             }
         }
     }
@@ -1045,6 +1048,123 @@ impl Node {
                     "Rename notification {:?} from {} failed (best-effort): {}",
                     request_id, peer, error
                 );
+            }
+            _ => {}
+        }
+    }
+
+    // ── Group Sync ────────────────────────────────────────────────────
+
+    async fn handle_group_sync_event(
+        &mut self,
+        event: request_response::Event<GroupSyncRequest, GroupSyncResponse>,
+    ) {
+        use request_response::{Event, Message};
+
+        match event {
+            Event::Message {
+                peer,
+                message:
+                    Message::Request {
+                        request,
+                        channel,
+                        request_id,
+                    },
+                ..
+            } => {
+                if !self.rate_limiter.check(&peer, rl::RENAME).is_allowed() {
+                    debug!("Rate-limited group sync request from {}", peer);
+                    let _ = self.swarm.behaviour_mut().group_sync.send_response(
+                        channel,
+                        GroupSyncResponse {
+                            messages: vec![],
+                            has_more: false,
+                            error_code: Some("429".to_string()),
+                            error_message: Some("Rate limited".to_string()),
+                        },
+                    );
+                    return;
+                }
+
+                debug!(
+                    "Received group sync request from {} for group {} since {}",
+                    peer, request.group_id, request.since_timestamp
+                );
+
+                // Store the response channel so the app layer can respond after
+                // querying storage via RespondGroupSync command.
+                let group_id = request.group_id.clone();
+                self.pending_sync_responses
+                    .insert(request_id, (channel, group_id));
+
+                // Emit event so the app layer (which owns storage) can serve the response
+                self.events.send_group_sync(GroupSyncEvent::SyncRequested {
+                    peer,
+                    group_id: request.group_id,
+                    requester_did: request.requester_did,
+                    since_timestamp: request.since_timestamp,
+                    limit: request.limit,
+                    request_id,
+                });
+            }
+            Event::Message {
+                message: Message::Response { response, .. },
+                ..
+            } => {
+                debug!(
+                    "Received group sync response: {} messages, has_more={}",
+                    response.messages.len(),
+                    response.has_more
+                );
+
+                if response.error_code.is_some() {
+                    self.events.send_group_sync(GroupSyncEvent::SyncFailed {
+                        group_id: String::new(),
+                        error: response.error_message.unwrap_or_default(),
+                    });
+                    return;
+                }
+
+                // Determine group_id from the first message, if any
+                let group_id = response
+                    .messages
+                    .first()
+                    .map(|m| m.group_id.clone())
+                    .unwrap_or_default();
+
+                self.events.send_group_sync(GroupSyncEvent::SyncReceived {
+                    group_id,
+                    messages: response.messages,
+                    has_more: response.has_more,
+                });
+            }
+            Event::OutboundFailure {
+                peer,
+                request_id,
+                error,
+                ..
+            } => {
+                warn!(
+                    "Group sync request {:?} to {} failed: {}",
+                    request_id, peer, error
+                );
+                self.events.send_group_sync(GroupSyncEvent::SyncFailed {
+                    group_id: String::new(),
+                    error: format!("Outbound failure: {}", error),
+                });
+            }
+            Event::InboundFailure {
+                peer,
+                request_id,
+                error,
+                ..
+            } => {
+                debug!(
+                    "Group sync inbound {:?} from {} failed: {}",
+                    request_id, peer, error
+                );
+                // Clean up any pending response channel
+                self.pending_sync_responses.remove(&request_id);
             }
             _ => {}
         }

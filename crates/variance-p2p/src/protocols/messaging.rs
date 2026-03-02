@@ -4,7 +4,8 @@ use libp2p::request_response::{self, ProtocolSupport};
 use libp2p::StreamProtocol;
 use std::io;
 use variance_proto::messaging_proto::{
-    DirectMessage, DirectMessageAck, OfflineMessageRequest, OfflineMessageResponse, TypingIndicator,
+    DirectMessage, DirectMessageAck, GroupSyncRequest, GroupSyncResponse, OfflineMessageRequest,
+    OfflineMessageResponse, TypingIndicator,
 };
 
 /// Protocol name for offline message relay
@@ -266,6 +267,90 @@ pub fn create_typing_indicator_behaviour() -> TypingIndicatorBehaviour {
     )
 }
 
+/// Protocol name for group history sync (P2P epoch-based catch-up)
+pub const GROUP_SYNC_PROTOCOL: &str = "/variance/group-sync/1.0.0";
+
+/// Group sync codec: sends a GroupSyncRequest, receives a GroupSyncResponse
+#[derive(Debug, Clone, Default)]
+pub struct GroupSyncCodec;
+
+#[async_trait]
+impl request_response::Codec for GroupSyncCodec {
+    type Protocol = StreamProtocol;
+    type Request = GroupSyncRequest;
+    type Response = GroupSyncResponse;
+
+    async fn read_request<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+    ) -> io::Result<Self::Request>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        let mut buf = Vec::new();
+        io.read_to_end(&mut buf).await?;
+        prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    async fn read_response<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+    ) -> io::Result<Self::Response>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        let mut buf = Vec::new();
+        io.read_to_end(&mut buf).await?;
+        prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    async fn write_request<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+        req: Self::Request,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        let mut buf = Vec::new();
+        prost::Message::encode(&req, &mut buf)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        io.write_all(&buf).await?;
+        io.close().await
+    }
+
+    async fn write_response<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+        res: Self::Response,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        let mut buf = Vec::new();
+        prost::Message::encode(&res, &mut buf)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        io.write_all(&buf).await?;
+        io.close().await
+    }
+}
+
+/// Group sync protocol behaviour
+pub type GroupSyncBehaviour = request_response::Behaviour<GroupSyncCodec>;
+
+/// Create group sync protocol configuration
+pub fn create_group_sync_behaviour() -> GroupSyncBehaviour {
+    let protocol = StreamProtocol::new(GROUP_SYNC_PROTOCOL);
+    request_response::Behaviour::new(
+        [(protocol, ProtocolSupport::Full)],
+        request_response::Config::default(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,6 +363,7 @@ mod tests {
             TYPING_INDICATOR_PROTOCOL,
             "/variance/typing-indicators/1.0.0"
         );
+        assert_eq!(GROUP_SYNC_PROTOCOL, "/variance/group-sync/1.0.0");
     }
 
     #[test]
@@ -285,5 +371,6 @@ mod tests {
         let _offline = create_offline_message_behaviour();
         let _direct = create_direct_message_behaviour();
         let _typing = create_typing_indicator_behaviour();
+        let _group_sync = create_group_sync_behaviour();
     }
 }

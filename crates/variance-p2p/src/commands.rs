@@ -8,7 +8,9 @@ use libp2p::PeerId;
 use tokio::sync::oneshot;
 use variance_proto::identity_proto::{IdentityFound, IdentityRequest, IdentityResponse};
 use variance_proto::media_proto::SignalingMessage;
-use variance_proto::messaging_proto::{DirectMessage, GroupMessage, TypingIndicator};
+use variance_proto::messaging_proto::{
+    DirectMessage, GroupMessage, GroupSyncResponse, TypingIndicator,
+};
 
 use crate::error::Result;
 
@@ -19,6 +21,7 @@ type ProviderQueryOneshot = oneshot::Sender<Result<Vec<PeerId>>>;
 /// Simple ack/error response for fire-and-confirm commands.
 type CommandResponse = oneshot::Sender<Result<()>>;
 type ConnectedDidsResponse = oneshot::Sender<Vec<String>>;
+type GroupSyncOneshot = oneshot::Sender<Result<()>>;
 
 /// Commands that can be sent to the P2P node
 #[derive(Debug)]
@@ -126,6 +129,27 @@ pub enum NodeCommand {
         did: String,
         username: String,
         discriminator: u32,
+    },
+
+    /// Request group message history from a specific peer since a given timestamp.
+    ///
+    /// Used for P2P epoch-based sync: after reconnecting, ask peers for any
+    /// group messages we missed while offline.
+    RequestGroupSync {
+        peer_did: String,
+        group_id: String,
+        since_timestamp: i64,
+        limit: u32,
+        response_tx: GroupSyncOneshot,
+    },
+
+    /// Respond to an inbound group sync request with messages from storage.
+    ///
+    /// Called by the app layer after querying `MessageStorage::fetch_group_since`
+    /// to serve the requesting peer their missed messages.
+    RespondGroupSync {
+        request_id: libp2p::request_response::InboundRequestId,
+        response: GroupSyncResponse,
     },
 }
 
@@ -461,6 +485,59 @@ impl NodeHandle {
             .map_err(|_| crate::error::Error::Protocol {
                 message: "Failed to receive response from node".to_string(),
             })?
+    }
+
+    /// Request group message history from a peer since a given timestamp.
+    ///
+    /// The peer will respond with any group messages they have stored after
+    /// `since_timestamp`. Results arrive as `GroupSyncEvent::SyncReceived` events.
+    pub async fn request_group_sync(
+        &self,
+        peer_did: String,
+        group_id: String,
+        since_timestamp: i64,
+        limit: u32,
+    ) -> Result<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(NodeCommand::RequestGroupSync {
+                peer_did,
+                group_id,
+                since_timestamp,
+                limit,
+                response_tx,
+            })
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to send command to node".to_string(),
+            })?;
+
+        response_rx
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to receive response from node".to_string(),
+            })?
+    }
+
+    /// Respond to an inbound group sync request with messages from storage.
+    ///
+    /// The app layer calls this after receiving a `GroupSyncEvent::SyncRequested`
+    /// event and querying storage for the requested messages.
+    pub async fn respond_group_sync(
+        &self,
+        request_id: libp2p::request_response::InboundRequestId,
+        response: GroupSyncResponse,
+    ) -> Result<()> {
+        self.command_tx
+            .send(NodeCommand::RespondGroupSync {
+                request_id,
+                response,
+            })
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to send command to node".to_string(),
+            })
     }
 }
 

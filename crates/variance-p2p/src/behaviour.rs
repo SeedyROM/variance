@@ -46,4 +46,7 @@ pub struct VarianceBehaviour {
 
     /// Custom protocol: Username rename notifications (fire-and-forget)
     pub rename: request_response::Behaviour<crate::protocols::identity::RenameCodec>,
+
+    /// Custom protocol: Group history sync (P2P epoch-based catch-up)
+    pub group_sync: request_response::Behaviour<crate::protocols::messaging::GroupSyncCodec>,
 }

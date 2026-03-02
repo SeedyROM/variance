@@ -15,8 +15,8 @@ use variance_messaging::{
     typing::TypingHandler,
 };
 use variance_p2p::{
-    EventChannels, IdentityEvent, NodeHandle, OfflineMessageEvent, RenameEvent, SignalingEvent,
-    TypingEvent,
+    EventChannels, GroupSyncEvent, IdentityEvent, NodeHandle, OfflineMessageEvent, RenameEvent,
+    SignalingEvent, TypingEvent,
 };
 
 /// All dependencies needed by the EventRouter, grouped to avoid too-many-arguments.
@@ -580,11 +580,194 @@ impl EventRouter {
             warn!("EventRouter: Rename event listener ended");
         });
 
-        // Spawn task for identity events (presence tracking + pending message flush)
+        // Spawn task for group sync events (serve inbound requests + process responses)
+        let ws_manager_sync = self.ws_manager.clone();
+        let mls_groups_sync = self.mls_groups.clone();
+        let storage_sync = self.storage.clone();
+        let local_did_sync = self.local_did.clone();
+        let node_handle_sync = self.node_handle.clone();
+        let events_clone = events.clone();
+        tokio::spawn(async move {
+            let mut rx = events_clone.subscribe_group_sync();
+            debug!("EventRouter: Started group sync event listener");
+
+            while let Ok(event) = rx.recv().await {
+                debug!("EventRouter: Received group sync event: {:?}", event);
+
+                match event {
+                    GroupSyncEvent::SyncRequested {
+                        group_id,
+                        since_timestamp,
+                        limit,
+                        request_id,
+                        ..
+                    } => {
+                        // Serve the requesting peer from our local storage
+                        use variance_messaging::storage::MessageStorage;
+                        let effective_limit = if limit == 0 { 100 } else { limit.min(500) };
+
+                        match storage_sync
+                            .fetch_group_since(&group_id, since_timestamp, effective_limit as usize)
+                            .await
+                        {
+                            Ok(messages) => {
+                                let has_more = messages.len() == effective_limit as usize;
+                                debug!(
+                                    "EventRouter: Serving {} messages for group {} sync",
+                                    messages.len(),
+                                    group_id
+                                );
+                                let response = variance_proto::messaging_proto::GroupSyncResponse {
+                                    messages,
+                                    has_more,
+                                    error_code: None,
+                                    error_message: None,
+                                };
+                                if let Err(e) = node_handle_sync
+                                    .respond_group_sync(request_id, response)
+                                    .await
+                                {
+                                    warn!("EventRouter: Failed to send group sync response: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "EventRouter: Failed to fetch group messages for sync: {}",
+                                    e
+                                );
+                                let response = variance_proto::messaging_proto::GroupSyncResponse {
+                                    messages: vec![],
+                                    has_more: false,
+                                    error_code: Some("500".to_string()),
+                                    error_message: Some(format!("Storage error: {}", e)),
+                                };
+                                let _ = node_handle_sync
+                                    .respond_group_sync(request_id, response)
+                                    .await;
+                            }
+                        }
+                    }
+                    GroupSyncEvent::SyncReceived {
+                        group_id, messages, ..
+                    } => {
+                        // Process received sync messages through MLS, same as live messages
+                        debug!(
+                            "EventRouter: Processing {} synced messages for group {}",
+                            messages.len(),
+                            group_id
+                        );
+                        let mut new_count = 0u32;
+
+                        for message in messages {
+                            let message_id = message.id.clone();
+                            let from = message.sender_did.clone();
+                            let timestamp = message.timestamp;
+
+                            // Skip if we already have this message
+                            use variance_messaging::storage::MessageStorage;
+                            if storage_sync.has_group_message(&group_id, &message_id).await {
+                                continue;
+                            }
+
+                            if message.mls_ciphertext.is_empty() {
+                                continue;
+                            }
+
+                            match variance_messaging::mls::MlsGroupHandler::deserialize_message(
+                                &message.mls_ciphertext,
+                            ) {
+                                Ok(mls_msg) => {
+                                    match mls_groups_sync.process_message(&group_id, mls_msg) {
+                                        Ok(Some(decrypted)) => {
+                                            if let Err(e) = storage_sync.store_group(&message).await
+                                            {
+                                                warn!(
+                                                    "EventRouter: Failed to store synced group message {}: {}",
+                                                    message_id, e
+                                                );
+                                            }
+
+                                            #[allow(unused_imports)]
+                                            use prost::Message as _;
+                                            if let Ok(content) =
+                                                variance_proto::messaging_proto::MessageContent::decode(
+                                                    decrypted.plaintext.as_slice(),
+                                                )
+                                            {
+                                                if let Err(e) = mls_groups_sync
+                                                    .persist_group_plaintext(
+                                                        &storage_sync,
+                                                        &message_id,
+                                                        &content,
+                                                    )
+                                                    .await
+                                                {
+                                                    warn!(
+                                                        "EventRouter: Failed to cache synced plaintext {}: {}",
+                                                        message_id, e
+                                                    );
+                                                }
+                                            }
+
+                                            new_count += 1;
+                                            ws_manager_sync.broadcast(
+                                                WsMessage::GroupMessageReceived {
+                                                    group_id: group_id.clone(),
+                                                    from,
+                                                    message_id,
+                                                    timestamp,
+                                                },
+                                            );
+                                        }
+                                        Ok(None) => {
+                                            // Commit/proposal processed
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                "EventRouter: MLS decrypt failed for synced {}: {}",
+                                                message_id, e
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "EventRouter: Failed to deserialize synced MLS message {}: {}",
+                                        message_id, e
+                                    );
+                                }
+                            }
+                        }
+
+                        if new_count > 0 {
+                            persist_mls_state_async(
+                                &mls_groups_sync,
+                                &storage_sync,
+                                &local_did_sync,
+                            )
+                            .await;
+                            debug!(
+                                "EventRouter: Synced {} new messages for group {}",
+                                new_count, group_id
+                            );
+                        }
+                    }
+                    GroupSyncEvent::SyncFailed { group_id, error } => {
+                        warn!("EventRouter: Group sync failed for {}: {}", group_id, error);
+                    }
+                }
+            }
+
+            warn!("EventRouter: Group sync event listener ended");
+        });
+
+        // Spawn task for identity events (presence tracking + pending message flush + group sync trigger)
         let ws_manager = self.ws_manager;
         let direct_messaging = self.direct_messaging;
         let node_handle = self.node_handle;
         let username_registry = self.username_registry;
+        let mls_groups_identity = self.mls_groups;
+        let storage_identity = self.storage;
         tokio::spawn(async move {
             let mut rx = events.subscribe_identity();
             debug!("EventRouter: Started identity event listener");
@@ -685,6 +868,46 @@ impl EventRouter {
                             }
                             Err(e) => {
                                 warn!("Failed to fetch pending messages for {}: {}", did, e);
+                            }
+                        }
+
+                        // Trigger group sync: for every MLS group we share with
+                        // this peer, ask them for messages we may have missed.
+                        let shared_groups: Vec<String> = mls_groups_identity
+                            .group_ids()
+                            .into_iter()
+                            .filter(|gid| {
+                                mls_groups_identity
+                                    .list_members(gid)
+                                    .map(|members| members.contains(&did))
+                                    .unwrap_or(false)
+                            })
+                            .collect();
+
+                        if !shared_groups.is_empty() {
+                            debug!(
+                                "Triggering group sync with {} for {} shared group(s)",
+                                did,
+                                shared_groups.len()
+                            );
+                        }
+
+                        for group_id in shared_groups {
+                            use variance_messaging::storage::MessageStorage;
+                            let since = storage_identity
+                                .latest_group_timestamp(&group_id)
+                                .await
+                                .unwrap_or(None)
+                                .unwrap_or(0);
+
+                            if let Err(e) = node_handle
+                                .request_group_sync(did.clone(), group_id.clone(), since, 100)
+                                .await
+                            {
+                                debug!(
+                                    "Failed to request group sync for {} from {}: {}",
+                                    group_id, did, e
+                                );
                             }
                         }
                     }

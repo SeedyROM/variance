@@ -204,3 +204,28 @@ message OfflineMessageResponse {
   optional string error_code = 4;    // Error type: "storage_error", "invalid_request"
   optional string error_message = 5; // Human-readable error details
 }
+
+// ===== Group History Sync =====
+
+// P2P request for missed group messages.
+// Sent to an online group member after reconnecting.
+message GroupSyncRequest {
+  string group_id = 1;
+  // Requester's DID (so responder can verify membership)
+  string requester_did = 2;
+  // Timestamp (ms) of the requester's newest stored message for this group.
+  // The responder returns all messages with timestamp > since_timestamp.
+  int64 since_timestamp = 3;
+  // Max number of raw GroupMessage protos to return.
+  uint32 limit = 4;
+}
+
+// Response carrying raw (MLS-encrypted) GroupMessage protos.
+// The requester feeds each one through their local MLS state.
+message GroupSyncResponse {
+  repeated GroupMessage messages = 1;
+  bool has_more = 2;
+  // Set on error (e.g. requester not a member, no history)
+  optional string error_code = 3;
+  optional string error_message = 4;
+}

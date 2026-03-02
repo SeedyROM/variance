@@ -157,6 +157,30 @@ pub enum RenameEvent {
     },
 }
 
+/// Events from group history sync
+#[derive(Debug, Clone)]
+pub enum GroupSyncEvent {
+    /// Received group messages from a peer in response to our sync request
+    SyncReceived {
+        group_id: String,
+        messages: Vec<GroupMessage>,
+        has_more: bool,
+    },
+
+    /// Inbound sync request from a peer wanting our messages
+    SyncRequested {
+        peer: PeerId,
+        group_id: String,
+        requester_did: String,
+        since_timestamp: i64,
+        limit: u32,
+        request_id: libp2p::request_response::InboundRequestId,
+    },
+
+    /// Sync request failed
+    SyncFailed { group_id: String, error: String },
+}
+
 /// Combined event type for all protocols
 #[derive(Debug, Clone)]
 pub enum P2pEvent {
@@ -167,6 +191,7 @@ pub enum P2pEvent {
     GroupMessage(GroupMessageEvent),
     Typing(TypingEvent),
     Rename(RenameEvent),
+    GroupSync(GroupSyncEvent),
 }
 
 /// Event channels for protocol events
@@ -179,6 +204,7 @@ pub struct EventChannels {
     pub group_messages: broadcast::Sender<GroupMessageEvent>,
     pub typing: broadcast::Sender<TypingEvent>,
     pub rename: broadcast::Sender<RenameEvent>,
+    pub group_sync: broadcast::Sender<GroupSyncEvent>,
 }
 
 impl EventChannels {
@@ -191,6 +217,7 @@ impl EventChannels {
         let (group_tx, _) = broadcast::channel(buffer_size);
         let (typing_tx, _) = broadcast::channel(buffer_size);
         let (rename_tx, _) = broadcast::channel(buffer_size);
+        let (group_sync_tx, _) = broadcast::channel(buffer_size);
 
         Self {
             identity: identity_tx,
@@ -200,6 +227,7 @@ impl EventChannels {
             group_messages: group_tx,
             typing: typing_tx,
             rename: rename_tx,
+            group_sync: group_sync_tx,
         }
     }
 
@@ -238,6 +266,11 @@ impl EventChannels {
         self.rename.subscribe()
     }
 
+    /// Subscribe to group sync events
+    pub fn subscribe_group_sync(&self) -> broadcast::Receiver<GroupSyncEvent> {
+        self.group_sync.subscribe()
+    }
+
     /// Send an identity event
     pub fn send_identity(&self, event: IdentityEvent) {
         let _ = self.identity.send(event);
@@ -271,6 +304,11 @@ impl EventChannels {
     /// Send a rename event
     pub fn send_rename(&self, event: RenameEvent) {
         let _ = self.rename.send(event);
+    }
+
+    /// Send a group sync event
+    pub fn send_group_sync(&self, event: GroupSyncEvent) {
+        let _ = self.group_sync.send(event);
     }
 }
 
@@ -422,5 +460,45 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn test_group_sync_event() {
+        let channels = EventChannels::new(10);
+        let mut rx = channels.group_sync.subscribe();
+
+        channels.send_group_sync(GroupSyncEvent::SyncReceived {
+            group_id: "group-123".to_string(),
+            messages: vec![],
+            has_more: false,
+        });
+
+        let received = rx.recv().await.unwrap();
+        match received {
+            GroupSyncEvent::SyncReceived {
+                group_id,
+                messages,
+                has_more,
+            } => {
+                assert_eq!(group_id, "group-123");
+                assert!(messages.is_empty());
+                assert!(!has_more);
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_group_sync_failed_event() {
+        let channels = EventChannels::new(10);
+        let mut rx = channels.group_sync.subscribe();
+
+        channels.send_group_sync(GroupSyncEvent::SyncFailed {
+            group_id: "group-456".to_string(),
+            error: "Peer not found".to_string(),
+        });
+
+        let received = rx.recv().await.unwrap();
+        assert!(matches!(received, GroupSyncEvent::SyncFailed { .. }));
     }
 }

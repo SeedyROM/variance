@@ -10,7 +10,7 @@ use libp2p::{
     dcutr,
     gossipsub::{self, IdentTopic},
     identify, kad, mdns, noise, ping,
-    request_response::OutboundRequestId,
+    request_response::{self, OutboundRequestId},
     swarm::dial_opts::DialOpts,
     tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
@@ -44,6 +44,11 @@ type BroadcastDidResolveOneshot = oneshot::Sender<Result<IdentityFound>>;
 /// Tracks a broadcast DID resolve: how many individual requests are still pending
 /// and the oneshot channel to fire when the first Found response arrives.
 type BroadcastResolve = (usize, BroadcastDidResolveOneshot);
+/// Pending group sync response: response channel + group_id
+type PendingSyncResponse = (
+    request_response::ResponseChannel<variance_proto::messaging_proto::GroupSyncResponse>,
+    String,
+);
 
 pub struct Node {
     swarm: Swarm<VarianceBehaviour>,
@@ -84,6 +89,9 @@ pub struct Node {
     pending_relay_query: Option<kad::QueryId>,
     /// How often to re-query the DHT for relay providers (seconds, 0 = disabled).
     relay_discovery_interval_secs: u64,
+    /// Pending group sync responses: InboundRequestId → (ResponseChannel, group_id).
+    /// The app layer queries storage and responds via `RespondGroupSync`.
+    pending_sync_responses: HashMap<request_response::InboundRequestId, PendingSyncResponse>,
 }
 
 impl Node {
@@ -185,6 +193,7 @@ impl Node {
                 let typing_indicators =
                     crate::protocols::messaging::create_typing_indicator_behaviour();
                 let rename = crate::protocols::identity::create_rename_behaviour();
+                let group_sync = crate::protocols::messaging::create_group_sync_behaviour();
 
                 Ok(VarianceBehaviour {
                     relay_client,
@@ -200,6 +209,7 @@ impl Node {
                     direct_messages,
                     typing_indicators,
                     rename,
+                    group_sync,
                 })
             })
             .map_err(|e| Error::Transport {
@@ -259,6 +269,7 @@ impl Node {
             relay_peer_ids,
             pending_relay_query: None,
             relay_discovery_interval_secs,
+            pending_sync_responses: HashMap::new(),
         };
 
         let handle = NodeHandle::new(command_tx);
@@ -715,6 +726,75 @@ impl Node {
                         .behaviour_mut()
                         .rename
                         .send_request(&peer, notification.clone());
+                }
+            }
+            NodeCommand::RequestGroupSync {
+                peer_did,
+                group_id,
+                since_timestamp,
+                limit,
+                response_tx,
+            } => {
+                let did_to_peer = self.did_to_peer.read().await;
+                let peer = did_to_peer
+                    .get(&peer_did)
+                    .copied()
+                    .or_else(|| self.peer_store.get(&peer_did));
+                if let Some(peer) = peer {
+                    if !self.swarm.is_connected(&peer) {
+                        warn!(
+                            "Peer {} ({}) not connected, cannot request group sync",
+                            peer_did, peer
+                        );
+                        let _ = response_tx.send(Err(Error::Protocol {
+                            message: format!("Peer not connected: {}", peer_did),
+                        }));
+                    } else {
+                        let local_did = self.local_did.read().await;
+                        let requester_did = local_did.clone().unwrap_or_default();
+                        drop(local_did);
+
+                        debug!(
+                            "Requesting group sync for {} from {} since {}",
+                            group_id, peer_did, since_timestamp
+                        );
+
+                        let request = variance_proto::messaging_proto::GroupSyncRequest {
+                            group_id,
+                            requester_did,
+                            since_timestamp,
+                            limit,
+                        };
+                        self.swarm
+                            .behaviour_mut()
+                            .group_sync
+                            .send_request(&peer, request);
+                        let _ = response_tx.send(Ok(()));
+                    }
+                } else {
+                    warn!("Cannot request group sync: unknown peer DID {}", peer_did);
+                    let _ = response_tx.send(Err(Error::Protocol {
+                        message: format!("Unknown peer DID: {}", peer_did),
+                    }));
+                }
+            }
+            NodeCommand::RespondGroupSync {
+                request_id,
+                response,
+            } => {
+                if let Some((channel, group_id)) = self.pending_sync_responses.remove(&request_id) {
+                    debug!(
+                        "Sending group sync response for {} ({} messages)",
+                        group_id,
+                        response.messages.len()
+                    );
+                    let _ = self
+                        .swarm
+                        .behaviour_mut()
+                        .group_sync
+                        .send_response(channel, response);
+                } else {
+                    warn!("No pending sync response for request {:?}", request_id);
                 }
             }
         }

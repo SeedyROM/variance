@@ -44,6 +44,26 @@ pub trait MessageStorage: Send + Sync {
         before: Option<String>,
     ) -> Result<Vec<GroupMessage>>;
 
+    /// Fetch group messages with `timestamp > since_timestamp`, oldest first.
+    ///
+    /// Used by the group-sync protocol to serve missed messages to a
+    /// reconnecting peer.
+    async fn fetch_group_since(
+        &self,
+        group_id: &str,
+        since_timestamp: i64,
+        limit: usize,
+    ) -> Result<Vec<GroupMessage>>;
+
+    /// Return the timestamp (ms) of the newest stored message for a group,
+    /// or `None` if the group has no messages.
+    async fn latest_group_timestamp(&self, group_id: &str) -> Result<Option<i64>>;
+
+    /// Check whether a group message is already stored (by group_id + message_id).
+    ///
+    /// Used during sync to skip duplicates without reading the full message.
+    async fn has_group_message(&self, group_id: &str, message_id: &str) -> bool;
+
     /// Store offline message for relay
     async fn store_offline(&self, envelope: &OfflineMessageEnvelope) -> Result<()>;
 
@@ -413,6 +433,81 @@ impl MessageStorage for LocalMessageStorage {
         }
 
         Ok(messages)
+    }
+
+    async fn fetch_group_since(
+        &self,
+        group_id: &str,
+        since_timestamp: i64,
+        limit: usize,
+    ) -> Result<Vec<GroupMessage>> {
+        let tree = self.group_tree()?;
+        // Keys are "{group_id}:{timestamp:020}:{id}" — lexicographic scan
+        // starting just after the given timestamp.
+        let start = format!("{}:{:020}:", group_id, since_timestamp + 1);
+        let prefix = format!("{}:", group_id);
+
+        let mut messages = Vec::new();
+        for entry in tree.range(start.as_bytes()..) {
+            let (key, value) = entry.map_err(|e| Error::Storage { source: e })?;
+
+            // Stop once we leave this group's prefix.
+            let key_str = String::from_utf8_lossy(&key);
+            if !key_str.starts_with(&prefix) {
+                break;
+            }
+
+            let message =
+                GroupMessage::decode(value.as_ref()).map_err(|e| Error::Protocol { source: e })?;
+            messages.push(message);
+
+            if messages.len() >= limit {
+                break;
+            }
+        }
+
+        Ok(messages)
+    }
+
+    async fn latest_group_timestamp(&self, group_id: &str) -> Result<Option<i64>> {
+        let tree = self.group_tree()?;
+        let prefix = format!("{}:", group_id);
+
+        // Scan backwards from the end of this group's key range.
+        // The last key with this prefix holds the newest timestamp.
+        let end = format!("{};", group_id); // ';' is one byte after ':' in ASCII
+        let mut iter = tree.range(prefix.as_bytes()..end.as_bytes());
+
+        if let Some(entry) = iter.next_back() {
+            let (_key, value) = entry.map_err(|e| Error::Storage { source: e })?;
+            let message =
+                GroupMessage::decode(value.as_ref()).map_err(|e| Error::Protocol { source: e })?;
+            Ok(Some(message.timestamp))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn has_group_message(&self, group_id: &str, message_id: &str) -> bool {
+        let tree = match self.group_tree() {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+        let prefix = format!("{}:", group_id);
+        // Scan the group's range looking for a key that ends with the message_id.
+        // Keys are `{group_id}:{timestamp:020}:{id}`.
+        let end = format!("{};", group_id);
+        let suffix = format!(":{}", message_id);
+        for entry in tree.range(prefix.as_bytes()..end.as_bytes()) {
+            if let Ok((key, _)) = entry {
+                if let Ok(k) = std::str::from_utf8(&key) {
+                    if k.ends_with(&suffix) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     async fn store_offline(&self, envelope: &OfflineMessageEnvelope) -> Result<()> {
@@ -1671,5 +1766,151 @@ mod tests {
             .unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, "msg-keep");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_group_since() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let msgs: Vec<GroupMessage> = (1..=5)
+            .map(|i| GroupMessage {
+                id: format!("msg-{}", i),
+                group_id: "group-a".to_string(),
+                sender_did: "did:key:alice".to_string(),
+                mls_ciphertext: vec![i as u8],
+                timestamp: i * 1000,
+                ..Default::default()
+            })
+            .collect();
+
+        for m in &msgs {
+            storage.store_group(m).await.unwrap();
+        }
+
+        // Fetch since timestamp 2000 → should get messages at 3000, 4000, 5000
+        let result = storage
+            .fetch_group_since("group-a", 2000, 100)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].timestamp, 3000);
+        assert_eq!(result[1].timestamp, 4000);
+        assert_eq!(result[2].timestamp, 5000);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_group_since_with_limit() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        for i in 1..=10 {
+            let msg = GroupMessage {
+                id: format!("msg-{}", i),
+                group_id: "group-b".to_string(),
+                sender_did: "did:key:alice".to_string(),
+                mls_ciphertext: vec![i as u8],
+                timestamp: i * 1000,
+                ..Default::default()
+            };
+            storage.store_group(&msg).await.unwrap();
+        }
+
+        // Limit to 3
+        let result = storage.fetch_group_since("group-b", 0, 3).await.unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].timestamp, 1000);
+        assert_eq!(result[2].timestamp, 3000);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_group_since_empty() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let result = storage
+            .fetch_group_since("nonexistent", 0, 100)
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_group_since_isolates_groups() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        // Store messages in two different groups
+        for gid in &["group-x", "group-y"] {
+            for i in 1..=3 {
+                let msg = GroupMessage {
+                    id: format!("{}-msg-{}", gid, i),
+                    group_id: gid.to_string(),
+                    sender_did: "did:key:alice".to_string(),
+                    mls_ciphertext: vec![i as u8],
+                    timestamp: i * 1000,
+                    ..Default::default()
+                };
+                storage.store_group(&msg).await.unwrap();
+            }
+        }
+
+        // Fetch only group-x since 0
+        let result = storage.fetch_group_since("group-x", 0, 100).await.unwrap();
+        assert_eq!(result.len(), 3);
+        assert!(result.iter().all(|m| m.group_id == "group-x"));
+    }
+
+    #[tokio::test]
+    async fn test_latest_group_timestamp() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        // Empty group
+        assert_eq!(
+            storage.latest_group_timestamp("group-c").await.unwrap(),
+            None
+        );
+
+        for i in 1..=3 {
+            let msg = GroupMessage {
+                id: format!("msg-{}", i),
+                group_id: "group-c".to_string(),
+                sender_did: "did:key:bob".to_string(),
+                mls_ciphertext: vec![i as u8],
+                timestamp: i * 1000,
+                ..Default::default()
+            };
+            storage.store_group(&msg).await.unwrap();
+        }
+
+        assert_eq!(
+            storage.latest_group_timestamp("group-c").await.unwrap(),
+            Some(3000)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_has_group_message() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let msg = GroupMessage {
+            id: "unique-msg-id".to_string(),
+            group_id: "group-d".to_string(),
+            sender_did: "did:key:alice".to_string(),
+            mls_ciphertext: vec![1],
+            timestamp: 5000,
+            ..Default::default()
+        };
+        storage.store_group(&msg).await.unwrap();
+
+        assert!(storage.has_group_message("group-d", "unique-msg-id").await);
+        assert!(!storage.has_group_message("group-d", "nonexistent").await);
+        assert!(
+            !storage
+                .has_group_message("other-group", "unique-msg-id")
+                .await
+        );
     }
 }

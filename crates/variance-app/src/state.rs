@@ -301,6 +301,12 @@ impl AppState {
                     NodeCommand::BroadcastUsernameChange { .. } => {
                         // Fire-and-forget, no response channel
                     }
+                    NodeCommand::RequestGroupSync { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    NodeCommand::RespondGroupSync { .. } => {
+                        // Response sent on stored channel, nothing to do in mock
+                    }
                 }
             }
         });
