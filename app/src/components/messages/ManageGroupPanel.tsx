@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { LogOut } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { LogOut, User } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
 import { Button } from "../ui/Button";
 import { groupsApi } from "../../api/client";
+import { useIdentityStore } from "../../stores/identityStore";
 import type { MlsGroupInfo } from "../../api/types";
 
 interface ManageGroupPanelProps {
@@ -16,12 +17,20 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
   const [invitee, setInvitee] = useState("");
   const [confirmLeave, setConfirmLeave] = useState(false);
   const queryClient = useQueryClient();
+  const localDid = useIdentityStore((s) => s.did);
+
+  const { data: members = [] } = useQuery({
+    queryKey: ["group-members", group.id],
+    queryFn: () => groupsApi.listMembers(group.id),
+    staleTime: 30_000,
+  });
 
   const inviteMutation = useMutation({
     mutationFn: () => groupsApi.invite(group.id, invitee.trim()),
     onSuccess: () => {
       setInvitee("");
       void queryClient.invalidateQueries({ queryKey: ["groups"] });
+      void queryClient.invalidateQueries({ queryKey: ["group-members", group.id] });
     },
   });
 
@@ -38,12 +47,28 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
   return (
     <Dialog open onClose={onClose} title={group.name}>
       <div className="flex flex-col gap-5">
-        {/* Member count */}
+        {/* Member list */}
         <div>
-          <p className="text-xs text-surface-500 mb-1">Members</p>
-          <p className="text-sm text-surface-900 dark:text-surface-50">
-            {group.member_count} member{group.member_count !== 1 ? "s" : ""}
+          <p className="text-xs font-medium text-surface-500 uppercase tracking-wide mb-2">
+            Members ({members.length})
           </p>
+          <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto">
+            {members.map((m) => {
+              const isMe = m.did === localDid;
+              return (
+                <div
+                  key={m.did}
+                  className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-surface-900 dark:text-surface-50"
+                >
+                  <User className="h-3.5 w-3.5 shrink-0 text-surface-400" />
+                  <span className="truncate">
+                    {m.display_name ?? m.did.slice(-12)}
+                    {isMe && <span className="ml-1.5 text-xs text-surface-400">(you)</span>}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         {/* Invite */}

@@ -851,7 +851,14 @@ impl Node {
                         .direct_messages
                         .send_response(channel, ack);
                 }
-                Message::Response { response, .. } => {
+                Message::Response {
+                    response,
+                    request_id,
+                    ..
+                } => {
+                    // Clean up tracking for this request
+                    self.pending_dm_sends.remove(&request_id);
+
                     if let Some(ref err) = response.error {
                         warn!(
                             "Direct message {} NACK'd by {}: {}",
@@ -878,6 +885,19 @@ impl Node {
                     "Direct message {:?} to {} failed: {}",
                     request_id, peer, error
                 );
+
+                // Look up the message that failed and notify the app layer
+                if let Some((message_id, recipient)) = self.pending_dm_sends.remove(&request_id) {
+                    warn!(
+                        "Message {} to {} failed delivery, emitting DeliveryFailed",
+                        message_id, recipient
+                    );
+                    self.events
+                        .send_direct_message(DirectMessageEvent::DeliveryFailed {
+                            message_id,
+                            recipient,
+                        });
+                }
             }
             Event::InboundFailure {
                 peer,

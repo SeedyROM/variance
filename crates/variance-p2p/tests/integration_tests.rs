@@ -2,6 +2,7 @@ use libp2p::PeerId;
 use std::time::Duration;
 use tempfile::tempdir;
 use tokio::time::timeout;
+use variance_p2p::events::DirectMessageEvent;
 use variance_p2p::{Config, IdentityEvent, Node, OfflineMessageEvent, SignalingEvent};
 use variance_proto::media_proto::{signaling_message, CallType, Offer, SignalingMessage};
 
@@ -282,4 +283,117 @@ async fn test_signaling_handler_call_lifecycle() {
         }
         _ => panic!("Expected CallEnded event"),
     }
+}
+
+#[tokio::test]
+async fn test_delivery_failed_event_flow() {
+    let (node, _dir) = create_test_node().await;
+
+    let mut rx = node.events().subscribe_direct_messages();
+
+    // Simulate a DeliveryFailed event (as would be emitted by OutboundFailure handler)
+    node.events()
+        .send_direct_message(DirectMessageEvent::DeliveryFailed {
+            message_id: "msg-failed-001".to_string(),
+            recipient: "did:variance:offline_user".to_string(),
+        });
+
+    let event = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("Timeout waiting for event")
+        .expect("Failed to receive event");
+
+    match event {
+        DirectMessageEvent::DeliveryFailed {
+            message_id,
+            recipient,
+        } => {
+            assert_eq!(message_id, "msg-failed-001");
+            assert_eq!(recipient, "did:variance:offline_user");
+        }
+        _ => panic!("Expected DeliveryFailed event, got {:?}", event),
+    }
+}
+
+#[tokio::test]
+async fn test_delivery_nack_event_flow() {
+    let (node, _dir) = create_test_node().await;
+
+    let mut rx = node.events().subscribe_direct_messages();
+
+    let peer = PeerId::random();
+    node.events()
+        .send_direct_message(DirectMessageEvent::DeliveryNack {
+            peer,
+            message_id: "msg-nack-001".to_string(),
+            error: "rate limited".to_string(),
+        });
+
+    let event = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("Timeout waiting for event")
+        .expect("Failed to receive event");
+
+    match event {
+        DirectMessageEvent::DeliveryNack {
+            peer: recv_peer,
+            message_id,
+            error,
+        } => {
+            assert_eq!(recv_peer, peer);
+            assert_eq!(message_id, "msg-nack-001");
+            assert_eq!(error, "rate limited");
+        }
+        _ => panic!("Expected DeliveryNack event, got {:?}", event),
+    }
+}
+
+/// Sending a DM to an unknown peer DID should fail with an error
+/// (the app layer then queues the message as pending).
+#[tokio::test]
+async fn test_send_dm_to_unknown_peer_fails() {
+    let dir = tempdir().unwrap();
+    let config = Config {
+        storage_path: dir.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (_node, handle) = Node::new(config).unwrap();
+
+    let message = variance_proto::messaging_proto::DirectMessage {
+        id: "test-msg-001".to_string(),
+        sender_did: "did:variance:alice".to_string(),
+        recipient_did: "did:variance:nobody".to_string(),
+        ciphertext: vec![1, 2, 3],
+        olm_message_type: 0,
+        signature: vec![],
+        timestamp: 1000,
+        r#type: 0,
+        reply_to: None,
+        sender_identity_key: None,
+    };
+
+    // Must run the node in the background so commands are processed
+    let mut node = _node;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::mpsc::channel(1);
+    let node_handle = tokio::spawn(async move {
+        let _ = node.run(shutdown_rx).await;
+    });
+
+    // Small delay for the node run loop to start
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = handle
+        .send_direct_message("did:variance:nobody".to_string(), message)
+        .await;
+
+    assert!(result.is_err(), "Sending to unknown peer DID should fail");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("Unknown peer DID"),
+        "Error should mention unknown peer DID, got: {}",
+        err
+    );
+
+    drop(shutdown_tx);
+    node_handle.abort();
 }

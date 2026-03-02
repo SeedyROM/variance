@@ -102,6 +102,11 @@ pub enum WsMessage {
         message_id: String,
         error: String,
     },
+    /// A message's delivery status changed (e.g. OutboundFailure after send_request).
+    DirectMessageStatusChanged {
+        message_id: String,
+        status: String,
+    },
     GroupMessageReceived {
         group_id: String,
         from: String,
@@ -111,6 +116,7 @@ pub enum WsMessage {
     /// Auto-joined an MLS group after receiving a Welcome via DM.
     MlsGroupJoined {
         group_id: String,
+        group_name: Option<String>,
         inviter: String,
     },
     OfflineMessagesReceived {

@@ -118,8 +118,9 @@ export function useWebSocket() {
           break;
 
         case "OfflineMessagesReceived":
-          // Relay delivered offline messages — refetch conversations so sled-computed
-          // has_unread reflects any messages that arrived before the WS connected.
+          // Relay delivered offline messages — refetch conversations and messages
+          // so the user sees them immediately if they have a chat open.
+          tickInboundMessage();
           void queryClient.invalidateQueries({ queryKey: ["conversations"] });
           break;
 
@@ -127,6 +128,13 @@ export function useWebSocket() {
           // A connected peer changed their username — update display name and
           // refresh conversations so the new name appears immediately.
           setPeerName(event.did, event.display_name);
+          void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+          break;
+
+        case "DirectMessageStatusChanged":
+          // A message's delivery status changed (e.g. OutboundFailure after send)
+          // Refetch messages so the UI updates the status icon (✓✓ → ⏰)
+          tickInboundMessage();
           void queryClient.invalidateQueries({ queryKey: ["conversations"] });
           break;
 

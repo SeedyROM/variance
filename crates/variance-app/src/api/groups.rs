@@ -68,6 +68,12 @@ pub struct RemoveGroupReactionRequest {
     pub group_id: String,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct GroupMemberInfo {
+    pub did: String,
+    pub display_name: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct MlsAcceptWelcomeRequest {
     /// Hex-encoded TLS-serialized MLS Welcome message.
@@ -183,6 +189,26 @@ pub(super) async fn mls_list_groups(
     infos.sort_by(|a, b| b.last_message_timestamp.cmp(&a.last_message_timestamp));
 
     Ok(Json(infos))
+}
+
+/// List members of a specific MLS group.
+pub(super) async fn mls_list_members(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<GroupMemberInfo>>> {
+    let dids = state.mls_groups.list_members(&id).map_err(|e| Error::App {
+        message: format!("Failed to list group members: {}", e),
+    })?;
+
+    let members: Vec<GroupMemberInfo> = dids
+        .into_iter()
+        .map(|did| {
+            let display_name = state.username_registry.get_display_name(&did);
+            GroupMemberInfo { did, display_name }
+        })
+        .collect();
+
+    Ok(Json(members))
 }
 
 /// Create a new MLS group. The local user is the sole initial member.
@@ -328,6 +354,15 @@ pub(super) async fn mls_invite_to_group(
         metadata.insert("type".to_string(), "mls_welcome".to_string());
         metadata.insert("group_id".to_string(), id.clone());
         metadata.insert("mls_welcome".to_string(), welcome_hex.clone());
+
+        // Include the group name so the invitee can display it immediately.
+        if let Ok(all_meta) = state.storage.fetch_all_group_metadata().await {
+            if let Some(group_meta) = all_meta.into_iter().find(|g| g.id == id) {
+                if !group_meta.name.is_empty() {
+                    metadata.insert("group_name".to_string(), group_meta.name);
+                }
+            }
+        }
 
         let content = MessageContent {
             text: String::new(),

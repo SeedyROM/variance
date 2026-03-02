@@ -112,6 +112,13 @@ pub enum DirectMessageEvent {
         message_id: String,
         error: String,
     },
+
+    /// Outbound message delivery failed (peer unreachable after send was initiated).
+    /// The `message` is included so the app layer can re-queue it as pending.
+    DeliveryFailed {
+        message_id: String,
+        recipient: String,
+    },
 }
 
 /// Events from group messaging
@@ -365,5 +372,55 @@ mod tests {
         // Both subscribers should receive the event
         let _ = rx1.recv().await.unwrap();
         let _ = rx2.recv().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_delivery_failed_event() {
+        let channels = EventChannels::new(10);
+        let mut rx = channels.subscribe_direct_messages();
+
+        channels.send_direct_message(DirectMessageEvent::DeliveryFailed {
+            message_id: "msg-001".to_string(),
+            recipient: "did:variance:bob".to_string(),
+        });
+
+        let received = rx.recv().await.unwrap();
+        match received {
+            DirectMessageEvent::DeliveryFailed {
+                message_id,
+                recipient,
+            } => {
+                assert_eq!(message_id, "msg-001");
+                assert_eq!(recipient, "did:variance:bob");
+            }
+            _ => panic!("Expected DeliveryFailed event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_delivery_failed_isolated_from_identity() {
+        let channels = EventChannels::new(10);
+        let mut identity_rx = channels.subscribe_identity();
+        let mut dm_rx = channels.subscribe_direct_messages();
+
+        // Send a DeliveryFailed event
+        channels.send_direct_message(DirectMessageEvent::DeliveryFailed {
+            message_id: "msg-002".to_string(),
+            recipient: "did:variance:bob".to_string(),
+        });
+
+        // DM subscriber should receive it
+        let received = dm_rx.recv().await.unwrap();
+        assert!(matches!(
+            received,
+            DirectMessageEvent::DeliveryFailed { .. }
+        ));
+
+        // Identity subscriber should NOT receive anything
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), identity_rx.recv())
+                .await
+                .is_err()
+        );
     }
 }

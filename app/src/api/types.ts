@@ -78,6 +78,11 @@ export interface MlsGroupInfo {
   last_message_timestamp: number | null;
 }
 
+export interface GroupMemberInfo {
+  did: string;
+  display_name: string | null;
+}
+
 export interface SendDirectMessageRequest {
   recipient_did: string;
   text: string;
@@ -128,7 +133,7 @@ export type WsEvent =
       reply_to?: string;
     }
   | { type: "GroupMessageReceived"; group_id: string; message_id: string }
-  | { type: "MlsGroupJoined"; group_id: string; inviter: string }
+  | { type: "MlsGroupJoined"; group_id: string; group_name?: string; inviter: string }
   | { type: "TypingStarted"; from: string; recipient: string }
   | { type: "TypingStopped"; from: string; recipient: string }
   | { type: "ReceiptDelivered"; message_id: string }
@@ -137,7 +142,8 @@ export type WsEvent =
   | { type: "CallEnded"; call_id: string }
   | { type: "PresenceUpdated"; did: string; online: boolean; display_name?: string }
   | { type: "OfflineMessagesReceived"; count: number }
-  | { type: "PeerRenamed"; did: string; display_name: string };
+  | { type: "PeerRenamed"; did: string; display_name: string }
+  | { type: "DirectMessageStatusChanged"; message_id: string; status: string };
 
 // ===== Tauri Commands =====
 

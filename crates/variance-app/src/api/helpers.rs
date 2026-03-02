@@ -325,28 +325,23 @@ pub async fn send_dm_to_peer(
             "sent"
         }
         Err(e) => {
-            let err_msg = e.to_string();
-            if err_msg.contains("Unknown peer DID") {
-                tracing::debug!(
-                    "Peer {} is offline, queuing message for later delivery",
-                    recipient_did
+            tracing::debug!(
+                "Peer {} not reachable, queuing message for later delivery: {}",
+                recipient_did,
+                e
+            );
+            if let Err(queue_err) = state
+                .direct_messaging
+                .queue_pending_message(recipient_did, message.clone())
+                .await
+            {
+                tracing::warn!(
+                    "Failed to queue pending message for {}: {}",
+                    recipient_did,
+                    queue_err
                 );
-                if let Err(queue_err) = state
-                    .direct_messaging
-                    .queue_pending_message(recipient_did, message.clone())
-                    .await
-                {
-                    tracing::warn!(
-                        "Failed to queue pending message for {}: {}",
-                        recipient_did,
-                        queue_err
-                    );
-                }
-                "pending"
-            } else {
-                tracing::debug!("P2P direct message delivery failed: {}", e);
-                "sent" // Stored locally; will sync later
             }
+            "pending"
         }
     }
 }

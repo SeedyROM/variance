@@ -72,6 +72,9 @@ pub struct Node {
     pending_auto_discovery: HashMap<OutboundRequestId, libp2p::PeerId>,
     /// Per-peer, per-protocol inbound rate limiter
     rate_limiter: PeerRateLimiter,
+    /// Tracks in-flight direct message sends: OutboundRequestId → (message_id, recipient_did).
+    /// Used to correlate OutboundFailure/ACK events back to specific messages.
+    pending_dm_sends: HashMap<OutboundRequestId, (String, String)>,
     /// Peers discovered via mDNS or Identify, keyed by PeerId with their known addresses.
     /// Used by the periodic reconnect loop to redial peers that dropped.
     known_peers: HashMap<PeerId, Vec<Multiaddr>>,
@@ -251,6 +254,7 @@ impl Node {
             pending_resolve_requests: HashMap::new(),
             pending_auto_discovery: HashMap::new(),
             rate_limiter: PeerRateLimiter::new(),
+            pending_dm_sends: HashMap::new(),
             known_peers: HashMap::new(),
             relay_peer_ids,
             pending_relay_query: None,
@@ -638,12 +642,26 @@ impl Node {
                     .copied()
                     .or_else(|| self.peer_store.get(&peer_did));
                 if let Some(peer) = peer {
-                    debug!("Sending direct message to {} ({})", peer_did, peer);
-                    self.swarm
-                        .behaviour_mut()
-                        .direct_messages
-                        .send_request(&peer, message);
-                    let _ = response_tx.send(Ok(()));
+                    if !self.swarm.is_connected(&peer) {
+                        warn!(
+                            "Peer {} ({}) is known but not connected, cannot send",
+                            peer_did, peer
+                        );
+                        let _ = response_tx.send(Err(Error::Protocol {
+                            message: format!("Peer not connected: {}", peer_did),
+                        }));
+                    } else {
+                        debug!("Sending direct message to {} ({})", peer_did, peer);
+                        let msg_id = message.id.clone();
+                        let request_id = self
+                            .swarm
+                            .behaviour_mut()
+                            .direct_messages
+                            .send_request(&peer, message);
+                        self.pending_dm_sends
+                            .insert(request_id, (msg_id, peer_did.clone()));
+                        let _ = response_tx.send(Ok(()));
+                    }
                 } else {
                     warn!("Cannot send direct message: unknown peer DID {}", peer_did);
                     let _ = response_tx.send(Err(Error::Protocol {

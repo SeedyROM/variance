@@ -268,6 +268,8 @@ impl EventRouter {
                                     == Some("mls_welcome")
                                 {
                                     if let Some(welcome_hex) = content.metadata.get("mls_welcome") {
+                                        let group_name =
+                                            content.metadata.get("group_name").cloned();
                                         match Self::handle_mls_welcome_dm(
                                             &mls_groups_dm,
                                             &storage_dm,
@@ -275,6 +277,7 @@ impl EventRouter {
                                             &node_handle,
                                             welcome_hex,
                                             content.metadata.get("group_id"),
+                                            group_name.as_deref(),
                                         )
                                         .await
                                         {
@@ -286,6 +289,7 @@ impl EventRouter {
                                                 );
                                                 ws_manager.broadcast(WsMessage::MlsGroupJoined {
                                                     group_id,
+                                                    group_name,
                                                     inviter: from.clone(),
                                                 });
                                             }
@@ -357,6 +361,24 @@ impl EventRouter {
                         );
                         let msg = WsMessage::DirectMessageNack { message_id, error };
                         ws_manager.broadcast(msg);
+                    }
+                    DirectMessageEvent::DeliveryFailed {
+                        message_id,
+                        recipient,
+                    } => {
+                        warn!(
+                            "EventRouter: Message {} delivery to {} failed (OutboundFailure), \
+                             notifying frontend",
+                            message_id, recipient
+                        );
+                        // The is_connected check in the P2P node prevents most false
+                        // positives. This path fires only in the rare race where the peer
+                        // disconnects between the check and send_request. Notify the
+                        // frontend so the UI can update the status indicator.
+                        ws_manager.broadcast(WsMessage::DirectMessageStatusChanged {
+                            message_id,
+                            status: "pending".to_string(),
+                        });
                     }
                 }
             }
@@ -672,6 +694,7 @@ impl EventRouter {
         node_handle: &variance_p2p::commands::NodeHandle,
         welcome_hex: &str,
         group_id_hint: Option<&String>,
+        group_name: Option<&str>,
     ) -> std::result::Result<String, String> {
         use variance_messaging::mls::MlsGroupHandler;
 
@@ -686,6 +709,21 @@ impl EventRouter {
             .map_err(|e| format!("Failed to join group from Welcome: {}", e))?;
 
         persist_mls_state_async(mls_groups, storage, local_did).await;
+
+        // Persist group name metadata so the invitee sees the human-readable name.
+        if let Some(name) = group_name {
+            let group_meta = variance_proto::messaging_proto::Group {
+                id: group_id.clone(),
+                name: name.to_string(),
+                ..Default::default()
+            };
+            if let Err(e) = storage.store_group_metadata(&group_meta).await {
+                warn!(
+                    "EventRouter: Failed to persist group metadata for joined group: {}",
+                    e
+                );
+            }
+        }
 
         // Subscribe to the group's GossipSub topic
         let topic = format!("/variance/group/{}", group_id);

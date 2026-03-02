@@ -990,4 +990,154 @@ mod tests {
         assert_eq!(d2.text, "second");
         assert_eq!(d3.text, "third");
     }
+
+    /// Verify the full pending message lifecycle:
+    /// queue → is_pending → get_pending → mark_sent → is_pending (false)
+    #[tokio::test]
+    async fn test_pending_message_lifecycle() {
+        let (handler, _dir) = make_handler("did:variance:alice", Account::new());
+
+        let message = DirectMessage {
+            id: "pending-msg-001".to_string(),
+            sender_did: "did:variance:alice".to_string(),
+            recipient_did: "did:variance:bob".to_string(),
+            ciphertext: vec![1, 2, 3],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+
+        // Initially not pending
+        assert!(!handler.is_message_pending("pending-msg-001").await.unwrap());
+
+        // Queue the message
+        handler
+            .queue_pending_message("did:variance:bob", message.clone())
+            .await
+            .unwrap();
+
+        // Now it should be pending
+        assert!(handler.is_message_pending("pending-msg-001").await.unwrap());
+
+        // Should appear in pending messages for the recipient
+        let pending = handler.get_pending_messages("did:variance:bob").await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, "pending-msg-001");
+
+        // Bob should appear in peers with pending messages
+        let peers = handler.peers_with_pending_messages().await.unwrap();
+        assert!(peers.contains(&"did:variance:bob".to_string()));
+
+        // Mark as sent (removes from pending queue)
+        handler.mark_pending_sent("pending-msg-001").await.unwrap();
+
+        // Should no longer be pending
+        assert!(!handler.is_message_pending("pending-msg-001").await.unwrap());
+
+        // Should have no pending messages for bob
+        let pending = handler.get_pending_messages("did:variance:bob").await.unwrap();
+        assert!(pending.is_empty());
+    }
+
+    /// Queue multiple messages for the same peer, then mark them sent one by one.
+    #[tokio::test]
+    async fn test_multiple_pending_messages_same_peer() {
+        let (handler, _dir) = make_handler("did:variance:alice", Account::new());
+
+        let make_msg = |id: &str| DirectMessage {
+            id: id.to_string(),
+            sender_did: "did:variance:alice".to_string(),
+            recipient_did: "did:variance:bob".to_string(),
+            ciphertext: vec![1, 2, 3],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+
+        handler
+            .queue_pending_message("did:variance:bob", make_msg("msg-a"))
+            .await
+            .unwrap();
+        handler
+            .queue_pending_message("did:variance:bob", make_msg("msg-b"))
+            .await
+            .unwrap();
+        handler
+            .queue_pending_message("did:variance:bob", make_msg("msg-c"))
+            .await
+            .unwrap();
+
+        // All three pending
+        let pending = handler.get_pending_messages("did:variance:bob").await.unwrap();
+        assert_eq!(pending.len(), 3);
+
+        // Mark first as sent
+        handler.mark_pending_sent("msg-a").await.unwrap();
+        let pending = handler.get_pending_messages("did:variance:bob").await.unwrap();
+        assert_eq!(pending.len(), 2);
+        assert!(!handler.is_message_pending("msg-a").await.unwrap());
+        assert!(handler.is_message_pending("msg-b").await.unwrap());
+
+        // Mark remaining
+        handler.mark_pending_sent("msg-b").await.unwrap();
+        handler.mark_pending_sent("msg-c").await.unwrap();
+        let pending = handler.get_pending_messages("did:variance:bob").await.unwrap();
+        assert!(pending.is_empty());
+    }
+
+    /// Queue messages for different peers and verify isolation.
+    #[tokio::test]
+    async fn test_pending_messages_isolated_by_peer() {
+        let (handler, _dir) = make_handler("did:variance:alice", Account::new());
+
+        let make_msg = |id: &str, recipient: &str| DirectMessage {
+            id: id.to_string(),
+            sender_did: "did:variance:alice".to_string(),
+            recipient_did: recipient.to_string(),
+            ciphertext: vec![1, 2, 3],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+
+        handler
+            .queue_pending_message("did:variance:bob", make_msg("msg-bob-1", "did:variance:bob"))
+            .await
+            .unwrap();
+        handler
+            .queue_pending_message(
+                "did:variance:carol",
+                make_msg("msg-carol-1", "did:variance:carol"),
+            )
+            .await
+            .unwrap();
+
+        // Each peer should only see their own messages
+        let bob_pending = handler.get_pending_messages("did:variance:bob").await.unwrap();
+        assert_eq!(bob_pending.len(), 1);
+        assert_eq!(bob_pending[0].id, "msg-bob-1");
+
+        let carol_pending = handler.get_pending_messages("did:variance:carol").await.unwrap();
+        assert_eq!(carol_pending.len(), 1);
+        assert_eq!(carol_pending[0].id, "msg-carol-1");
+
+        // Both peers should appear in the peers-with-pending list
+        let peers = handler.peers_with_pending_messages().await.unwrap();
+        assert!(peers.contains(&"did:variance:bob".to_string()));
+        assert!(peers.contains(&"did:variance:carol".to_string()));
+
+        // Marking bob's message sent shouldn't affect carol's
+        handler.mark_pending_sent("msg-bob-1").await.unwrap();
+        let carol_pending = handler.get_pending_messages("did:variance:carol").await.unwrap();
+        assert_eq!(carol_pending.len(), 1);
+    }
 }

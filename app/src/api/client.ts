@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   Conversation,
   DirectMessage,
+  GroupMemberInfo,
   GroupMessage,
   HealthResponse,
   IdentityStatus,
@@ -142,6 +143,9 @@ export const groupsApi = {
     request<{ success: boolean }>(`/mls/groups/${encodeURIComponent(groupId)}/leave`, {
       method: "POST",
     }),
+
+  listMembers: (groupId: string) =>
+    request<GroupMemberInfo[]>(`/mls/groups/${encodeURIComponent(groupId)}/members`),
 };
 
 // ===== Reactions =====
