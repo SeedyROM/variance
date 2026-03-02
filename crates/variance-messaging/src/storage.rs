@@ -98,6 +98,18 @@ pub trait MessageStorage: Send + Sync {
     /// Delete all messages in a direct conversation.
     async fn delete_direct_conversation(&self, did1: &str, did2: &str) -> Result<()>;
 
+    /// Delete a single direct message by its composite key fields.
+    ///
+    /// Used to remove control messages (e.g. MLS Welcome) that were decrypted
+    /// and stored but should not appear in the conversation.
+    async fn delete_direct_by_id(
+        &self,
+        sender_did: &str,
+        recipient_did: &str,
+        timestamp: i64,
+        message_id: &str,
+    ) -> Result<()>;
+
     /// Persist encrypted plaintext for a message so it can be read after restart.
     ///
     /// `encrypted` is `nonce (12 bytes) || AES-256-GCM ciphertext` produced by
@@ -689,6 +701,26 @@ impl MessageStorage for LocalMessageStorage {
 
         for key in keys_to_delete {
             tree.remove(key).map_err(|e| Error::Storage { source: e })?;
+        }
+
+        Ok(())
+    }
+
+    async fn delete_direct_by_id(
+        &self,
+        sender_did: &str,
+        recipient_did: &str,
+        timestamp: i64,
+        message_id: &str,
+    ) -> Result<()> {
+        let tree = self.direct_tree()?;
+        let key = Self::direct_key(sender_did, recipient_did, timestamp, message_id);
+        tree.remove(key.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?;
+
+        // Also remove the stored plaintext cache entry
+        if let Ok(pt_tree) = self.plaintext_tree() {
+            let _ = pt_tree.remove(message_id.as_bytes());
         }
 
         Ok(())
@@ -1546,5 +1578,98 @@ mod tests {
         let after = storage.fetch_group("test-group", 10, None).await.unwrap();
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].id, "01ARZ3NDEKTSV4RRFFQ69G5FBB");
+    }
+
+    #[tokio::test]
+    async fn test_delete_direct_by_id() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let msg = DirectMessage {
+            id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+            sender_did: "did:key:alice".to_string(),
+            recipient_did: "did:key:bob".to_string(),
+            ciphertext: vec![1, 2, 3],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: 5000,
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+
+        storage.store_direct(&msg).await.unwrap();
+
+        // Verify the message exists.
+        let before = storage
+            .fetch_direct("did:key:alice", "did:key:bob", 10, None)
+            .await
+            .unwrap();
+        assert_eq!(before.len(), 1);
+
+        // Delete it by ID.
+        storage
+            .delete_direct_by_id(
+                "did:key:alice",
+                "did:key:bob",
+                5000,
+                "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            )
+            .await
+            .unwrap();
+
+        // Verify it's gone.
+        let after = storage
+            .fetch_direct("did:key:alice", "did:key:bob", 10, None)
+            .await
+            .unwrap();
+        assert!(after.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_delete_direct_by_id_preserves_other_messages() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let msg1 = DirectMessage {
+            id: "msg-keep".to_string(),
+            sender_did: "did:key:alice".to_string(),
+            recipient_did: "did:key:bob".to_string(),
+            ciphertext: vec![1],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: 1000,
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+        let msg2 = DirectMessage {
+            id: "msg-delete".to_string(),
+            sender_did: "did:key:alice".to_string(),
+            recipient_did: "did:key:bob".to_string(),
+            ciphertext: vec![2],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: 2000,
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+
+        storage.store_direct(&msg1).await.unwrap();
+        storage.store_direct(&msg2).await.unwrap();
+
+        // Delete only msg2.
+        storage
+            .delete_direct_by_id("did:key:alice", "did:key:bob", 2000, "msg-delete")
+            .await
+            .unwrap();
+
+        let remaining = storage
+            .fetch_direct("did:key:alice", "did:key:bob", 10, None)
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "msg-keep");
     }
 }

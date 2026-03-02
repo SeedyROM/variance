@@ -302,7 +302,23 @@ impl EventRouter {
                                             }
                                         }
                                     }
-                                    // Don't broadcast mls_welcome as a normal DM
+                                    // Don't broadcast mls_welcome as a normal DM.
+                                    // Remove the stored message from the direct messages tree
+                                    // so it doesn't appear as an empty bubble in the conversation.
+                                    if let Err(e) = storage_dm
+                                        .delete_direct_by_id(
+                                            &from,
+                                            &local_did_dm,
+                                            timestamp,
+                                            &message_id,
+                                        )
+                                        .await
+                                    {
+                                        warn!(
+                                            "Failed to delete MLS Welcome DM {} from storage: {}",
+                                            message_id, e
+                                        );
+                                    }
                                 } else {
                                     let msg = WsMessage::DirectMessageReceived {
                                         from,
