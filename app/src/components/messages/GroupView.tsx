@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Send, User } from "lucide-react";
+import { Send } from "lucide-react";
 import { GroupHeader } from "./GroupHeader";
 import { GroupMessageBubble } from "./GroupMessageBubble";
 import { DateDivider } from "./DateDivider";
 import { ScrollArea } from "../ui/ScrollArea";
+import { Avatar } from "../ui/Avatar";
+import { StatusDot } from "../ui/StatusIndicator";
 import { messagesApi, groupsApi, reactionsApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { isDifferentDay } from "../../utils/time";
-import type { GroupMessage, ReactionSummary } from "../../api/types";
+import type { GroupMessage, GroupMemberInfo, ReactionSummary } from "../../api/types";
 
 interface GroupViewProps {
   groupId: string;
@@ -227,30 +229,121 @@ export function GroupView({ groupId }: GroupViewProps) {
         </div>
 
         {/* Member sidebar */}
-        <div className="w-48 shrink-0 border-l border-surface-200 dark:border-surface-800 overflow-y-auto">
-          <div className="px-3 py-3">
-            <p className="text-xs font-medium text-surface-500 uppercase tracking-wide mb-2">
-              Members ({members.length})
-            </p>
-            <div className="flex flex-col gap-0.5">
-              {members.map((m) => {
-                const isMe = m.did === localDid;
-                return (
-                  <div
-                    key={m.did}
-                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-surface-700 dark:text-surface-300"
-                  >
-                    <User className="h-3 w-3 shrink-0 text-surface-400" />
-                    <span className="truncate">
-                      {m.display_name ?? m.did.slice(-12)}
-                      {isMe && <span className="ml-1 text-surface-400">(you)</span>}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+        <MemberSidebar members={members} localDid={localDid} />
+      </div>
+    </div>
+  );
+}
+
+function MemberSidebar({
+  members,
+  localDid,
+}: {
+  members: GroupMemberInfo[];
+  localDid: string | null;
+}) {
+  const presenceMap = useMessagingStore((s) => s.presenceMap);
+
+  const { online, offline } = useMemo(() => {
+    const on: GroupMemberInfo[] = [];
+    const off: GroupMemberInfo[] = [];
+    for (const m of members) {
+      // Local user is always "online" from their own perspective
+      const isOnline = m.did === localDid || (presenceMap.get(m.did) ?? false);
+      (isOnline ? on : off).push(m);
+    }
+    // Sort alphabetically by display name within each section
+    const byName = (a: GroupMemberInfo, b: GroupMemberInfo) => {
+      const nameA = a.display_name ?? a.did.slice(-12);
+      const nameB = b.display_name ?? b.did.slice(-12);
+      return nameA.localeCompare(nameB);
+    };
+    on.sort(byName);
+    off.sort(byName);
+    return { online: on, offline: off };
+  }, [members, presenceMap, localDid]);
+
+  return (
+    <div className="w-56 shrink-0 border-l border-surface-200 dark:border-surface-800 bg-surface-50 dark:bg-surface-900/50">
+      <ScrollArea className="h-full">
+        <div className="px-3 py-4 flex flex-col gap-4">
+          {/* Online section */}
+          <MemberSection
+            label={`Online — ${online.length}`}
+            members={online}
+            online
+            localDid={localDid}
+          />
+
+          {/* Offline section */}
+          {offline.length > 0 && (
+            <MemberSection
+              label={`Offline — ${offline.length}`}
+              members={offline}
+              online={false}
+              localDid={localDid}
+            />
+          )}
         </div>
+      </ScrollArea>
+    </div>
+  );
+}
+
+function MemberSection({
+  label,
+  members,
+  online,
+  localDid,
+}: {
+  label: string;
+  members: GroupMemberInfo[];
+  online: boolean;
+  localDid: string | null;
+}) {
+  return (
+    <div>
+      <p className="text-[11px] font-semibold text-surface-500 dark:text-surface-400 uppercase tracking-wider px-1 mb-1.5">
+        {label}
+      </p>
+      <div className="flex flex-col gap-0.5">
+        {members.map((m) => {
+          const isMe = m.did === localDid;
+          const displayName = m.display_name ?? m.did.slice(-12);
+
+          return (
+            <div
+              key={m.did}
+              className="group flex items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface-200/60 dark:hover:bg-surface-800/60 transition-colors"
+            >
+              {/* Avatar with status dot overlay */}
+              <div className="relative shrink-0">
+                <Avatar did={m.did} size="sm" className={online ? "" : "opacity-40"} />
+                <StatusDot
+                  online={online}
+                  size="xs"
+                  className="absolute -bottom-0.5 -right-0.5 border-[1.5px] border-surface-50 dark:border-surface-900"
+                />
+              </div>
+
+              {/* Name */}
+              <span
+                className={`truncate text-[13px] font-medium ${
+                  online
+                    ? "text-surface-800 dark:text-surface-200"
+                    : "text-surface-400 dark:text-surface-500"
+                }`}
+              >
+                {displayName}
+                {isMe && (
+                  <span className="ml-1 text-[11px] font-normal text-surface-400 dark:text-surface-500">
+                    (you)
+                  </span>
+                )}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
