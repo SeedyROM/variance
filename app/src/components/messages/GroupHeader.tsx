@@ -1,14 +1,17 @@
 import { useState } from "react";
 import { Users, Settings } from "lucide-react";
+import { cn } from "../../utils/cn";
 import { ManageGroupPanel } from "./ManageGroupPanel";
 import type { MlsGroupInfo } from "../../api/types";
 
 interface GroupHeaderProps {
   group: MlsGroupInfo;
   onLeave: () => void;
+  onToggleMembers?: () => void;
+  membersOpen?: boolean;
 }
 
-export function GroupHeader({ group, onLeave }: GroupHeaderProps) {
+export function GroupHeader({ group, onLeave, onToggleMembers, membersOpen }: GroupHeaderProps) {
   const [showManage, setShowManage] = useState(false);
 
   return (
@@ -25,6 +28,16 @@ export function GroupHeader({ group, onLeave }: GroupHeaderProps) {
             {group.member_count} member{group.member_count !== 1 ? "s" : ""}
           </p>
         </div>
+        <button
+          onClick={onToggleMembers}
+          className={cn(
+            "rounded-lg p-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 transition-colors",
+            membersOpen ? "text-primary-500 bg-primary-500/10" : "text-surface-500"
+          )}
+          title={membersOpen ? "Hide members" : "Show members"}
+        >
+          <Users className="h-4 w-4" />
+        </button>
         <button
           onClick={() => setShowManage(true)}
           className="rounded-lg p-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 text-surface-500"

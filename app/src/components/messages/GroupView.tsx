@@ -11,7 +11,23 @@ import { messagesApi, groupsApi, reactionsApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { isDifferentDay } from "../../utils/time";
+import { cn } from "../../utils/cn";
 import type { GroupMessage, GroupMemberInfo, ReactionSummary } from "../../api/types";
+
+/** Returns true when the viewport is narrower than the given pixel width. */
+function useMediaQuery(maxWidth: number): boolean {
+  const [matches, setMatches] = useState(
+    () => typeof window !== "undefined" && window.innerWidth < maxWidth
+  );
+  useEffect(() => {
+    const mql = window.matchMedia(`(max-width: ${maxWidth - 1}px)`);
+    const handler = (e: MediaQueryListEvent) => setMatches(e.matches);
+    setMatches(mql.matches);
+    mql.addEventListener("change", handler);
+    return () => mql.removeEventListener("change", handler);
+  }, [maxWidth]);
+  return matches;
+}
 
 interface GroupViewProps {
   groupId: string;
@@ -116,10 +132,19 @@ function aggregateGroupReactions(
 
 export function GroupView({ groupId }: GroupViewProps) {
   const localDid = useIdentityStore((s) => s.did);
+  const presenceMap = useMessagingStore((s) => s.presenceMap);
   const setActiveConversation = useMessagingStore((s) => s.setActiveConversation);
   const groupMessageTick = useMessagingStore((s) => s.groupMessageTick);
   const queryClient = useQueryClient();
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Sidebar toggle — hidden by default on narrow windows (<768px)
+  const isNarrow = useMediaQuery(768);
+  const [sidebarOpen, setSidebarOpen] = useState(!isNarrow);
+  // Auto-close sidebar when the window shrinks below the breakpoint
+  useEffect(() => {
+    if (isNarrow) setSidebarOpen(false);
+  }, [isNarrow]);
 
   const { data: group } = useQuery({
     queryKey: ["groups"],
@@ -189,9 +214,14 @@ export function GroupView({ groupId }: GroupViewProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <GroupHeader group={group} onLeave={() => setActiveConversation(null)} />
+      <GroupHeader
+        group={group}
+        onLeave={() => setActiveConversation(null)}
+        onToggleMembers={() => setSidebarOpen((v) => !v)}
+        membersOpen={sidebarOpen}
+      />
 
-      <div className="flex flex-1 min-h-0">
+      <div className="relative flex flex-1 min-h-0">
         {/* Chat area */}
         <div className="flex flex-1 flex-col min-w-0">
           <ScrollArea className="flex-1 px-4 py-4">
@@ -206,6 +236,8 @@ export function GroupView({ groupId }: GroupViewProps) {
                   const showDivider =
                     i === 0 || isDifferentDay(sortedMessages[i - 1].timestamp, msg.timestamp);
                   const showSender = groupShowSenderAbove(sortedMessages, i, localDid);
+                  const isOnline =
+                    msg.sender_did === localDid || (presenceMap.get(msg.sender_did) ?? false);
 
                   return (
                     <div key={msg.id}>
@@ -214,6 +246,12 @@ export function GroupView({ groupId }: GroupViewProps) {
                         message={msg}
                         isOwn={isOwn}
                         showSender={showSender}
+                        showAvatar={
+                          showSender ||
+                          (isOwn &&
+                            (i === 0 || sortedMessages[i - 1].sender_did !== msg.sender_did))
+                        }
+                        senderOnline={isOnline}
                         reactions={reactionsByMsgId.get(msg.id) ?? []}
                         onReact={handleReact}
                       />
@@ -228,8 +266,19 @@ export function GroupView({ groupId }: GroupViewProps) {
           <GroupMessageInput groupId={groupId} />
         </div>
 
-        {/* Member sidebar */}
-        <MemberSidebar members={members} localDid={localDid} />
+        {/* Member sidebar — overlays on narrow screens, inline on wide */}
+        {sidebarOpen && (
+          <>
+            {/* Backdrop for narrow overlay */}
+            {isNarrow && (
+              <div
+                className="absolute inset-0 z-10 bg-black/20"
+                onClick={() => setSidebarOpen(false)}
+              />
+            )}
+            <MemberSidebar members={members} localDid={localDid} overlay={isNarrow} />
+          </>
+        )}
       </div>
     </div>
   );
@@ -238,9 +287,11 @@ export function GroupView({ groupId }: GroupViewProps) {
 function MemberSidebar({
   members,
   localDid,
+  overlay,
 }: {
   members: GroupMemberInfo[];
   localDid: string | null;
+  overlay?: boolean;
 }) {
   const presenceMap = useMessagingStore((s) => s.presenceMap);
 
@@ -248,11 +299,9 @@ function MemberSidebar({
     const on: GroupMemberInfo[] = [];
     const off: GroupMemberInfo[] = [];
     for (const m of members) {
-      // Local user is always "online" from their own perspective
       const isOnline = m.did === localDid || (presenceMap.get(m.did) ?? false);
       (isOnline ? on : off).push(m);
     }
-    // Sort alphabetically by display name within each section
     const byName = (a: GroupMemberInfo, b: GroupMemberInfo) => {
       const nameA = a.display_name ?? a.did.slice(-12);
       const nameB = b.display_name ?? b.did.slice(-12);
@@ -264,7 +313,12 @@ function MemberSidebar({
   }, [members, presenceMap, localDid]);
 
   return (
-    <div className="w-56 shrink-0 border-l border-surface-200 dark:border-surface-800 bg-surface-50 dark:bg-surface-900/50">
+    <div
+      className={cn(
+        "w-56 shrink-0 border-l border-surface-200 dark:border-surface-800 bg-surface-50 dark:bg-surface-900/50",
+        overlay && "absolute right-0 top-0 bottom-0 z-20 shadow-xl"
+      )}
+    >
       <ScrollArea className="h-full">
         <div className="px-3 py-4 flex flex-col gap-4">
           {/* Online section */}
@@ -321,8 +375,8 @@ function MemberSection({
                 <Avatar did={m.did} size="sm" className={online ? "" : "opacity-40"} />
                 <StatusDot
                   online={online}
-                  size="xs"
-                  className="absolute -bottom-0.5 -right-0.5 border-[1.5px] border-surface-50 dark:border-surface-900"
+                  size="md"
+                  className="absolute -bottom-0.5 -right-0.5 border-2 border-surface-50 dark:border-surface-900"
                 />
               </div>
 
