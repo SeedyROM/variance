@@ -1,5 +1,5 @@
 use tauri::State;
-use variance_app::{identity_gen, start_node as node_start, AppConfig, StorageConfig};
+use variance_app::{identity_gen, start_node as node_start, AppConfig, AppState, StorageConfig};
 
 use crate::state::NodeState;
 
@@ -22,11 +22,29 @@ pub async fn has_identity(identity_path: String) -> Result<bool, String> {
     Ok(std::path::Path::new(&identity_path).exists())
 }
 
+/// Check whether the identity file at the given path is passphrase-encrypted.
+///
+/// Returns `true` when the file starts with the `VEID` magic header written by
+/// `identity_crypto::encrypt`. Returns `false` for plaintext (unencrypted) files.
+/// Returns an error if the file cannot be read.
+#[tauri::command]
+pub async fn check_identity_encrypted(identity_path: String) -> Result<bool, String> {
+    let bytes = std::fs::read(&identity_path)
+        .map_err(|e| format!("Failed to read identity file: {}", e))?;
+    Ok(variance_app::identity_crypto::is_encrypted(&bytes))
+}
+
 /// Generate a new identity and write it to the given path.
+///
+/// Pass `passphrase` to encrypt the identity file at rest (Argon2id + AES-256-GCM).
+/// When `None`, the file is written as plaintext JSON (backward-compatible).
 ///
 /// Returns the DID and the 12-word mnemonic as a word list.
 #[tauri::command]
-pub async fn generate_identity(output_path: String) -> Result<GeneratedIdentity, String> {
+pub async fn generate_identity(
+    output_path: String,
+    passphrase: Option<String>,
+) -> Result<GeneratedIdentity, String> {
     let (identity, phrase) = identity_gen::generate().map_err(|e| e.to_string())?;
 
     let dir = std::path::Path::new(&output_path).parent().and_then(|p| {
@@ -41,9 +59,12 @@ pub async fn generate_identity(output_path: String) -> Result<GeneratedIdentity,
             .map_err(|e| format!("Failed to create directory: {}", e))?;
     }
 
-    let json = serde_json::to_string_pretty(&identity).map_err(|e| e.to_string())?;
-    std::fs::write(&output_path, json)
-        .map_err(|e| format!("Failed to write identity file: {}", e))?;
+    AppState::save_identity(
+        std::path::Path::new(&output_path),
+        &identity,
+        passphrase.as_deref(),
+    )
+    .map_err(|e| format!("Failed to write identity file: {}", e))?;
 
     let did = identity.did;
     let mnemonic = phrase.split_whitespace().map(String::from).collect();
@@ -53,9 +74,15 @@ pub async fn generate_identity(output_path: String) -> Result<GeneratedIdentity,
 
 /// Recover an identity from a BIP39 mnemonic phrase and write it to the given path.
 ///
+/// Pass `passphrase` to encrypt the recovered identity file at rest.
+///
 /// Returns the recovered DID.
 #[tauri::command]
-pub async fn recover_identity(mnemonic: String, output_path: String) -> Result<String, String> {
+pub async fn recover_identity(
+    mnemonic: String,
+    output_path: String,
+    passphrase: Option<String>,
+) -> Result<String, String> {
     let identity = identity_gen::recover(&mnemonic).map_err(|e| e.to_string())?;
 
     let dir = std::path::Path::new(&output_path).parent().and_then(|p| {
@@ -70,9 +97,12 @@ pub async fn recover_identity(mnemonic: String, output_path: String) -> Result<S
             .map_err(|e| format!("Failed to create directory: {}", e))?;
     }
 
-    let json = serde_json::to_string_pretty(&identity).map_err(|e| e.to_string())?;
-    std::fs::write(&output_path, json)
-        .map_err(|e| format!("Failed to write identity file: {}", e))?;
+    AppState::save_identity(
+        std::path::Path::new(&output_path),
+        &identity,
+        passphrase.as_deref(),
+    )
+    .map_err(|e| format!("Failed to write identity file: {}", e))?;
 
     Ok(identity.did)
 }
@@ -110,10 +140,17 @@ pub fn default_identity_path() -> String {
 
 /// Start the Variance P2P node and HTTP API server.
 ///
+/// Pass `passphrase` when the identity file is encrypted. When `None`, the file
+/// is treated as plaintext JSON.
+///
 /// Binds the HTTP server on `127.0.0.1:0` so the OS assigns a free port.
 /// Returns the assigned port number.
 #[tauri::command]
-pub async fn start_node(state: State<'_, NodeState>, identity_path: String) -> Result<u16, String> {
+pub async fn start_node(
+    state: State<'_, NodeState>,
+    identity_path: String,
+    passphrase: Option<String>,
+) -> Result<u16, String> {
     // Hold the start lock for the entire startup sequence. This prevents the
     // race caused by React StrictMode mounting effects twice in dev, which
     // would otherwise let two concurrent calls both pass the "already running"
@@ -172,7 +209,7 @@ pub async fn start_node(state: State<'_, NodeState>, identity_path: String) -> R
     }
 
     // Start the variance node (P2P + AppState + EventRouter + Router)
-    let node = node_start(&config, identity_file_path)
+    let node = node_start(&config, identity_file_path, passphrase.as_deref())
         .await
         .map_err(|e| format!("Failed to start Variance node: {}", e))?;
 
@@ -196,10 +233,20 @@ pub async fn start_node(state: State<'_, NodeState>, identity_path: String) -> R
         }
     });
 
+    // Wrap the node task so we can store a type-erased JoinHandle<anyhow::Result<()>>.
+    let raw_task = node.node_task;
+    let wrapped_task: tokio::task::JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
+        raw_task
+            .await
+            .map_err(|e| anyhow::anyhow!("Node task panicked: {}", e))?
+            .map_err(|e| anyhow::anyhow!("Node error: {}", e))
+    });
+
     // Store state for later shutdown
     *state.app_state.write().await = Some(node.app_state);
     *state.server_port.write().await = Some(port);
     *state.shutdown_tx.write().await = Some(node.shutdown_tx);
+    *state.node_task.write().await = Some(wrapped_task);
 
     Ok(port)
 }
@@ -207,12 +254,7 @@ pub async fn start_node(state: State<'_, NodeState>, identity_path: String) -> R
 /// Stop the running Variance node.
 #[tauri::command]
 pub async fn stop_node(state: State<'_, NodeState>) -> Result<(), String> {
-    let tx = state.shutdown_tx.write().await.take();
-    if let Some(tx) = tx {
-        let _ = tx.send(()).await;
-    }
-    *state.app_state.write().await = None;
-    *state.server_port.write().await = None;
+    state.stop().await;
     Ok(())
 }
 
@@ -275,7 +317,7 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let result = generate_identity(path.clone()).await.unwrap();
+        let result = generate_identity(path.clone(), None).await.unwrap();
 
         assert!(result.did.starts_with("did:variance:"));
         assert_eq!(result.mnemonic.len(), 12);
@@ -293,7 +335,7 @@ mod tests {
             .to_string();
 
         // Generate first to get a valid mnemonic
-        let generated = generate_identity(path.clone()).await.unwrap();
+        let generated = generate_identity(path.clone(), None).await.unwrap();
         let phrase = generated.mnemonic.join(" ");
 
         // Recover into a different file
@@ -303,7 +345,7 @@ mod tests {
             .to_str()
             .unwrap()
             .to_string();
-        let recovered_did = recover_identity(phrase, recover_path.clone())
+        let recovered_did = recover_identity(phrase, recover_path.clone(), None)
             .await
             .unwrap();
 

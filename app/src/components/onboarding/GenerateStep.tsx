@@ -8,9 +8,10 @@ import type { GeneratedIdentity } from "../../api/types";
 interface GenerateStepProps {
   onBack: () => void;
   onComplete: (did: string) => void;
+  passphrase: string | null;
 }
 
-export function GenerateStep({ onBack, onComplete }: GenerateStepProps) {
+export function GenerateStep({ onBack, onComplete, passphrase }: GenerateStepProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [identity, setIdentity] = useState<GeneratedIdentity | null>(null);
@@ -23,6 +24,7 @@ export function GenerateStep({ onBack, onComplete }: GenerateStepProps) {
       const identityPath = await invoke<string>("default_identity_path");
       const generated = await invoke<GeneratedIdentity>("generate_identity", {
         outputPath: identityPath,
+        passphrase,
       });
       setIdentityPath(identityPath);
       setIdentity(generated);

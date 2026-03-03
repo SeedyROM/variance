@@ -180,7 +180,9 @@ async fn start_node_cmd(
     }
 
     // Start the variance node (P2P + AppState + EventRouter + Router)
-    let node = start_node(&config, identity_path)
+    // Passphrase support for encrypted identity files: read from VARIANCE_PASSPHRASE env var.
+    let passphrase = std::env::var("VARIANCE_PASSPHRASE").ok();
+    let node = start_node(&config, identity_path, passphrase.as_deref())
         .await
         .context("Failed to start Variance node")?;
 

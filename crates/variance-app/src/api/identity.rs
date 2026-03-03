@@ -53,8 +53,8 @@ pub(super) async fn get_identity(State(state): State<AppState>) -> Json<Identity
 
 /// Resolve a DID to its identity document.
 ///
-/// Full resolution requires the peer to be reachable via P2P. Currently returns
-/// the DID as-is since DHT-to-PeerId lookup is not yet wired to the API layer.
+/// Tries P2P resolution first (not yet wired), then falls back to IPFS/IPNS
+/// via the `ipfs_storage` backend.
 pub(super) async fn resolve_identity(
     State(state): State<AppState>,
     Path(did): Path<String>,
@@ -69,7 +69,21 @@ pub(super) async fn resolve_identity(
         })));
     }
 
-    // Remote resolution requires mapping DID → PeerId which needs DHT integration.
+    // Try IPFS/IPNS fallback — resolve the IPNS name, fetch the DID document.
+    let did_hex = hex::encode(did.as_bytes());
+    let key_name = format!("variance-{}", &did_hex[..16.min(did_hex.len())]);
+    if let Ok(Some(cid)) = state.ipfs_storage.resolve(&key_name).await {
+        if let Ok(Some(did_doc)) = state.ipfs_storage.fetch(&cid).await {
+            let _ = state.identity_cache.insert(&did, did_doc.clone());
+            return Ok(Json(serde_json::json!({
+                "did": did,
+                "display_name": did_doc.document.display_name,
+                "resolved": true,
+                "source": "ipfs",
+            })));
+        }
+    }
+
     Ok(Json(serde_json::json!({
         "did": did,
         "resolved": false,
@@ -95,8 +109,7 @@ pub(super) async fn register_username(
         })?;
 
     // Persist username + discriminator to the identity file so it survives restarts
-    if let Err(e) = persist_username_to_identity(&state.identity_path, &req.username, discriminator)
-    {
+    if let Err(e) = persist_username_to_identity(&state, &req.username, discriminator) {
         tracing::warn!("Failed to persist username to identity file: {}", e);
     }
 
@@ -127,6 +140,39 @@ pub(super) async fn register_username(
         tracing::warn!("Failed to broadcast username change: {}", e);
     }
 
+    // Update IPFS record with the new display name (best-effort).
+    {
+        use variance_identity::did::{Did, DidDocument};
+
+        let did_str = &state.local_did;
+        let now = chrono::Utc::now().timestamp();
+        let did_doc = Did {
+            id: did_str.clone(),
+            document: DidDocument {
+                id: did_str.clone(),
+                authentication: vec![],
+                key_agreement: vec![],
+                service: vec![],
+                created_at: now,
+                updated_at: now,
+                display_name: Some(display_name.clone()),
+                avatar_cid: None,
+                bio: None,
+            },
+            signing_key: None,
+            x25519_secret: None,
+        };
+        if let Ok(cid) = state.ipfs_storage.store(&did_doc).await {
+            let did_hex = hex::encode(did_str.as_bytes());
+            let key_name = format!("variance-{}", &did_hex[..16.min(did_hex.len())]);
+            if let Err(e) = state.ipfs_storage.publish(&key_name, &cid).await {
+                tracing::warn!("Failed to republish updated DID to IPFS: {}", e);
+            } else {
+                tracing::info!("Republished DID with username {} to IPFS", req.username);
+            }
+        }
+    }
+
     Ok(Json(serde_json::json!({
         "username": req.username,
         "discriminator": discriminator,
@@ -137,18 +183,15 @@ pub(super) async fn register_username(
 
 /// Write username + discriminator into the identity JSON file.
 fn persist_username_to_identity(
-    identity_path: &std::path::Path,
+    state: &AppState,
     username: &str,
     discriminator: u32,
 ) -> anyhow::Result<()> {
-    let mut identity = AppState::load_identity(identity_path)?;
+    let passphrase = state.identity_passphrase.as_ref().map(|s| s.as_str());
+    let mut identity = AppState::load_identity_with_passphrase(&state.identity_path, passphrase)?;
     identity.username = Some(username.to_string());
     identity.discriminator = Some(discriminator);
-    let json = serde_json::to_string_pretty(&identity)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize identity: {}", e))?;
-    std::fs::write(identity_path, json)
-        .map_err(|e| anyhow::anyhow!("Failed to write identity file: {}", e))?;
-    Ok(())
+    AppState::save_identity(&state.identity_path, &identity, passphrase)
 }
 
 /// Resolve a username (with or without discriminator) to a DID.

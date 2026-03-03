@@ -11,6 +11,7 @@ pub mod api;
 pub mod config;
 pub mod error;
 pub mod event_router;
+pub mod identity_crypto;
 pub mod identity_gen;
 pub mod node;
 pub mod state;

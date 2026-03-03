@@ -1222,7 +1222,6 @@ mod tests {
                     direct.clone(),
                 ),
             ),
-            relay_peer_id: "peer123".to_string(),
             stored_at: 1000,
             expires_at: 2000,
         };
@@ -1263,7 +1262,6 @@ mod tests {
                     direct.clone(),
                 ),
             ),
-            relay_peer_id: "peer123".to_string(),
             stored_at: 1000,
             expires_at: 2000,
         };
@@ -1412,7 +1410,6 @@ mod tests {
             message: Some(
                 variance_proto::messaging_proto::offline_message_envelope::Message::Direct(expired),
             ),
-            relay_peer_id: "peer123".to_string(),
             stored_at: 1000,
             expires_at: now - 1000, // Already expired
         };
@@ -1436,7 +1433,6 @@ mod tests {
             message: Some(
                 variance_proto::messaging_proto::offline_message_envelope::Message::Direct(valid),
             ),
-            relay_peer_id: "peer123".to_string(),
             stored_at: 2000,
             expires_at: now + (86400 * 1000), // Expires in 1 day (milliseconds)
         };
@@ -1521,7 +1517,6 @@ mod tests {
             message: Some(
                 variance_proto::messaging_proto::offline_message_envelope::Message::Direct(direct),
             ),
-            relay_peer_id: "peer123".to_string(),
             stored_at: 3000,
             expires_at: i64::MAX,
         };

@@ -10,9 +10,6 @@ use variance_proto::messaging_proto::{
 /// Implements store-and-forward protocol for offline users.
 /// Messages are stored with a 30-day TTL and delivered when recipient comes online.
 pub struct OfflineRelayHandler {
-    /// Local peer ID
-    peer_id: String,
-
     /// Message storage backend
     storage: Arc<dyn MessageStorage>,
 
@@ -22,21 +19,16 @@ pub struct OfflineRelayHandler {
 
 impl OfflineRelayHandler {
     /// Create a new offline relay handler
-    pub fn new(peer_id: String, storage: Arc<dyn MessageStorage>) -> Self {
+    pub fn new(storage: Arc<dyn MessageStorage>) -> Self {
         Self {
-            peer_id,
             storage,
             ttl_ms: 30 * 24 * 60 * 60 * 1000, // 30 days in milliseconds
         }
     }
 
     /// Create a new offline relay handler with custom TTL
-    pub fn with_ttl(peer_id: String, storage: Arc<dyn MessageStorage>, ttl_ms: i64) -> Self {
-        Self {
-            peer_id,
-            storage,
-            ttl_ms,
-        }
+    pub fn with_ttl(storage: Arc<dyn MessageStorage>, ttl_ms: i64) -> Self {
+        Self { storage, ttl_ms }
     }
 
     /// Store a message for an offline recipient
@@ -137,7 +129,6 @@ impl OfflineRelayHandler {
         OfflineMessageEnvelope {
             recipient_did,
             message: Some(message),
-            relay_peer_id: self.peer_id.clone(),
             stored_at: now,
             expires_at: now + self.ttl_ms,
         }
@@ -173,9 +164,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
-        let handler = OfflineRelayHandler::new("relay1".to_string(), storage);
+        let handler = OfflineRelayHandler::new(storage);
 
-        assert_eq!(handler.peer_id, "relay1");
         assert_eq!(handler.ttl_ms, 30 * 24 * 60 * 60 * 1000);
     }
 
@@ -185,7 +175,7 @@ mod tests {
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         let custom_ttl = 7 * 24 * 60 * 60 * 1000; // 7 days
-        let handler = OfflineRelayHandler::with_ttl("relay1".to_string(), storage, custom_ttl);
+        let handler = OfflineRelayHandler::with_ttl(storage, custom_ttl);
 
         assert_eq!(handler.ttl_ms(), custom_ttl);
     }
@@ -195,7 +185,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
-        let handler = OfflineRelayHandler::new("relay1".to_string(), storage);
+        let handler = OfflineRelayHandler::new(storage);
 
         let direct_msg = DirectMessage {
             id: Ulid::new().to_string(),
@@ -218,7 +208,6 @@ mod tests {
         );
 
         assert_eq!(envelope.recipient_did, "did:variance:bob");
-        assert_eq!(envelope.relay_peer_id, "relay1");
         assert!(envelope.stored_at > 0);
         assert!(envelope.expires_at > envelope.stored_at);
         assert!(envelope.message.is_some());
@@ -229,7 +218,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
-        let handler = OfflineRelayHandler::new("relay1".to_string(), storage);
+        let handler = OfflineRelayHandler::new(storage);
 
         let direct_msg = DirectMessage {
             id: Ulid::new().to_string(),
@@ -274,7 +263,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
-        let handler = OfflineRelayHandler::new("relay1".to_string(), storage);
+        let handler = OfflineRelayHandler::new(storage);
 
         // Store 3 messages
         for i in 0..3 {
@@ -321,7 +310,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
-        let handler = OfflineRelayHandler::new("relay1".to_string(), storage);
+        let handler = OfflineRelayHandler::new(storage);
 
         // Use well-separated timestamps
         let base_time = 1000000000000i64; // Fixed timestamp
@@ -399,7 +388,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
-        let handler = OfflineRelayHandler::new("relay1".to_string(), storage);
+        let handler = OfflineRelayHandler::new(storage);
 
         let direct_msg = DirectMessage {
             id: Ulid::new().to_string(),
@@ -450,7 +439,7 @@ mod tests {
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
         // Use short TTL for testing
-        let handler = OfflineRelayHandler::with_ttl("relay1".to_string(), storage, 0);
+        let handler = OfflineRelayHandler::with_ttl(storage, 0);
 
         let direct_msg = DirectMessage {
             id: Ulid::new().to_string(),
@@ -498,12 +487,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
-        let handler = OfflineRelayHandler::new("relay1".to_string(), storage);
+        let handler = OfflineRelayHandler::new(storage);
 
         let envelope = OfflineMessageEnvelope {
             recipient_did: "did:variance:bob".to_string(),
             message: None, // Invalid - no message
-            relay_peer_id: "relay1".to_string(),
             stored_at: chrono::Utc::now().timestamp_millis(),
             expires_at: chrono::Utc::now().timestamp_millis() + 1000,
         };
@@ -518,7 +506,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = Arc::new(LocalMessageStorage::new(dir.path()).unwrap());
 
-        let handler = OfflineRelayHandler::new("relay1".to_string(), storage);
+        let handler = OfflineRelayHandler::new(storage);
 
         let request = OfflineMessageRequest {
             did: "did:variance:bob".to_string(),

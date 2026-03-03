@@ -228,7 +228,6 @@ impl Node {
         let identity_handler = Arc::new(identity::IdentityHandler::new(peer_id));
 
         let offline_handler = Arc::new(offline::OfflineMessageHandler::with_local_storage(
-            peer_id.to_string(),
             &config.storage_path.join("messages"),
         )?);
 

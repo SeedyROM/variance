@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type NodeStatus = "idle" | "starting" | "running" | "stopping" | "error";
+export type NodeStatus = "idle" | "starting" | "running" | "stopping" | "error" | "needs-unlock";
 
 interface AppStore {
   nodeStatus: NodeStatus;

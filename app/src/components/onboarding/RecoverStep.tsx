@@ -6,9 +6,10 @@ import { useIdentityStore } from "../../stores/identityStore";
 interface RecoverStepProps {
   onBack: () => void;
   onComplete: (did: string) => void;
+  passphrase: string | null;
 }
 
-export function RecoverStep({ onBack, onComplete }: RecoverStepProps) {
+export function RecoverStep({ onBack, onComplete, passphrase }: RecoverStepProps) {
   const [phrase, setPhrase] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -25,6 +26,7 @@ export function RecoverStep({ onBack, onComplete }: RecoverStepProps) {
       const did = await invoke<string>("recover_identity", {
         mnemonic: phrase.trim(),
         outputPath: identityPath,
+        passphrase,
       });
       setIdentityPath(identityPath);
       onComplete(did);

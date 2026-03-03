@@ -41,6 +41,7 @@ pub fn generate() -> Result<(IdentityFile, String)> {
         username: None,
         discriminator: None,
         created_at: chrono::Utc::now().to_rfc3339(),
+        ipns_key: None,
     };
 
     Ok((identity, phrase))
@@ -74,6 +75,7 @@ pub fn recover(mnemonic_phrase: &str) -> Result<IdentityFile> {
         username: None,
         discriminator: None,
         created_at: chrono::Utc::now().to_rfc3339(),
+        ipns_key: None,
     })
 }
 

@@ -49,6 +49,7 @@ pub(super) async fn reject_call(
         .map_err(|e| Error::App {
             message: e.to_string(),
         })?;
+    state.signaling.purge_call_nonces(&call_id);
     Ok(Json(call_to_response(&call)))
 }
 
@@ -63,6 +64,7 @@ pub(super) async fn end_call(
         .map_err(|e| Error::App {
             message: e.to_string(),
         })?;
+    state.signaling.purge_call_nonces(&call_id);
     Ok(Json(call_to_response(&call)))
 }
 

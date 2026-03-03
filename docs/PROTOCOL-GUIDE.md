@@ -213,7 +213,7 @@ message OfflineMessageEnvelope {
     DirectMessage direct = 2;
     GroupMessage group = 3;
   }
-  string relay_peer_id = 4;  // Which relay stored it
+  // field 4 (relay_peer_id) removed — relay-internal metadata not needed by recipient
   int64 stored_at = 5;
   int64 expires_at = 6;      // TTL (30 days)
 }

@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { WelcomeStep } from "./WelcomeStep";
+import { PassphraseStep } from "./PassphraseStep";
 import { GenerateStep } from "./GenerateStep";
 import { RecoverStep } from "./RecoverStep";
 import { SetupComplete } from "./SetupComplete";
 import { UsernameStep } from "./UsernameStep";
 
-type Step = "welcome" | "generate" | "recover" | "complete" | "username";
+type Step = "welcome" | "passphrase" | "generate" | "recover" | "complete" | "username";
 
 interface OnboardingShellProps {
   onComplete: () => void;
@@ -14,6 +15,8 @@ interface OnboardingShellProps {
 export function OnboardingShell({ onComplete }: OnboardingShellProps) {
   const [step, setStep] = useState<Step>("welcome");
   const [completedDid, setCompletedDid] = useState<string | null>(null);
+  const [passphrase, setPassphrase] = useState<string | null>(null);
+  const [afterPassphrase, setAfterPassphrase] = useState<"generate" | "recover">("generate");
 
   const handleGenerated = (did: string) => {
     setCompletedDid(did);
@@ -30,18 +33,49 @@ export function OnboardingShell({ onComplete }: OnboardingShellProps) {
       <div className="w-full max-w-lg">
         {step === "welcome" && (
           <WelcomeStep
-            onGenerate={() => setStep("generate")}
-            onRecover={() => setStep("recover")}
+            onGenerate={() => {
+              setAfterPassphrase("generate");
+              setStep("passphrase");
+            }}
+            onRecover={() => {
+              setAfterPassphrase("recover");
+              setStep("passphrase");
+            }}
+          />
+        )}
+        {step === "passphrase" && (
+          <PassphraseStep
+            onBack={() => setStep("welcome")}
+            onSkip={() => {
+              setPassphrase(null);
+              setStep(afterPassphrase);
+            }}
+            onConfirm={(p) => {
+              setPassphrase(p.trim() || null);
+              setStep(afterPassphrase);
+            }}
           />
         )}
         {step === "generate" && (
-          <GenerateStep onBack={() => setStep("welcome")} onComplete={handleGenerated} />
+          <GenerateStep
+            passphrase={passphrase}
+            onBack={() => setStep("passphrase")}
+            onComplete={handleGenerated}
+          />
         )}
         {step === "recover" && (
-          <RecoverStep onBack={() => setStep("welcome")} onComplete={handleRecovered} />
+          <RecoverStep
+            passphrase={passphrase}
+            onBack={() => setStep("passphrase")}
+            onComplete={handleRecovered}
+          />
         )}
         {step === "complete" && completedDid && (
-          <SetupComplete did={completedDid} onStart={() => setStep("username")} />
+          <SetupComplete
+            did={completedDid}
+            passphrase={passphrase}
+            onStart={() => setStep("username")}
+          />
         )}
         {step === "username" && <UsernameStep onComplete={onComplete} />}
       </div>

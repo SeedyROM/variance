@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { OnboardingShell } from "./components/onboarding/OnboardingShell";
+import { UnlockScreen } from "./components/onboarding/UnlockScreen";
 import { ConversationList } from "./components/conversations/ConversationList";
 import { MessageView } from "./components/messages/MessageView";
 import { GroupView } from "./components/messages/GroupView";
@@ -103,13 +104,12 @@ export function App() {
   // Poll for node readiness when starting
   useNodeReady();
 
-  // On app launch: if onboarded, auto-start the node
+  // On app launch: if onboarded, auto-start the node (or prompt for passphrase)
   useEffect(() => {
     if (!isOnboarded) return;
     if (nodeStatus !== "idle") return;
 
     const startNode = async () => {
-      setNodeStatus("starting");
       try {
         // Always ask the backend for the identity path so VARIANCE_DATA_DIR is respected
         // when running a second instance with a different data directory.
@@ -124,6 +124,17 @@ export function App() {
           return;
         }
 
+        // If the identity file is encrypted, show the unlock screen instead of
+        // trying to start without a passphrase (which would always fail).
+        const encrypted = await invoke<boolean>("check_identity_encrypted", {
+          identityPath: path,
+        });
+        if (encrypted) {
+          setNodeStatus("needs-unlock");
+          return;
+        }
+
+        setNodeStatus("starting");
         const port = await invoke<number>("start_node", { identityPath: path });
         setApiPort(port);
         resetApiBase();
@@ -147,6 +158,10 @@ export function App() {
         }}
       />
     );
+  }
+
+  if (nodeStatus === "needs-unlock") {
+    return <UnlockScreen />;
   }
 
   if (nodeStatus === "starting" || nodeStatus === "idle") {

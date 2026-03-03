@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use variance_identity::cache::MultiLayerCache;
+use variance_identity::storage::IdentityStorage;
 use variance_identity::username::UsernameRegistry;
 use variance_media::{CallManager, SignalingHandler};
 use variance_messaging::{
@@ -33,6 +34,10 @@ pub struct IdentityFile {
     #[serde(default)]
     pub discriminator: Option<u32>,
     pub created_at: String,
+    /// IPNS key name used to publish this identity's DID document.
+    /// Absent in pre-IPFS identities; set on first publish.
+    #[serde(default)]
+    pub ipns_key: Option<String>,
 }
 
 /// Application state shared across HTTP handlers
@@ -94,13 +99,44 @@ pub struct AppState {
 
     /// Path to the identity file (for persisting username changes etc.)
     pub identity_path: PathBuf,
+
+    /// Identity storage backend (IPFS in production, local fallback when IPFS unavailable)
+    pub ipfs_storage: Arc<dyn IdentityStorage>,
+
+    /// Passphrase used to decrypt/re-encrypt the identity file (None for plaintext files).
+    /// Stored for the session so identity file writes (OTK refresh, username) stay encrypted.
+    pub identity_passphrase: Option<Arc<String>>,
 }
 
 impl AppState {
     /// Load identity from file, migrating old formats in-place if needed.
+    ///
+    /// Pass `passphrase` when the file may be encrypted (see [`identity_crypto`]).
+    /// Plaintext files are always accepted regardless of whether a passphrase is supplied.
     pub fn load_identity(identity_path: &Path) -> anyhow::Result<IdentityFile> {
-        let contents = fs::read_to_string(identity_path)
+        Self::load_identity_with_passphrase(identity_path, None)
+    }
+
+    /// Load identity from file with optional passphrase for encrypted files.
+    pub fn load_identity_with_passphrase(
+        identity_path: &Path,
+        passphrase: Option<&str>,
+    ) -> anyhow::Result<IdentityFile> {
+        use crate::identity_crypto;
+
+        let bytes = fs::read(identity_path)
             .map_err(|e| anyhow::anyhow!("Failed to read identity file: {}", e))?;
+
+        let contents = if identity_crypto::is_encrypted(&bytes) {
+            let pp = passphrase.ok_or_else(|| {
+                anyhow::anyhow!("Identity file is encrypted but no passphrase was provided")
+            })?;
+            identity_crypto::decrypt(&bytes, pp)
+                .map_err(|e| anyhow::anyhow!("Failed to decrypt identity file: {}", e))?
+        } else {
+            String::from_utf8(bytes)
+                .map_err(|e| anyhow::anyhow!("Identity file is not valid UTF-8: {}", e))?
+        };
 
         let mut identity: IdentityFile = serde_json::from_str(&contents)
             .map_err(|e| anyhow::anyhow!("Failed to parse identity file: {}", e))?;
@@ -117,13 +153,35 @@ impl AppState {
             identity.olm_account_pickle = serde_json::to_string(&account.pickle())
                 .map_err(|e| anyhow::anyhow!("Failed to serialize Olm account: {}", e))?;
 
-            let migrated = serde_json::to_string_pretty(&identity)
-                .map_err(|e| anyhow::anyhow!("Failed to serialize migrated identity: {}", e))?;
-            fs::write(identity_path, migrated)
+            Self::save_identity(identity_path, &identity, passphrase)
                 .map_err(|e| anyhow::anyhow!("Failed to write migrated identity file: {}", e))?;
         }
 
         Ok(identity)
+    }
+
+    /// Write an identity file, optionally encrypting with `passphrase`.
+    ///
+    /// When `passphrase` is `None`, the file is written as plaintext JSON
+    /// (backward-compatible with pre-encryption releases).
+    pub fn save_identity(
+        path: &Path,
+        identity: &IdentityFile,
+        passphrase: Option<&str>,
+    ) -> anyhow::Result<()> {
+        use crate::identity_crypto;
+
+        let json = serde_json::to_string_pretty(identity)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize identity: {}", e))?;
+
+        let bytes: Vec<u8> = if let Some(pp) = passphrase {
+            identity_crypto::encrypt(&json, pp)
+                .map_err(|e| anyhow::anyhow!("Failed to encrypt identity: {}", e))?
+        } else {
+            json.into_bytes()
+        };
+
+        fs::write(path, bytes).map_err(|e| anyhow::anyhow!("Failed to write identity file: {}", e))
     }
 
     /// Create a new application state from identity file
@@ -133,8 +191,10 @@ impl AppState {
         identity_cache_dir: &str,
         node_handle: variance_p2p::NodeHandle,
         event_channels: Option<Arc<variance_p2p::EventChannels>>,
+        ipfs_storage: Arc<dyn IdentityStorage>,
+        passphrase: Option<&str>,
     ) -> anyhow::Result<Self> {
-        let identity = Self::load_identity(identity_path)?;
+        let identity = Self::load_identity_with_passphrase(identity_path, passphrase)?;
 
         // Parse signing key from hex
         let signing_key_bytes = hex::decode(&identity.signing_key)
@@ -197,10 +257,7 @@ impl AppState {
                 storage.clone(),
             )),
             typing: Arc::new(TypingHandler::new(identity.did.clone())),
-            offline_relay: Arc::new(OfflineRelayHandler::new(
-                identity.did.clone(),
-                storage.clone(),
-            )),
+            offline_relay: Arc::new(OfflineRelayHandler::new(storage.clone())),
             calls: Arc::new(
                 CallManager::new(
                     identity.did.clone(),
@@ -219,6 +276,8 @@ impl AppState {
             username_registry,
             identity_cache,
             identity_path: identity_path.to_path_buf(),
+            ipfs_storage,
+            identity_passphrase: passphrase.map(|p| Arc::new(p.to_string())),
         })
     }
 
@@ -318,10 +377,16 @@ impl AppState {
     #[cfg(test)]
     pub fn with_db_path(local_did: String, db_path: &str) -> Self {
         use ed25519_dalek::SigningKey;
+        use variance_identity::storage::LocalStorage;
 
         let storage = Arc::new(LocalMessageStorage::new(db_path).unwrap());
         let signing_key = SigningKey::generate(&mut rand::rngs::OsRng);
         let signaling_key = SigningKey::generate(&mut rand::rngs::OsRng);
+
+        let identity_temp = tempfile::tempdir().expect("Failed to create temp dir for identity");
+        let identity_cache_path = identity_temp.path().join("identity-cache");
+        let ipfs_storage_path = identity_temp.path().join("ipfs-local");
+        let _ = identity_temp.keep();
 
         Self {
             direct_messaging: Arc::new(DirectMessageHandler::new(
@@ -340,7 +405,7 @@ impl AppState {
                 storage.clone(),
             )),
             typing: Arc::new(TypingHandler::new(local_did.clone())),
-            offline_relay: Arc::new(OfflineRelayHandler::new(local_did.clone(), storage.clone())),
+            offline_relay: Arc::new(OfflineRelayHandler::new(storage.clone())),
             calls: Arc::new(
                 CallManager::new(
                     local_did.clone(),
@@ -357,15 +422,15 @@ impl AppState {
             ws_manager: WebSocketManager::new(),
             event_channels: None,
             username_registry: Arc::new(UsernameRegistry::new()),
-            identity_cache: Arc::new({
-                let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-                let temp_dir_path = temp_dir.path().join("identity-cache");
-                // Keep the temp dir alive for the lifetime of the cache (test scope)
-                let _ = temp_dir.keep();
-                MultiLayerCache::new(&temp_dir_path.to_string_lossy())
-                    .expect("Failed to create test identity cache")
-            }),
+            identity_cache: Arc::new(
+                MultiLayerCache::new(&identity_cache_path.to_string_lossy())
+                    .expect("Failed to create test identity cache"),
+            ),
             identity_path: PathBuf::from("/tmp/test-identity.json"),
+            ipfs_storage: Arc::new(
+                LocalStorage::new(ipfs_storage_path).expect("Failed to create test IPFS storage"),
+            ),
+            identity_passphrase: None,
         }
     }
 }

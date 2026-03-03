@@ -110,6 +110,7 @@ async fn test_signaling_protocol_event_flow() {
         })),
         timestamp: 0,
         signature: vec![],
+        nonce: vec![0u8; 16],
     };
 
     node.events().send_signaling(SignalingEvent::OfferReceived {
@@ -254,6 +255,7 @@ async fn test_signaling_handler_call_lifecycle() {
             })),
             timestamp: 0,
             signature: vec![],
+            nonce: vec![0u8; 16],
         },
     });
 

@@ -9,9 +9,10 @@ import { resetApiBase } from "../../api/client";
 interface SetupCompleteProps {
   did: string;
   onStart: () => void;
+  passphrase: string | null;
 }
 
-export function SetupComplete({ did, onStart }: SetupCompleteProps) {
+export function SetupComplete({ did, onStart, passphrase }: SetupCompleteProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const setNodeStatus = useAppStore((s) => s.setNodeStatus);
@@ -25,6 +26,7 @@ export function SetupComplete({ did, onStart }: SetupCompleteProps) {
       setNodeStatus("starting");
       const port = await invoke<number>("start_node", {
         identityPath: identityPath ?? (await invoke<string>("default_identity_path")),
+        passphrase,
       });
       setApiPort(port);
       resetApiBase();

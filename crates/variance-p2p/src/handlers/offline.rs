@@ -16,18 +16,14 @@ pub struct OfflineMessageHandler {
 
 impl OfflineMessageHandler {
     /// Create a new offline message handler
-    ///
-    /// # Arguments
-    /// * `peer_id` - Local peer ID (used as relay peer ID)
-    /// * `storage` - Message storage backend
-    pub fn new(peer_id: String, storage: Arc<dyn MessageStorage>) -> Self {
+    pub fn new(storage: Arc<dyn MessageStorage>) -> Self {
         Self {
-            relay_handler: OfflineRelayHandler::new(peer_id, storage),
+            relay_handler: OfflineRelayHandler::new(storage),
         }
     }
 
     /// Create with local storage at a specific path
-    pub fn with_local_storage(peer_id: String, storage_path: &Path) -> Result<Self> {
+    pub fn with_local_storage(storage_path: &Path) -> Result<Self> {
         let storage =
             Arc::new(
                 LocalMessageStorage::new(storage_path).map_err(|e| Error::Transport {
@@ -35,7 +31,7 @@ impl OfflineMessageHandler {
                 })?,
             );
 
-        Ok(Self::new(peer_id, storage))
+        Ok(Self::new(storage))
     }
 
     /// Handle an offline message fetch request
@@ -85,8 +81,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_handler() {
         let dir = tempdir().unwrap();
-        let handler =
-            OfflineMessageHandler::with_local_storage("relay1".to_string(), dir.path()).unwrap();
+        let handler = OfflineMessageHandler::with_local_storage(dir.path()).unwrap();
 
         assert_eq!(handler.relay_handler().ttl_ms(), 30 * 24 * 60 * 60 * 1000);
     }
@@ -94,8 +89,7 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_empty() {
         let dir = tempdir().unwrap();
-        let handler =
-            OfflineMessageHandler::with_local_storage("relay1".to_string(), dir.path()).unwrap();
+        let handler = OfflineMessageHandler::with_local_storage(dir.path()).unwrap();
 
         let request = OfflineMessageRequest {
             did: "did:variance:bob".to_string(),
@@ -113,8 +107,7 @@ mod tests {
     #[tokio::test]
     async fn test_store_and_fetch() {
         let dir = tempdir().unwrap();
-        let handler =
-            OfflineMessageHandler::with_local_storage("relay1".to_string(), dir.path()).unwrap();
+        let handler = OfflineMessageHandler::with_local_storage(dir.path()).unwrap();
 
         // Store a message via the relay handler
         let direct_msg = DirectMessage {
@@ -159,8 +152,7 @@ mod tests {
     #[tokio::test]
     async fn test_pagination() {
         let dir = tempdir().unwrap();
-        let handler =
-            OfflineMessageHandler::with_local_storage("relay1".to_string(), dir.path()).unwrap();
+        let handler = OfflineMessageHandler::with_local_storage(dir.path()).unwrap();
 
         // Store 3 messages
         for i in 0..3 {

@@ -1,18 +1,27 @@
 use crate::error::*;
+use dashmap::DashMap;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use rand::RngCore;
+use std::collections::HashSet;
+use std::sync::Arc;
 use variance_proto::media_proto::{
     signaling_message, Answer, CallControl, CallControlType, IceCandidate, Offer, SignalingMessage,
 };
 
 /// WebRTC signaling handler
 ///
-/// Manages WebRTC signaling messages (Offer/Answer/ICE) with signature verification.
+/// Manages WebRTC signaling messages (Offer/Answer/ICE) with signature verification
+/// and per-call nonce tracking to prevent replay attacks.
 pub struct SignalingHandler {
     /// Local DID
     local_did: String,
 
     /// Signing key for message authentication
     signing_key: SigningKey,
+
+    /// Per-call seen nonces; rejects replayed messages within the same call.
+    /// Keyed by call_id; call `purge_call_nonces` when a call ends.
+    seen_nonces: Arc<DashMap<String, HashSet<[u8; 16]>>>,
 }
 
 impl SignalingHandler {
@@ -21,7 +30,15 @@ impl SignalingHandler {
         Self {
             local_did,
             signing_key,
+            seen_nonces: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Discard recorded nonces for a call that has ended.
+    ///
+    /// Call this after ending, rejecting, or failing a call to free memory.
+    pub fn purge_call_nonces(&self, call_id: &str) {
+        self.seen_nonces.remove(call_id);
     }
 
     /// Send an offer
@@ -111,6 +128,9 @@ impl SignalingHandler {
     ) -> Result<SignalingMessage> {
         let timestamp = chrono::Utc::now().timestamp_millis();
 
+        let mut nonce = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut nonce);
+
         let mut signaling_msg = SignalingMessage {
             call_id,
             sender_did: self.local_did.clone(),
@@ -118,6 +138,7 @@ impl SignalingHandler {
             message: Some(message),
             timestamp,
             signature: vec![],
+            nonce: nonce.to_vec(),
         };
 
         // Sign message
@@ -133,6 +154,7 @@ impl SignalingHandler {
         data.extend_from_slice(message.sender_did.as_bytes());
         data.extend_from_slice(message.recipient_did.as_bytes());
         data.extend_from_slice(&message.timestamp.to_le_bytes());
+        data.extend_from_slice(&message.nonce);
 
         // Include message type discriminator
         if let Some(ref msg) = message.message {
@@ -162,7 +184,7 @@ impl SignalingHandler {
         Ok(signature.to_bytes().to_vec())
     }
 
-    /// Verify a signaling message signature
+    /// Verify a signaling message signature and reject replayed nonces.
     ///
     /// NOTE: This requires the sender's public key which must be fetched from their
     /// DID document via the identity system.
@@ -171,11 +193,22 @@ impl SignalingHandler {
         message: &SignalingMessage,
         sender_public_key: &VerifyingKey,
     ) -> Result<()> {
+        // Validate nonce length before doing anything else.
+        let nonce: [u8; 16] =
+            message
+                .nonce
+                .as_slice()
+                .try_into()
+                .map_err(|_| Error::Signaling {
+                    message: "invalid nonce length".to_string(),
+                })?;
+
         let mut data = Vec::new();
         data.extend_from_slice(message.call_id.as_bytes());
         data.extend_from_slice(message.sender_did.as_bytes());
         data.extend_from_slice(message.recipient_did.as_bytes());
         data.extend_from_slice(&message.timestamp.to_le_bytes());
+        data.extend_from_slice(&message.nonce);
 
         // Include message type discriminator
         if let Some(ref msg) = message.message {
@@ -214,6 +247,14 @@ impl SignalingHandler {
                 call_id: message.call_id.clone(),
             })?;
 
+        // Reject replayed nonces after the signature passes (avoids DoS via bad sigs).
+        let mut nonce_set = self.seen_nonces.entry(message.call_id.clone()).or_default();
+        if !nonce_set.insert(nonce) {
+            return Err(Error::Signaling {
+                message: "replayed nonce".to_string(),
+            });
+        }
+
         Ok(())
     }
 }
@@ -250,6 +291,7 @@ mod tests {
         assert_eq!(message.sender_did, "did:variance:alice");
         assert_eq!(message.recipient_did, "did:variance:bob");
         assert!(!message.signature.is_empty());
+        assert_eq!(message.nonce.len(), 16);
 
         match message.message {
             Some(signaling_message::Message::Offer(offer)) => {
@@ -426,5 +468,54 @@ mod tests {
             )
             .unwrap();
         assert!(handler.verify_message(&control, &verifying_key).is_ok());
+    }
+
+    #[test]
+    fn test_replay_rejected() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+
+        let handler = SignalingHandler::new("did:variance:alice".to_string(), signing_key);
+
+        let message = handler
+            .send_offer(
+                "call123".to_string(),
+                "did:variance:bob".to_string(),
+                "sdp_data".to_string(),
+                CallType::Audio,
+            )
+            .unwrap();
+
+        // First verify succeeds
+        assert!(handler.verify_message(&message, &verifying_key).is_ok());
+
+        // Replaying the same message fails
+        let result = handler.verify_message(&message, &verifying_key);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::Signaling { .. }));
+    }
+
+    #[test]
+    fn test_purge_call_nonces() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+
+        let handler = SignalingHandler::new("did:variance:alice".to_string(), signing_key);
+
+        let message = handler
+            .send_offer(
+                "call123".to_string(),
+                "did:variance:bob".to_string(),
+                "sdp_data".to_string(),
+                CallType::Audio,
+            )
+            .unwrap();
+
+        assert!(handler.verify_message(&message, &verifying_key).is_ok());
+
+        // After purging, the nonce set is gone so replaying no longer detected —
+        // this is acceptable: purge is called on call end.
+        handler.purge_call_nonces("call123");
+        assert!(handler.seen_nonces.get("call123").is_none());
     }
 }

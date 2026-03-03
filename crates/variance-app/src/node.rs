@@ -6,11 +6,11 @@
 use crate::event_router::EventRouterDeps;
 use crate::{create_router, AppConfig, AppState, EventRouter, Result};
 use axum::Router;
-use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
+use variance_identity::storage::{IdentityStorage, IpfsStorage, LocalStorage};
 use variance_messaging::storage::MessageStorage;
 
 /// A fully initialized Variance node ready to serve HTTP requests
@@ -108,7 +108,11 @@ impl RunningNode {
 /// });
 /// // Store node.shutdown_tx to stop later
 /// ```
-pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<RunningNode> {
+pub async fn start_node(
+    config: &AppConfig,
+    identity_path: &Path,
+    passphrase: Option<&str>,
+) -> Result<RunningNode> {
     tracing::info!("Initializing Variance node...");
 
     // Create P2P node configuration
@@ -179,6 +183,24 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
 
     tracing::debug!("P2P node task spawned");
 
+    // Connect to identity storage (IPFS in production, local fallback when IPFS unavailable).
+    let ipfs_storage: Arc<dyn IdentityStorage> = match IpfsStorage::new(&config.identity.ipfs_api) {
+        Ok(s) => {
+            tracing::info!("IPFS storage connected at {}", config.identity.ipfs_api);
+            Arc::new(s)
+        }
+        Err(e) => {
+            tracing::warn!("IPFS unavailable ({}), using local identity storage", e);
+            Arc::new(
+                LocalStorage::new(config.storage.identity_cache_dir.join("ipfs-local")).map_err(
+                    |e| crate::Error::App {
+                        message: format!("Failed to create local identity storage: {}", e),
+                    },
+                )?,
+            )
+        }
+    };
+
     // Load identity and create application state
     tracing::debug!("Loading identity from: {}", identity_path.display());
     let app_state = AppState::from_identity_file(
@@ -187,6 +209,8 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         config.storage.identity_cache_dir.to_str().unwrap(),
         node_handle,
         Some(event_channels.clone()),
+        ipfs_storage,
+        passphrase,
     )
     .map_err(|e| crate::Error::App {
         message: format!("Failed to load identity: {}", e),
@@ -224,24 +248,27 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
     // Without this, OTKs are in-memory only: a restart reverts to the zero-OTK
     // initial pickle, making any queued PreKey messages impossible to decrypt.
     match app_state.direct_messaging.account_pickle().await {
-        Ok(pickle_json) => match AppState::load_identity(identity_path) {
-            Ok(mut identity_file) => {
-                identity_file.olm_account_pickle = pickle_json;
-                match serde_json::to_string_pretty(&identity_file) {
-                    Ok(json) => {
-                        if let Err(e) = fs::write(identity_path, json) {
-                            tracing::warn!("Failed to persist Olm OTKs to identity file: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to serialize identity for OTK persistence: {}", e)
+        Ok(pickle_json) => {
+            match AppState::load_identity_with_passphrase(identity_path, passphrase) {
+                Ok(mut identity_file) => {
+                    identity_file.olm_account_pickle = pickle_json;
+                    if let Err(e) =
+                        AppState::save_identity(identity_path, &identity_file, passphrase)
+                    {
+                        tracing::warn!("Failed to persist Olm OTKs to identity file: {}", e);
                     }
                 }
+                Err(e) => {
+                    tracing::warn!("Failed to reload identity file for OTK persistence: {}", e)
+                }
             }
-            Err(e) => tracing::warn!("Failed to reload identity file for OTK persistence: {}", e),
-        },
+        }
         Err(e) => tracing::warn!("Failed to serialize Olm account pickle: {}", e),
     }
+
+    // Publish local DID document to IPFS/IPNS so remote peers can resolve us
+    // by DID when P2P is unavailable. Best-effort: failure doesn't block startup.
+    publish_local_identity_to_ipfs(&app_state, identity_path, passphrase).await;
 
     // Restore any previously established Olm sessions from disk
     if let Err(e) = app_state.direct_messaging.restore_sessions().await {
@@ -378,6 +405,82 @@ pub async fn start_node(config: &AppConfig, identity_path: &Path) -> Result<Runn
         shutdown_tx,
         node_task,
     })
+}
+
+/// Publish our DID document to IPFS and record the IPNS key name in the identity file.
+///
+/// Updates `ipns_key` in the identity file when the key name changes so the
+/// next startup skips the publish if the file is already up to date.
+async fn publish_local_identity_to_ipfs(
+    app_state: &AppState,
+    identity_path: &Path,
+    passphrase: Option<&str>,
+) {
+    use variance_identity::did::{Did, DidDocument};
+
+    let did_str = &app_state.local_did;
+
+    // Build a minimal Did document from the known DID string.
+    // signing_key/x25519_secret are skipped by serde, so only the document matters.
+    let now = chrono::Utc::now().timestamp();
+    let did = Did {
+        id: did_str.clone(),
+        document: DidDocument {
+            id: did_str.clone(),
+            authentication: vec![],
+            key_agreement: vec![],
+            service: vec![],
+            created_at: now,
+            updated_at: now,
+            display_name: app_state
+                .username_registry
+                .get_username(did_str)
+                .map(|(name, disc)| {
+                    variance_identity::username::UsernameRegistry::format_username(&name, disc)
+                }),
+            avatar_cid: None,
+            bio: None,
+        },
+        signing_key: None,
+        x25519_secret: None,
+    };
+
+    // Store DID document in IPFS.
+    let cid = match app_state.ipfs_storage.store(&did).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Failed to store DID in IPFS: {}", e);
+            return;
+        }
+    };
+
+    // Derive a stable IPNS key name from the leading bytes of the hex-encoded DID.
+    let did_hex = hex::encode(did_str.as_bytes());
+    let key_name = format!("variance-{}", &did_hex[..16.min(did_hex.len())]);
+
+    if let Err(e) = app_state.ipfs_storage.publish(&key_name, &cid).await {
+        tracing::warn!("Failed to publish DID to IPNS: {}", e);
+        return;
+    }
+
+    tracing::info!(
+        "Published DID {} to IPFS (cid={}, ipns_key={})",
+        did_str,
+        cid,
+        key_name
+    );
+
+    // Persist the IPNS key name to the identity file if it changed.
+    match AppState::load_identity_with_passphrase(identity_path, passphrase) {
+        Ok(mut identity_file) if identity_file.ipns_key.as_deref() != Some(&key_name) => {
+            identity_file.ipns_key = Some(key_name);
+            if let Err(e) = AppState::save_identity(identity_path, &identity_file, passphrase) {
+                tracing::warn!("Failed to persist ipns_key to identity file: {}", e);
+            }
+        }
+        Ok(_) => {} // key unchanged, no write needed
+        Err(e) => tracing::warn!("Failed to reload identity for ipns_key update: {}", e),
+    }
 }
 
 /// Generate a TLS-serialized MLS KeyPackage for advertising in identity responses.

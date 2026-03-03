@@ -183,10 +183,12 @@ message OfflineMessageEnvelope {
     GroupMessage group = 3;
   }
 
-  // Relay metadata
-  string relay_peer_id = 4;
-  int64 stored_at = 5;
-  int64 expires_at = 6; // TTL
+  // Field 4 (relay_peer_id) removed — relay-internal metadata not needed by recipient.
+  reserved 4;
+  reserved "relay_peer_id";
+
+  int64 stored_at = 5;   // needed for cursor-based pagination
+  int64 expires_at = 6;  // needed for TTL enforcement by relay
 }
 
 message OfflineMessageRequest {

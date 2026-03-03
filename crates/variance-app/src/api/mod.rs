@@ -18,21 +18,26 @@ mod identity;
 mod social;
 
 use crate::{state::AppState, Error};
+use axum::http::{header, HeaderValue, Method};
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Json, Response},
     routing::{get, post},
     Router,
 };
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 /// Create the HTTP API router
 pub fn create_router(state: AppState) -> Router {
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin(AllowOrigin::list([
+            HeaderValue::from_static("tauri://localhost"), // macOS/Windows Tauri 2.x
+            HeaderValue::from_static("http://tauri.localhost"), // Linux Tauri 2.x
+            HeaderValue::from_static("http://localhost"),  // dev / CLI
+        ]))
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::PUT])
+        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
 
     Router::new()
         // Health check
