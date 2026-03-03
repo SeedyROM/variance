@@ -94,14 +94,22 @@ export function useWebSocket() {
           break;
 
         case "TypingStarted":
-          // Key by the sender (the person typing), not recipient (us).
-          // The UI looks up typingUsers.get(peerDid) where peerDid is the
-          // other person in the conversation.
-          setTyping(event.from, event.from, true);
+          // DM: key by sender DID (the UI looks up typingUsers.get(peerDid))
+          // Group: key by the group recipient ("group:{id}") so GroupView
+          //        can look up typingUsers.get(`group:${groupId}`)
+          if (event.recipient.startsWith("group:")) {
+            setTyping(event.from, event.recipient, true);
+          } else {
+            setTyping(event.from, event.from, true);
+          }
           break;
 
         case "TypingStopped":
-          setTyping(event.from, event.from, false);
+          if (event.recipient.startsWith("group:")) {
+            setTyping(event.from, event.recipient, false);
+          } else {
+            setTyping(event.from, event.from, false);
+          }
           break;
 
         case "PresenceUpdated":

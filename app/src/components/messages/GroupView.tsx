@@ -3,11 +3,12 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Send } from "lucide-react";
 import { GroupHeader } from "./GroupHeader";
 import { GroupMessageBubble } from "./GroupMessageBubble";
+import { TypingIndicator } from "./TypingIndicator";
 import { DateDivider } from "./DateDivider";
 import { ScrollArea } from "../ui/ScrollArea";
 import { Avatar } from "../ui/Avatar";
 import { StatusDot } from "../ui/StatusIndicator";
-import { messagesApi, groupsApi, reactionsApi } from "../../api/client";
+import { messagesApi, groupsApi, reactionsApi, typingApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { isDifferentDay } from "../../utils/time";
@@ -33,9 +34,14 @@ interface GroupViewProps {
   groupId: string;
 }
 
+/** Don't send another /typing/start within this window (ms). */
+const TYPING_SEND_COOLDOWN_MS = 3_000;
+
 function GroupMessageInput({ groupId }: { groupId: string }) {
   const [text, setText] = useState("");
   const queryClient = useQueryClient();
+  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTypingSentRef = useRef<number>(0);
 
   const sendMutation = useMutation({
     mutationFn: () => groupsApi.sendMessage(groupId, text.trim()),
@@ -46,10 +52,35 @@ function GroupMessageInput({ groupId }: { groupId: string }) {
     },
   });
 
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setText(value);
+
+    if (!value.trim()) return;
+    const now = Date.now();
+    if (now - lastTypingSentRef.current >= TYPING_SEND_COOLDOWN_MS) {
+      lastTypingSentRef.current = now;
+      void typingApi.start({ recipient: groupId, is_group: true });
+    }
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    typingTimerRef.current = setTimeout(() => {
+      lastTypingSentRef.current = 0;
+      void typingApi.stop({ recipient: groupId, is_group: true });
+    }, 2000);
+  };
+
+  const handleSend = () => {
+    if (!text.trim() || sendMutation.isPending) return;
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    lastTypingSentRef.current = 0;
+    void typingApi.stop({ recipient: groupId, is_group: true });
+    sendMutation.mutate();
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (text.trim() && !sendMutation.isPending) sendMutation.mutate();
+      handleSend();
     }
   };
 
@@ -59,15 +90,13 @@ function GroupMessageInput({ groupId }: { groupId: string }) {
         <input
           type="text"
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={handleChange}
           onKeyDown={handleKeyDown}
           placeholder="Message group"
           className="flex-1 min-w-0 text-sm text-surface-900 dark:text-surface-50 bg-transparent focus:outline-none"
         />
         <button
-          onClick={() => {
-            if (text.trim() && !sendMutation.isPending) sendMutation.mutate();
-          }}
+          onClick={handleSend}
           disabled={!text.trim() || sendMutation.isPending}
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary-500 text-white transition-colors hover:bg-primary-600 disabled:opacity-40"
         >
@@ -135,6 +164,8 @@ export function GroupView({ groupId }: GroupViewProps) {
   const presenceMap = useMessagingStore((s) => s.presenceMap);
   const setActiveConversation = useMessagingStore((s) => s.setActiveConversation);
   const groupMessageTick = useMessagingStore((s) => s.groupMessageTick);
+  const typingUsersSet = useMessagingStore((s) => s.typingUsers.get(`group:${groupId}`));
+  const typingUsers = typingUsersSet ? Array.from(typingUsersSet) : [];
   const queryClient = useQueryClient();
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -263,6 +294,7 @@ export function GroupView({ groupId }: GroupViewProps) {
             )}
           </ScrollArea>
 
+          <TypingIndicator users={typingUsers} />
           <GroupMessageInput groupId={groupId} />
         </div>
 

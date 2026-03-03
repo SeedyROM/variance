@@ -124,6 +124,16 @@ pub enum NodeCommand {
         indicator: TypingIndicator,
     },
 
+    /// Broadcast a typing indicator to all online members of a group.
+    ///
+    /// The node fans out a unicast `TypingIndicator` to each online group member,
+    /// avoiding GossipSub metadata leakage. `member_dids` should be the full
+    /// member list from MLS; the node filters to only currently-connected peers.
+    BroadcastGroupTyping {
+        member_dids: Vec<String>,
+        indicator: TypingIndicator,
+    },
+
     /// Broadcast our username change to all currently-connected peers (fire-and-forget).
     BroadcastUsernameChange {
         did: String,
@@ -439,6 +449,26 @@ impl NodeHandle {
         self.command_tx
             .send(NodeCommand::SendTypingIndicator {
                 peer_did,
+                indicator,
+            })
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to send command to node".to_string(),
+            })
+    }
+
+    /// Broadcast a typing indicator to all online members of a group.
+    ///
+    /// Fans out unicast messages to each online group member, avoiding GossipSub
+    /// metadata leakage. Failures are silently dropped — best-effort.
+    pub async fn broadcast_group_typing(
+        &self,
+        member_dids: Vec<String>,
+        indicator: TypingIndicator,
+    ) -> Result<()> {
+        self.command_tx
+            .send(NodeCommand::BroadcastGroupTyping {
+                member_dids,
                 indicator,
             })
             .await

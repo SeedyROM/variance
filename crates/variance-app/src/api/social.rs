@@ -83,20 +83,37 @@ pub(super) async fn start_typing(
     State(state): State<AppState>,
     axum::Json(req): axum::Json<TypingRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    // Rate-limit outbound typing-start to prevent per-keystroke P2P traffic.
-    let indicator = if req.is_group {
-        state.typing.try_start_typing_group(req.recipient.clone())
-    } else {
-        state.typing.try_start_typing_direct(req.recipient.clone())
-    };
+    if req.is_group {
+        // Rate-limit + sustained-composition threshold for group typing
+        let indicator = state.typing.try_start_typing_group(req.recipient.clone());
 
-    if let Some(indicator) = indicator {
-        if let Err(e) = state
-            .node_handle
-            .send_typing_indicator(req.recipient, indicator)
-            .await
-        {
-            tracing::debug!("Failed to deliver typing indicator (best-effort): {}", e);
+        if let Some(indicator) = indicator {
+            // Resolve group member DIDs for unicast fan-out
+            let member_dids = state
+                .mls_groups
+                .list_members(&req.recipient)
+                .unwrap_or_default();
+
+            if let Err(e) = state
+                .node_handle
+                .broadcast_group_typing(member_dids, indicator)
+                .await
+            {
+                tracing::debug!("Failed to broadcast group typing (best-effort): {}", e);
+            }
+        }
+    } else {
+        // Rate-limit outbound typing-start for direct messages
+        let indicator = state.typing.try_start_typing_direct(req.recipient.clone());
+
+        if let Some(indicator) = indicator {
+            if let Err(e) = state
+                .node_handle
+                .send_typing_indicator(req.recipient, indicator)
+                .await
+            {
+                tracing::debug!("Failed to deliver typing indicator (best-effort): {}", e);
+            }
         }
     }
 
@@ -110,23 +127,29 @@ pub(super) async fn stop_typing(
     State(state): State<AppState>,
     axum::Json(req): axum::Json<TypingRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let indicator = if req.is_group {
-        state.typing.send_typing_group(req.recipient.clone(), false)
+    if req.is_group {
+        // Privacy mitigation: suppress explicit stop-typing broadcast for groups.
+        // Let the 5s timeout expire naturally on recipients instead of revealing
+        // "composed but didn't send" intent. Only clear local state + cooldown so
+        // the next typing-start fires immediately when the user types again.
+        let group_key = format!("group:{}", req.recipient);
+        state.typing.clear_cooldown(&group_key);
+        state.typing.clear_compose_start(&group_key);
     } else {
-        state
+        let indicator = state
             .typing
-            .send_typing_direct(req.recipient.clone(), false)
-    };
+            .send_typing_direct(req.recipient.clone(), false);
 
-    // Clear cooldown so the next typing-start sends immediately
-    state.typing.clear_cooldown(&req.recipient);
+        // Clear cooldown so the next typing-start sends immediately
+        state.typing.clear_cooldown(&req.recipient);
 
-    if let Err(e) = state
-        .node_handle
-        .send_typing_indicator(req.recipient, indicator)
-        .await
-    {
-        tracing::debug!("Failed to deliver typing stop (best-effort): {}", e);
+        if let Err(e) = state
+            .node_handle
+            .send_typing_indicator(req.recipient, indicator)
+            .await
+        {
+            tracing::debug!("Failed to deliver typing stop (best-effort): {}", e);
+        }
     }
 
     Ok(Json(serde_json::json!({

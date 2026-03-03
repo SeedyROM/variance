@@ -8,6 +8,11 @@ use variance_proto::messaging_proto::TypingIndicator;
 /// per-keystroke network traffic and potential DoS.
 const OUTBOUND_COOLDOWN_MS: u64 = 3000;
 
+/// Minimum sustained-composition time (ms) before the first group typing
+/// indicator is emitted. Prevents brief/accidental keystrokes from
+/// broadcasting activity to the entire group.
+const COMPOSE_THRESHOLD_MS: u64 = 1000;
+
 /// Typing indicator handler
 ///
 /// Manages ephemeral typing state for direct and group conversations.
@@ -26,6 +31,11 @@ pub struct TypingHandler {
     /// Tracks the last time we sent a typing-start for each recipient.
     /// Prevents flooding the P2P network when the UI fires on every keystroke.
     last_outbound_start: Arc<DashMap<String, Instant>>,
+
+    /// Tracks when the user first started composing in each group conversation.
+    /// The first typing indicator is suppressed until [`COMPOSE_THRESHOLD_MS`]
+    /// has elapsed, preventing brief/accidental keystrokes from broadcasting.
+    compose_start: Arc<DashMap<String, Instant>>,
 }
 
 impl TypingHandler {
@@ -36,6 +46,7 @@ impl TypingHandler {
             typing_states: Arc::new(DashMap::new()),
             timeout_ms: 5000, // 5 seconds
             last_outbound_start: Arc::new(DashMap::new()),
+            compose_start: Arc::new(DashMap::new()),
         }
     }
 
@@ -46,6 +57,7 @@ impl TypingHandler {
             typing_states: Arc::new(DashMap::new()),
             timeout_ms,
             last_outbound_start: Arc::new(DashMap::new()),
+            compose_start: Arc::new(DashMap::new()),
         }
     }
 
@@ -95,10 +107,30 @@ impl TypingHandler {
 
     /// Rate-limited typing-start for group messages.
     ///
-    /// Returns `Some(indicator)` only if enough time has elapsed since the last
-    /// outbound typing-start for this group. See [`try_start_typing_direct`].
+    /// In addition to the standard outbound cooldown, group typing indicators
+    /// enforce a sustained-composition threshold: the very first indicator for
+    /// a group is suppressed until the user has been composing for at least
+    /// [`COMPOSE_THRESHOLD_MS`]. This prevents brief or accidental keystrokes
+    /// from broadcasting activity to the entire group (privacy mitigation).
     pub fn try_start_typing_group(&self, group_id: String) -> Option<TypingIndicator> {
         let key = format!("group:{}", group_id);
+
+        // Enforce sustained-composition threshold on first indicator
+        let now = Instant::now();
+        let compose_elapsed = if let Some(start) = self.compose_start.get(&key) {
+            start.elapsed().as_millis()
+        } else {
+            // First keystroke for this group — record and suppress
+            self.compose_start.insert(key.clone(), now);
+            return None;
+        };
+
+        if compose_elapsed < u128::from(COMPOSE_THRESHOLD_MS) {
+            // Still within the compose threshold — suppress
+            return None;
+        }
+
+        // Past threshold — apply normal outbound cooldown
         if self.is_within_cooldown(&key) {
             return None;
         }
@@ -111,6 +143,14 @@ impl TypingHandler {
     /// explicitly stops typing.
     pub fn clear_cooldown(&self, recipient: &str) {
         self.last_outbound_start.remove(recipient);
+    }
+
+    /// Clear the compose-start timestamp for a group conversation.
+    ///
+    /// Call this when the user sends a message or the input is cleared. The
+    /// next keystroke will restart the sustained-composition threshold.
+    pub fn clear_compose_start(&self, group_key: &str) {
+        self.compose_start.remove(group_key);
     }
 
     /// Returns `true` if we sent a typing-start for `key` within the cooldown window.
@@ -492,19 +532,93 @@ mod tests {
         assert!(other.is_some());
     }
 
-    #[test]
-    fn test_try_start_typing_group_cooldown() {
+    #[tokio::test]
+    async fn test_try_start_typing_group_compose_threshold() {
         let handler = TypingHandler::new("did:variance:alice".to_string());
 
+        // First call should be suppressed (compose threshold not yet met)
+        let first = handler.try_start_typing_group("group123".to_string());
+        assert!(
+            first.is_none(),
+            "first keystroke should be suppressed by compose threshold"
+        );
+
+        // Immediate second call should still be suppressed (under 1s threshold)
+        let second = handler.try_start_typing_group("group123".to_string());
+        assert!(
+            second.is_none(),
+            "second keystroke under threshold should be suppressed"
+        );
+
+        // Wait past the compose threshold (1s)
+        tokio::time::sleep(tokio::time::Duration::from_millis(1050)).await;
+
+        // Now it should fire
+        let after_threshold = handler.try_start_typing_group("group123".to_string());
+        assert!(
+            after_threshold.is_some(),
+            "should fire after compose threshold"
+        );
+        assert!(after_threshold.unwrap().is_typing);
+
+        // Immediately after should be suppressed by outbound cooldown
+        let cooldown_suppressed = handler.try_start_typing_group("group123".to_string());
+        assert!(
+            cooldown_suppressed.is_none(),
+            "should be suppressed by outbound cooldown"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_try_start_typing_group_different_groups_independent() {
+        let handler = TypingHandler::new("did:variance:alice".to_string());
+
+        // Start composing in group123
+        handler.try_start_typing_group("group123".to_string());
+
+        // Start composing in group456 — should also be suppressed independently
+        let other = handler.try_start_typing_group("group456".to_string());
+        assert!(
+            other.is_none(),
+            "different group should also start in threshold"
+        );
+
+        // Wait past threshold
+        tokio::time::sleep(tokio::time::Duration::from_millis(1050)).await;
+
+        // Both should now fire
+        let g1 = handler.try_start_typing_group("group123".to_string());
+        assert!(g1.is_some());
+        let g2 = handler.try_start_typing_group("group456".to_string());
+        assert!(g2.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_clear_compose_start_resets_threshold() {
+        let handler = TypingHandler::new("did:variance:alice".to_string());
+
+        // Start composing
+        handler.try_start_typing_group("group123".to_string());
+
+        // Wait past threshold
+        tokio::time::sleep(tokio::time::Duration::from_millis(1050)).await;
+
+        // Fire once
         let first = handler.try_start_typing_group("group123".to_string());
         assert!(first.is_some());
 
-        let second = handler.try_start_typing_group("group123".to_string());
-        assert!(second.is_none());
+        // Clear compose start (simulates user sent message or cleared input)
+        handler.clear_compose_start("group:group123");
 
-        // Different group should still work
-        let other = handler.try_start_typing_group("group456".to_string());
-        assert!(other.is_some());
+        // Clear cooldown too so we can test the threshold again
+        handler.clear_cooldown("group:group123");
+
+        // Next call should be suppressed again (threshold restarted)
+        let after_clear = handler.try_start_typing_group("group123".to_string());
+        assert!(
+            after_clear.is_none(),
+            "should be suppressed after compose_start cleared"
+        );
     }
 
     #[test]

@@ -111,8 +111,9 @@ setup:
     @echo "✅ Setup complete!"
 
 # Run two instances of the app for testing (using the dev script)
-dev-two:
-    cd app/scripts && ./dev-two-instances.sh
+# Pass --no-build to skip building, --release for release build
+dev-two *ARGS:
+    cd app/scripts && ./dev-two-instances.sh {{ARGS}}
 
 # === Documentation ===
 

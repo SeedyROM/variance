@@ -357,6 +357,9 @@ impl AppState {
                     NodeCommand::SendTypingIndicator { .. } => {
                         // Fire-and-forget, no response channel
                     }
+                    NodeCommand::BroadcastGroupTyping { .. } => {
+                        // Fire-and-forget, no response channel
+                    }
                     NodeCommand::BroadcastUsernameChange { .. } => {
                         // Fire-and-forget, no response channel
                     }

@@ -705,6 +705,36 @@ impl Node {
                     );
                 }
             }
+            NodeCommand::BroadcastGroupTyping {
+                member_dids,
+                indicator,
+            } => {
+                let did_to_peer = self.did_to_peer.read().await;
+                let local_did = self.local_did.read().await;
+                let mut sent = 0u32;
+                for member_did in &member_dids {
+                    // Skip ourselves
+                    if local_did.as_deref() == Some(member_did.as_str()) {
+                        continue;
+                    }
+                    let peer = did_to_peer
+                        .get(member_did)
+                        .copied()
+                        .or_else(|| self.peer_store.get(member_did));
+                    if let Some(peer) = peer {
+                        self.swarm
+                            .behaviour_mut()
+                            .typing_indicators
+                            .send_request(&peer, indicator.clone());
+                        sent += 1;
+                    }
+                }
+                debug!(
+                    "Broadcast group typing to {}/{} member(s)",
+                    sent,
+                    member_dids.len().saturating_sub(1) // exclude self from denominator
+                );
+            }
             NodeCommand::BroadcastUsernameChange {
                 did,
                 username,
