@@ -498,12 +498,10 @@ impl MessageStorage for LocalMessageStorage {
         // Keys are `{group_id}:{timestamp:020}:{id}`.
         let end = format!("{};", group_id);
         let suffix = format!(":{}", message_id);
-        for entry in tree.range(prefix.as_bytes()..end.as_bytes()) {
-            if let Ok((key, _)) = entry {
-                if let Ok(k) = std::str::from_utf8(&key) {
-                    if k.ends_with(&suffix) {
-                        return true;
-                    }
+        for (key, _) in tree.range(prefix.as_bytes()..end.as_bytes()).flatten() {
+            if let Ok(k) = std::str::from_utf8(&key) {
+                if k.ends_with(&suffix) {
+                    return true;
                 }
             }
         }
