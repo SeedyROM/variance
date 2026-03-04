@@ -110,6 +110,22 @@ pub(super) async fn get_group_messages(
     Query(params): Query<GroupMessagesParams>,
 ) -> Result<Json<Vec<GroupMessageResponse>>> {
     let limit = params.limit.unwrap_or(50);
+
+    // Pre-warm DID→PeerId mappings for all group members so that typing indicators
+    // work immediately when the user opens the chat, without waiting for a message
+    // exchange to establish the mapping.
+    if let Ok(member_dids) = state.mls_groups.list_members(&group_id) {
+        let node_handle = state.node_handle.clone();
+        let local_did = state.local_did.clone();
+        tokio::spawn(async move {
+            for did in member_dids {
+                if did != local_did {
+                    let _ = node_handle.resolve_identity_by_did(did).await;
+                }
+            }
+        });
+    }
+
     let messages = state
         .storage
         .fetch_group(&group_id, limit, params.before)
@@ -172,10 +188,10 @@ pub(super) async fn mls_list_groups(
 
         let last_message_timestamp = state
             .storage
-            .fetch_group(&group_id, 1, None)
+            .fetch_group_latest(&group_id)
             .await
             .ok()
-            .and_then(|msgs| msgs.into_iter().next())
+            .flatten()
             .map(|m| m.timestamp);
 
         infos.push(MlsGroupInfo {
@@ -379,6 +395,24 @@ pub(super) async fn mls_invite_to_group(
         {
             Ok(message) => {
                 send_dm_to_peer(&state, &invitee_did, &message).await;
+                // The mls_welcome DM is a control message: it must not appear in
+                // the sender's conversation history. Delete our local copy now
+                // (the recipient's copy is deleted by their event_router).
+                if let Err(e) = state
+                    .storage
+                    .delete_direct_by_id(
+                        &message.sender_did,
+                        &message.recipient_did,
+                        message.timestamp,
+                        &message.id,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to delete sent mls_welcome DM from local storage: {}",
+                        e
+                    );
+                }
             }
             Err(e) => {
                 tracing::warn!("Failed to send Welcome DM to {}: {}", invitee_did, e);
@@ -420,14 +454,71 @@ pub(super) async fn mls_leave_group(
     };
     if let Err(e) = state
         .node_handle
-        .publish_group_message(topic, leave_proto)
+        .publish_group_message(topic.clone(), leave_proto)
         .await
     {
         tracing::warn!("Failed to publish MLS leave proposal: {}", e);
     }
 
+    if let Err(e) = state.node_handle.unsubscribe_from_topic(topic).await {
+        tracing::warn!("Failed to unsubscribe from group topic: {}", e);
+    }
+
     state.mls_groups.remove_group(&id);
     persist_mls_state(&state).await;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "group_id": id,
+    })))
+}
+
+/// Delete a group: announce departure, unsubscribe from the topic, and purge
+/// all local messages and metadata. Unlike leave, this also clears history.
+pub(super) async fn mls_delete_group(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    use variance_messaging::mls::MlsGroupHandler;
+    use variance_messaging::storage::MessageStorage;
+
+    // Best-effort: send leave proposal so remaining members know we departed.
+    if let Ok(leave_msg) = state.mls_groups.leave_group(&id) {
+        if let Ok(leave_bytes) = MlsGroupHandler::serialize_message(&leave_msg) {
+            let topic = format!("/variance/group/{}", id);
+            let leave_proto = variance_proto::messaging_proto::GroupMessage {
+                id: ulid::Ulid::new().to_string(),
+                sender_did: state.local_did.clone(),
+                group_id: id.clone(),
+                timestamp: chrono::Utc::now().timestamp_millis(),
+                r#type: 0,
+                reply_to: None,
+                mls_ciphertext: leave_bytes,
+            };
+            if let Err(e) = state
+                .node_handle
+                .publish_group_message(topic, leave_proto)
+                .await
+            {
+                tracing::warn!("Failed to publish leave proposal on delete: {}", e);
+            }
+        }
+    }
+
+    let topic = format!("/variance/group/{}", id);
+    if let Err(e) = state.node_handle.unsubscribe_from_topic(topic).await {
+        tracing::warn!("Failed to unsubscribe from group topic on delete: {}", e);
+    }
+
+    state.mls_groups.remove_group(&id);
+    persist_mls_state(&state).await;
+
+    if let Err(e) = state.storage.delete_group_messages(&id).await {
+        tracing::warn!("Failed to delete group messages: {}", e);
+    }
+    if let Err(e) = state.storage.delete_group_metadata(&id).await {
+        tracing::warn!("Failed to delete group metadata: {}", e);
+    }
 
     Ok(Json(serde_json::json!({
         "success": true,

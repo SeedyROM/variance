@@ -35,7 +35,7 @@ interface GroupViewProps {
 }
 
 /** Don't send another /typing/start within this window (ms). */
-const TYPING_SEND_COOLDOWN_MS = 3_000;
+const TYPING_SEND_COOLDOWN_MS = 500;
 
 function GroupMessageInput({ groupId }: { groupId: string }) {
   const [text, setText] = useState("");
@@ -66,7 +66,7 @@ function GroupMessageInput({ groupId }: { groupId: string }) {
     typingTimerRef.current = setTimeout(() => {
       lastTypingSentRef.current = 0;
       void typingApi.stop({ recipient: groupId, is_group: true });
-    }, 2000);
+    }, 1500);
   };
 
   const handleSend = () => {

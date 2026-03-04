@@ -218,6 +218,19 @@ pub async fn start_node(
 
     tracing::info!("Identity loaded: {}", app_state.local_did);
 
+    // Seed username registry from persisted peer names so display names are
+    // available immediately without needing a P2P identity resolution first.
+    match app_state.storage.load_all_peer_names().await {
+        Ok(peer_names) => {
+            for (did, username, discriminator) in peer_names {
+                app_state
+                    .username_registry
+                    .cache_mapping(username, discriminator, did);
+            }
+        }
+        Err(e) => tracing::warn!("Failed to load persisted peer names: {}", e),
+    }
+
     // Generate initial batch of one-time pre-keys so peers can establish Olm sessions.
     app_state.direct_messaging.generate_one_time_keys(50).await;
 

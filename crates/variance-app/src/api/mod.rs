@@ -102,6 +102,10 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route("/mls/groups/{id}/invite", post(groups::mls_invite_to_group))
         .route("/mls/groups/{id}/leave", post(groups::mls_leave_group))
+        .route(
+            "/mls/groups/{id}",
+            axum::routing::delete(groups::mls_delete_group),
+        )
         .route("/mls/groups/{id}/members", get(groups::mls_list_members))
         .route(
             "/mls/groups/{id}/members/{member_did}",

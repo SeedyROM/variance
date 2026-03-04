@@ -48,6 +48,17 @@ clean:
     cargo clean
     cd app && pnpm run tauri clean || true
 
+# Remove build artifacts older than N days (default: 3). Install: cargo install cargo-sweep
+sweep days="3":
+    @command -v cargo-sweep >/dev/null 2>&1 || { echo "Install with: cargo install cargo-sweep"; exit 1; }
+    cargo sweep --time {{days}}
+    @echo "✅ Removed artifacts older than {{days}} days"
+
+# Show target directory size breakdown
+target-size:
+    @echo "Total:" && du -sh target/
+    @echo "\nBreakdown:" && du -sh target/*/ 2>/dev/null | sort -rh
+
 # === Frontend/Tauri Commands ===
 
 # Run the Tauri desktop app in dev mode

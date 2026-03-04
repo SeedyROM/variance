@@ -6,12 +6,12 @@ use variance_proto::messaging_proto::TypingIndicator;
 /// Minimum interval between outbound typing-start P2P messages per recipient.
 /// Repeated calls within this window are silently dropped to prevent
 /// per-keystroke network traffic and potential DoS.
-const OUTBOUND_COOLDOWN_MS: u64 = 3000;
+const OUTBOUND_COOLDOWN_MS: u64 = 2000;
 
 /// Minimum sustained-composition time (ms) before the first group typing
-/// indicator is emitted. Prevents brief/accidental keystrokes from
-/// broadcasting activity to the entire group.
-const COMPOSE_THRESHOLD_MS: u64 = 1000;
+/// indicator is emitted. Prevents accidental single-keystroke broadcasts
+/// without adding noticeable latency.
+const COMPOSE_THRESHOLD_MS: u64 = 300;
 
 /// Typing indicator handler
 ///
@@ -543,15 +543,15 @@ mod tests {
             "first keystroke should be suppressed by compose threshold"
         );
 
-        // Immediate second call should still be suppressed (under 1s threshold)
+        // Immediate second call should still be suppressed (under 300ms threshold)
         let second = handler.try_start_typing_group("group123".to_string());
         assert!(
             second.is_none(),
             "second keystroke under threshold should be suppressed"
         );
 
-        // Wait past the compose threshold (1s)
-        tokio::time::sleep(tokio::time::Duration::from_millis(1050)).await;
+        // Wait past the compose threshold (300ms)
+        tokio::time::sleep(tokio::time::Duration::from_millis(350)).await;
 
         // Now it should fire
         let after_threshold = handler.try_start_typing_group("group123".to_string());
@@ -584,7 +584,7 @@ mod tests {
         );
 
         // Wait past threshold
-        tokio::time::sleep(tokio::time::Duration::from_millis(1050)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(350)).await;
 
         // Both should now fire
         let g1 = handler.try_start_typing_group("group123".to_string());
@@ -601,7 +601,7 @@ mod tests {
         handler.try_start_typing_group("group123".to_string());
 
         // Wait past threshold
-        tokio::time::sleep(tokio::time::Duration::from_millis(1050)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(350)).await;
 
         // Fire once
         let first = handler.try_start_typing_group("group123".to_string());

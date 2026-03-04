@@ -4,6 +4,10 @@ export type ActiveConversation =
   | { type: "dm"; peerId: string }
   | { type: "group"; groupId: string };
 
+// Auto-expiry for typing indicators (ms). Slightly longer than the backend's
+// 2s outbound cooldown so we don't flicker between renewals.
+const TYPING_EXPIRY_MS = 3_000;
+
 interface MessagingStore {
   activeConversation: ActiveConversation | null;
   setActiveConversation: (conv: ActiveConversation | null) => void;
@@ -30,6 +34,10 @@ interface MessagingStore {
   typingUsers: Map<string, Set<string>>;
   setTyping: (from: string, recipient: string, isTyping: boolean) => void;
 }
+
+// Timers for auto-expiring typing indicators, keyed by "{recipient}::{from}".
+// Kept outside the store to avoid Zustand serialization issues.
+const typingExpireTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export const useMessagingStore = create<MessagingStore>((set) => ({
   activeConversation: null,
@@ -78,7 +86,36 @@ export const useMessagingStore = create<MessagingStore>((set) => ({
       return { unreadConversations: newSet };
     }),
   typingUsers: new Map(),
-  setTyping: (from, recipient, isTyping) =>
+  setTyping: (from, recipient, isTyping) => {
+    const timerKey = `${recipient}::${from}`;
+
+    // Always cancel any pending expiry for this (recipient, sender) pair.
+    const existing = typingExpireTimers.get(timerKey);
+    if (existing !== undefined) {
+      clearTimeout(existing);
+      typingExpireTimers.delete(timerKey);
+    }
+
+    if (isTyping) {
+      // Schedule auto-expiry so indicators clear even when stop is suppressed
+      // (groups) or the stop message is lost in transit.
+      const timer = setTimeout(() => {
+        typingExpireTimers.delete(timerKey);
+        set((s) => {
+          const newMap = new Map(s.typingUsers);
+          const current = new Set(newMap.get(recipient) ?? []);
+          current.delete(from);
+          if (current.size === 0) {
+            newMap.delete(recipient);
+          } else {
+            newMap.set(recipient, current);
+          }
+          return { typingUsers: newMap };
+        });
+      }, TYPING_EXPIRY_MS);
+      typingExpireTimers.set(timerKey, timer);
+    }
+
     set((s) => {
       const newMap = new Map(s.typingUsers);
       const current = new Set(newMap.get(recipient) ?? []);
@@ -93,5 +130,6 @@ export const useMessagingStore = create<MessagingStore>((set) => ({
         newMap.set(recipient, current);
       }
       return { typingUsers: newMap };
-    }),
+    });
+  },
 }));

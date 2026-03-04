@@ -144,8 +144,19 @@ export const groupsApi = {
       method: "POST",
     }),
 
+  delete: (groupId: string) =>
+    request<{ success: boolean }>(`/mls/groups/${encodeURIComponent(groupId)}`, {
+      method: "DELETE",
+    }),
+
   listMembers: (groupId: string) =>
     request<GroupMemberInfo[]>(`/mls/groups/${encodeURIComponent(groupId)}/members`),
+
+  removeMember: (groupId: string, memberDid: string) =>
+    request<{ success: boolean }>(
+      `/mls/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(memberDid)}`,
+      { method: "DELETE" }
+    ),
 };
 
 // ===== Reactions =====

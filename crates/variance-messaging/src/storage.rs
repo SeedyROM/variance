@@ -44,6 +44,9 @@ pub trait MessageStorage: Send + Sync {
         before: Option<String>,
     ) -> Result<Vec<GroupMessage>>;
 
+    /// Fetch the most recent group message (for last-activity timestamps).
+    async fn fetch_group_latest(&self, group_id: &str) -> Result<Option<GroupMessage>>;
+
     /// Fetch group messages with `timestamp > since_timestamp`, oldest first.
     ///
     /// Used by the group-sync protocol to serve missed messages to a
@@ -178,6 +181,12 @@ pub trait MessageStorage: Send + Sync {
     /// Fetch all stored group metadata records (used at startup to restore in-memory state).
     async fn fetch_all_group_metadata(&self) -> Result<Vec<Group>>;
 
+    /// Delete all stored messages for a group.
+    async fn delete_group_messages(&self, group_id: &str) -> Result<()>;
+
+    /// Delete the metadata record for a group.
+    async fn delete_group_metadata(&self, group_id: &str) -> Result<()>;
+
     // ===== MLS provider state persistence =====
 
     /// Persist the full MLS provider state for a local identity.
@@ -193,6 +202,20 @@ pub trait MessageStorage: Send + Sync {
     ///
     /// Returns `None` on first run or if no groups have been created yet.
     async fn fetch_mls_state(&self, local_did: &str) -> Result<Option<Vec<u8>>>;
+
+    // ===== Peer display name persistence =====
+
+    /// Persist a peer's display name (username + discriminator) keyed by DID.
+    ///
+    /// Stored as `"username#discriminator"` so the registry can be seeded on
+    /// restart without requiring another P2P identity resolution.
+    async fn store_peer_name(&self, did: &str, username: &str, discriminator: u32) -> Result<()>;
+
+    /// Load all stored peer display names.
+    ///
+    /// Returns `(did, username, discriminator)` triples for seeding the
+    /// `UsernameRegistry` at startup.
+    async fn load_all_peer_names(&self) -> Result<Vec<(String, String, u32)>>;
 }
 
 /// Local storage implementation using sled
@@ -279,6 +302,13 @@ impl LocalMessageStorage {
     fn last_read_at_tree(&self) -> Result<sled::Tree> {
         self.db
             .open_tree("last_read_at")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
+    /// Peer display names tree (did → "username#discriminator")
+    fn peer_names_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("peer_names")
             .map_err(|e| Error::Storage { source: e })
     }
 
@@ -433,6 +463,25 @@ impl MessageStorage for LocalMessageStorage {
         }
 
         Ok(messages)
+    }
+
+    async fn fetch_group_latest(&self, group_id: &str) -> Result<Option<GroupMessage>> {
+        let tree = self.group_tree()?;
+        let prefix = format!("{group_id}:");
+        // The upper-bound key for this group's prefix: increment the last byte so we
+        // can use scan_prefix in reverse by ranging up to the first key of the next group.
+        let prefix_end = {
+            let mut end = prefix.as_bytes().to_vec();
+            *end.last_mut().unwrap() += 1;
+            end
+        };
+        // Scan backwards from the end of this group's key range.
+        Ok(tree
+            .range(prefix.as_bytes()..prefix_end.as_slice())
+            .next_back()
+            .transpose()
+            .map_err(|e| Error::Storage { source: e })?
+            .and_then(|(_, v)| GroupMessage::decode(v.as_ref()).ok()))
     }
 
     async fn fetch_group_since(
@@ -980,6 +1029,27 @@ impl MessageStorage for LocalMessageStorage {
         Ok(groups)
     }
 
+    async fn delete_group_messages(&self, group_id: &str) -> Result<()> {
+        let tree = self.group_tree()?;
+        let prefix = format!("{}:", group_id);
+        let keys_to_delete: Vec<sled::IVec> = tree
+            .scan_prefix(prefix.as_bytes())
+            .filter_map(|r| r.ok().map(|(k, _)| k))
+            .collect();
+        for key in keys_to_delete {
+            tree.remove(&key)
+                .map_err(|e| Error::Storage { source: e })?;
+        }
+        Ok(())
+    }
+
+    async fn delete_group_metadata(&self, group_id: &str) -> Result<()> {
+        let tree = self.group_metadata_tree()?;
+        tree.remove(group_id.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
     async fn store_last_read_at(
         &self,
         our_did: &str,
@@ -1018,6 +1088,30 @@ impl MessageStorage for LocalMessageStorage {
             .get(local_did.as_bytes())
             .map_err(|e| Error::Storage { source: e })?
             .map(|v| v.to_vec()))
+    }
+
+    async fn store_peer_name(&self, did: &str, username: &str, discriminator: u32) -> Result<()> {
+        let tree = self.peer_names_tree()?;
+        let value = format!("{username}#{discriminator:04}");
+        tree.insert(did.as_bytes(), value.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    async fn load_all_peer_names(&self) -> Result<Vec<(String, String, u32)>> {
+        let tree = self.peer_names_tree()?;
+        let mut result = Vec::new();
+        for item in tree.iter() {
+            let (k, v) = item.map_err(|e| Error::Storage { source: e })?;
+            let did = String::from_utf8_lossy(&k).into_owned();
+            let formatted = String::from_utf8_lossy(&v).into_owned();
+            if let Some((username, disc_str)) = formatted.rsplit_once('#') {
+                if let Ok(disc) = disc_str.parse::<u32>() {
+                    result.push((did, username.to_string(), disc));
+                }
+            }
+        }
+        Ok(result)
     }
 }
 

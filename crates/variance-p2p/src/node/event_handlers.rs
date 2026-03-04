@@ -229,6 +229,20 @@ impl Node {
 
             match GroupMessage::decode(message.data.as_slice()) {
                 Ok(group_msg) => {
+                    // Map sender_did → propagation_source so typing indicators can reach
+                    // this peer before an explicit identity resolution completes.
+                    // In a direct-mesh topology the propagation_source IS the sender.
+                    if !group_msg.sender_did.is_empty() {
+                        let did = group_msg.sender_did.clone();
+                        let peer = propagation_source;
+                        let did_to_peer = self.did_to_peer.clone();
+                        let peer_store = self.peer_store.clone();
+                        tokio::spawn(async move {
+                            did_to_peer.write().await.insert(did.clone(), peer);
+                            peer_store.insert(&did, &peer);
+                        });
+                    }
+
                     self.events
                         .send_group_message(GroupMessageEvent::MessageReceived {
                             message: group_msg,

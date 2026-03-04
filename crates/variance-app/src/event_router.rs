@@ -555,6 +555,7 @@ impl EventRouter {
         // Spawn task for rename events
         let ws_manager_rename = self.ws_manager.clone();
         let username_registry_rename = self.username_registry.clone();
+        let storage_rename = self.storage.clone();
         let events_clone = events.clone();
         tokio::spawn(async move {
             let mut rx = events_clone.subscribe_rename();
@@ -571,6 +572,12 @@ impl EventRouter {
                     discriminator,
                     did.clone(),
                 );
+                if let Err(e) = storage_rename
+                    .store_peer_name(&did, &username, discriminator)
+                    .await
+                {
+                    warn!("Failed to persist peer name for {}: {}", did, e);
+                }
                 let display_name =
                     UsernameRegistry::format_username(&username.to_lowercase(), discriminator);
                 debug!("EventRouter: Peer {} renamed to {}", did, display_name);
@@ -804,7 +811,16 @@ impl EventRouter {
                                         "EventRouter: Caching username {}#{:04} for {}",
                                         name, disc, doc.id
                                     );
-                                    username_registry.cache_mapping(name, disc, doc.id.clone());
+                                    username_registry.cache_mapping(
+                                        name.clone(),
+                                        disc,
+                                        doc.id.clone(),
+                                    );
+                                    if let Err(e) =
+                                        storage_identity.store_peer_name(&doc.id, &name, disc).await
+                                    {
+                                        warn!("Failed to persist peer name for {}: {}", doc.id, e);
+                                    }
                                 }
                             }
                         }

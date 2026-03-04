@@ -130,11 +130,12 @@ pub(super) async fn stop_typing(
     if req.is_group {
         // Privacy mitigation: suppress explicit stop-typing broadcast for groups.
         // Let the 5s timeout expire naturally on recipients instead of revealing
-        // "composed but didn't send" intent. Only clear local state + cooldown so
-        // the next typing-start fires immediately when the user types again.
+        // "composed but didn't send" intent. Only clear the outbound cooldown so
+        // the next typing-start can fire immediately; keep compose_start so that
+        // a brief pause doesn't restart the sustained-composition threshold from
+        // scratch (which would prevent the indicator from ever firing).
         let group_key = format!("group:{}", req.recipient);
         state.typing.clear_cooldown(&group_key);
-        state.typing.clear_compose_start(&group_key);
     } else {
         let indicator = state
             .typing
@@ -162,8 +163,8 @@ pub(super) async fn get_typing_users(
     State(state): State<AppState>,
     Path(recipient): Path<String>,
 ) -> Json<TypingUsersResponse> {
-    let users = if recipient.starts_with("group:") {
-        state.typing.get_typing_users_group(&recipient)
+    let users = if let Some(group_id) = recipient.strip_prefix("group:") {
+        state.typing.get_typing_users_group(group_id)
     } else {
         state.typing.get_typing_users_direct(&recipient)
     };

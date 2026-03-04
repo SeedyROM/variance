@@ -89,12 +89,29 @@ ulid = "1.1"
 tempfile = "3.14"
 dirs = "5.0"
 
-# Dev profile optimizations for size and speed
+# --- Build Profiles ---
+
+# Dev: fast compiles, minimal disk usage, backtraces still have line numbers
 [profile.dev]
 incremental = true
 opt-level = 0
-debug = true
+debug = "line-tables-only"   # Was `true` (level 2). ~10x smaller debug info, still gives file:line in backtraces.
+strip = "none"
 
+# Dependencies get slight optimization (makes dev runtime faster, especially libp2p/tokio)
 [profile.dev.package."*"]
 opt-level = 1
 debug = false
+
+# Profiling/benchmarking: release speed + debug symbols for perf/instruments
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"
+
+# Release: full optimization, stripped
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "debuginfo"
+codegen-units = 1
