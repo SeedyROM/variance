@@ -76,6 +76,7 @@ export interface MlsGroupInfo {
   name: string;
   member_count: number;
   last_message_timestamp: number | null;
+  has_unread?: boolean;
 }
 
 export interface GroupMemberInfo {
@@ -132,7 +133,13 @@ export type WsEvent =
       timestamp: number;
       reply_to?: string;
     }
-  | { type: "GroupMessageReceived"; group_id: string; message_id: string }
+  | {
+      type: "GroupMessageReceived";
+      group_id: string;
+      from: string;
+      message_id: string;
+      timestamp: number;
+    }
   | { type: "MlsGroupJoined"; group_id: string; group_name?: string; inviter: string }
   | { type: "TypingStarted"; from: string; recipient: string }
   | { type: "TypingStopped"; from: string; recipient: string }

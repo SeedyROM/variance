@@ -67,6 +67,8 @@ export function useWebSocket() {
         }
 
         case "GroupMessageReceived": {
+          // Sender sent a message — clear their typing indicator.
+          setTyping(event.from, `group:${event.group_id}`, false);
           tickGroupMessage();
           void queryClient.invalidateQueries({ queryKey: ["groups"] });
           const isActiveGroup =

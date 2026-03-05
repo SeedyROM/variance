@@ -178,6 +178,7 @@ pub struct MlsGroupInfo {
     pub name: String,
     pub member_count: usize,
     pub last_message_timestamp: Option<i64>,
+    pub has_unread: bool,
 }
 
 #[derive(Deserialize)]

@@ -134,6 +134,13 @@ pub(super) async fn get_group_messages(
             message: format!("Failed to fetch group messages: {}", e),
         })?;
 
+    // Opening a group marks it read.
+    let now = chrono::Utc::now().timestamp_millis();
+    let _ = state
+        .storage
+        .store_group_last_read_at(&state.local_did, &group_id, now)
+        .await;
+
     let mut responses = Vec::new();
     for m in messages {
         let (text, reply_to, metadata) = match state
@@ -186,19 +193,28 @@ pub(super) async fn mls_list_groups(
             .map(|g| g.name.clone())
             .unwrap_or_else(|| group_id.clone());
 
-        let last_message_timestamp = state
+        let last_message = state
             .storage
             .fetch_group_latest(&group_id)
             .await
             .ok()
-            .flatten()
-            .map(|m| m.timestamp);
+            .flatten();
+        let last_message_timestamp = last_message.as_ref().map(|m| m.timestamp);
+
+        let last_read = state
+            .storage
+            .fetch_group_last_read_at(&state.local_did, &group_id)
+            .await
+            .unwrap_or(None)
+            .unwrap_or(0);
+        let has_unread = last_message_timestamp.is_some_and(|ts| ts > last_read);
 
         infos.push(MlsGroupInfo {
             id: group_id,
             name,
             member_count,
             last_message_timestamp,
+            has_unread,
         });
     }
 

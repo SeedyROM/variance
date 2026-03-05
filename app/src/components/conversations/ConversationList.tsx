@@ -8,6 +8,7 @@ import { CreateGroupModal } from "./CreateGroupModal";
 import { ThemeToggle } from "../ui/ThemeToggle";
 import { ScrollArea } from "../ui/ScrollArea";
 import { Avatar } from "../ui/Avatar";
+import { TypingDots } from "../messages/TypingIndicator";
 import { cn } from "../../utils/cn";
 import { relativeTime } from "../../utils/time";
 import { conversationsApi, groupsApi } from "../../api/client";
@@ -26,6 +27,7 @@ export function ConversationList() {
   const setActiveConversation = useMessagingStore((s) => s.setActiveConversation);
   const unreadConversations = useMessagingStore((s) => s.unreadConversations);
   const markRead = useMessagingStore((s) => s.markRead);
+  const typingUsers = useMessagingStore((s) => s.typingUsers);
   const did = useIdentityStore((s) => s.did);
   const displayName = useIdentityStore((s) => s.displayName);
   const queryClient = useQueryClient();
@@ -71,7 +73,7 @@ export function ConversationList() {
   const groupItems: ListItem[] = groups.map((g) => ({
     kind: "group",
     group: g,
-    has_unread: unreadConversations.has(g.id),
+    has_unread: (g.has_unread ?? false) || unreadConversations.has(g.id),
   }));
 
   const allItems: ListItem[] = [...dmItems, ...groupItems].sort((a, b) => {
@@ -139,6 +141,8 @@ export function ConversationList() {
               const g = item.group;
               const isActive =
                 activeConversation?.type === "group" && activeConversation.groupId === g.id;
+              const groupTypingSet = typingUsers.get(`group:${g.id}`);
+              const isGroupTyping = groupTypingSet !== undefined && groupTypingSet.size > 0;
               return (
                 <button
                   key={g.id}
@@ -171,12 +175,19 @@ export function ConversationList() {
                         <div className="shrink-0 w-2 h-2 rounded-full bg-primary-500" />
                       )}
                     </div>
-                    <p className="truncate text-xs text-surface-500">
-                      {g.member_count} member{g.member_count !== 1 ? "s" : ""}
-                      {g.last_message_timestamp
-                        ? ` · ${relativeTime(g.last_message_timestamp)}`
-                        : ""}
-                    </p>
+                    {isGroupTyping ? (
+                      <span className="flex items-center gap-1.5 text-xs text-primary-500">
+                        <TypingDots className="text-primary-500" />
+                        <span>typing</span>
+                      </span>
+                    ) : (
+                      <p className="truncate text-xs text-surface-500">
+                        {g.member_count} member{g.member_count !== 1 ? "s" : ""}
+                        {g.last_message_timestamp
+                          ? ` · ${relativeTime(g.last_message_timestamp)}`
+                          : ""}
+                      </p>
+                    )}
                   </div>
                 </button>
               );

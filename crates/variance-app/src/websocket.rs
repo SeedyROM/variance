@@ -391,6 +391,13 @@ async fn handle_client_message(client_id: &str, msg: ClientMessage, state: &AppS
                             warn!("Failed to store MLS group message locally: {}", e);
                         }
 
+                        // Mark the group as read so our own sent message doesn't
+                        // appear as unread when the groups list is next fetched.
+                        let _ = state
+                            .storage
+                            .store_group_last_read_at(&state.local_did, &group_id, timestamp)
+                            .await;
+
                         if let Some(ref channels) = state.event_channels {
                             use variance_p2p::events::GroupMessageEvent;
                             channels.send_group_message(GroupMessageEvent::MessageSent {

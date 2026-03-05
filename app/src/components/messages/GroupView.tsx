@@ -191,7 +191,13 @@ export function GroupView({ groupId }: GroupViewProps) {
 
   const { data: messages = [], refetch } = useQuery({
     queryKey: ["messages", "group", groupId],
-    queryFn: () => messagesApi.getGroup(groupId),
+    queryFn: async () => {
+      const msgs = await messagesApi.getGroup(groupId);
+      // Fetching messages updates last_read_at on the server — refresh the
+      // groups list so the unread badge clears immediately.
+      void queryClient.invalidateQueries({ queryKey: ["groups"] });
+      return msgs;
+    },
     staleTime: Infinity,
     refetchOnWindowFocus: false,
     refetchOnMount: "always",

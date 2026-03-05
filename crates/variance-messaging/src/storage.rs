@@ -118,6 +118,17 @@ pub trait MessageStorage: Send + Sync {
     /// Fetch the last-read timestamp for a conversation. Returns `None` if never read.
     async fn fetch_last_read_at(&self, our_did: &str, peer_did: &str) -> Result<Option<i64>>;
 
+    /// Record that `our_did` has read all messages in `group_id` up to `timestamp` (ms).
+    async fn store_group_last_read_at(
+        &self,
+        our_did: &str,
+        group_id: &str,
+        timestamp: i64,
+    ) -> Result<()>;
+
+    /// Fetch the last-read timestamp for a group. Returns `None` if never read.
+    async fn fetch_group_last_read_at(&self, our_did: &str, group_id: &str) -> Result<Option<i64>>;
+
     /// Delete all messages in a direct conversation.
     async fn delete_direct_conversation(&self, did1: &str, did2: &str) -> Result<()>;
 
@@ -1066,6 +1077,31 @@ impl MessageStorage for LocalMessageStorage {
     async fn fetch_last_read_at(&self, our_did: &str, peer_did: &str) -> Result<Option<i64>> {
         let tree = self.last_read_at_tree()?;
         let key = format!("{}::{}", our_did, peer_did);
+        Ok(tree
+            .get(key.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?
+            .map(|v| {
+                let bytes: [u8; 8] = v.as_ref().try_into().unwrap_or([0u8; 8]);
+                i64::from_le_bytes(bytes)
+            }))
+    }
+
+    async fn store_group_last_read_at(
+        &self,
+        our_did: &str,
+        group_id: &str,
+        timestamp: i64,
+    ) -> Result<()> {
+        let tree = self.last_read_at_tree()?;
+        let key = format!("{}::group::{}", our_did, group_id);
+        tree.insert(key.as_bytes(), &timestamp.to_le_bytes())
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    async fn fetch_group_last_read_at(&self, our_did: &str, group_id: &str) -> Result<Option<i64>> {
+        let tree = self.last_read_at_tree()?;
+        let key = format!("{}::group::{}", our_did, group_id);
         Ok(tree
             .get(key.as_bytes())
             .map_err(|e| Error::Storage { source: e })?

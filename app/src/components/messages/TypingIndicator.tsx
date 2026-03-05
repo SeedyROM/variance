@@ -22,10 +22,15 @@ export function TypingDots({ className = "" }: { className?: string }) {
   );
 }
 
+function shortName(name: string): string {
+  // Strip discriminator (e.g. "alice#0042" → "alice")
+  return name.split("#")[0];
+}
+
 function formatTypingLabel(names: string[]): string {
-  if (names.length === 1) return `${names[0]} is typing`;
-  if (names.length === 2) return `${names[0]} and ${names[1]} are typing`;
-  return `${names[0]} and ${names.length - 1} others are typing`;
+  if (names.length === 1) return `${shortName(names[0])} is typing`;
+  if (names.length === 2) return `${shortName(names[0])}, ${shortName(names[1])} typing`;
+  return `${names.length} people typing`;
 }
 
 export function TypingIndicator({ users }: TypingIndicatorProps) {
