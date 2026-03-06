@@ -4,6 +4,8 @@ Variance is a private, decentralized messaging app for people who think their co
 
 Conversations in Variance are ephemeral by design. Messages fade after 30 days, because that's how real conversations work — you remember what matters and let the rest go. There are no servers to subpoena, no message archives to leak, and no social graph being harvested in the background. Find your people however you find them: share a username in person, send a link, scan a code. Variance doesn't want to know who your friends are.
 
+[Read the full philosophy →](docs/PHILOSOPHY.md)
+
 ## Architecture
 
 Variance is a multi-crate workspace implementing a decentralized communication platform with:
