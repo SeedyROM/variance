@@ -205,6 +205,35 @@ All P2P communication uses Protocol Buffers (defined in `crates/variance-proto/p
 
 Auto-generated via `prost-build` in build.rs.
 
+## Frontend Architecture (app/)
+
+The React frontend runs inside Tauri's WebView. It never talks to Rust directly for business logic — all communication goes through the axum HTTP API (`http://127.0.0.1:<port>`) and WebSocket (`ws://127.0.0.1:<port>/ws`). The port is dynamic; the frontend fetches it via Tauri command `get_api_port` and caches it module-level in `app/src/api/client.ts`.
+
+**State management:** Zustand stores, not React context:
+- `identityStore` — DID, verifying key, username, discriminator, onboarding state. Partially persisted (`identityPath`, `isOnboarded` only — not username, to avoid cross-instance leakage).
+- `appStore` — node status (`idle | needs-unlock | starting | running | error`), API port.
+- `messagingStore` — active conversation, unread tracking, typing indicators, peer presence, peer display names.
+- `settingsStore` — theme and other user preferences.
+
+**Real-time events:** `app/src/api/websocket.ts` — `VarianceWebSocket` singleton (`variantWs`) with exponential-backoff reconnect. Backend uses serde adjacently-tagged enums `{ "type": "...", "data": { ... } }`; the websocket flattens these to `{ type, ...data }`. `useWebSocket` hook in `app/src/hooks/useWebSocket.ts` dispatches all inbound WS events to stores and React Query.
+
+**API client pattern:** `app/src/api/client.ts` exports typed API objects (`identityApi`, `conversationsApi`, `groupsApi`, etc.). All fetch through the same `request()` helper. When adding a new endpoint, add the typed function there.
+
+**Adding a new WS event:** The event must be added to `WsEvent` in `app/src/api/types.ts`, handled in the `switch` in `useWebSocket.ts`, and if it affects UI state, dispatched to the appropriate store.
+
+**Tauri commands** (Rust → frontend FFI): defined in `app/src-tauri/src/commands.rs`, registered in `lib.rs`. Frontend calls them via `invoke<ReturnType>("command_name", { args })`. The frontend never imports from Rust crates — only from `@tauri-apps/api`.
+
+**Notification behavior:** `useWebSocket` fires OS notifications (via `@tauri-apps/plugin-notification`) for messages in non-active conversations. Debounced 500ms per conversation with stable integer `id` so the OS replaces rather than stacks. Clicking a notification sets `pendingNavTarget`; `onFocusChanged` on the Tauri window triggers navigation within a 5s window (macOS/Windows bring the window to front natively on notification click — `onAction` does NOT fire for the notification body tap on desktop).
+
+**QR contact sharing:** `app/src/components/conversations/ShareContactModal.tsx` — encodes `variance://add?did=<DID>&name=<username%23disc>` as a QR code using `react-qr-code`. Accessible from the settings panel in `ConversationList`.
+
+**Tauri plugin permissions** are declared in `app/src-tauri/capabilities/default.json`. Adding a new plugin requires: (1) Cargo dep in `app/src-tauri/Cargo.toml`, (2) `.plugin(tauri_plugin_X::init())` in `lib.rs`, (3) permission string in `capabilities/default.json`.
+
+**Frontend TypeScript check:**
+```bash
+cd app && pnpm exec tsc --noEmit
+```
+
 ## References
 
 - [libp2p specs](https://github.com/libp2p/specs)
