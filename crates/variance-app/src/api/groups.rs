@@ -720,12 +720,12 @@ async fn send_group_content(
 
     persist_mls_state(state).await;
 
-    if let Some(ref channels) = state.event_channels {
-        channels.send_group_message(GroupMessageEvent::MessageSent {
+    state
+        .event_channels
+        .send_group_message(GroupMessageEvent::MessageSent {
             message_id: message_id.clone(),
             group_id: group_id.to_string(),
         });
-    }
 
     Ok(message_id)
 }

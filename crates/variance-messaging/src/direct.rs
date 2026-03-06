@@ -283,6 +283,14 @@ impl DirectMessageHandler {
             recipient_one_time_key,
         )
         .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("unknown one-time key") || msg.contains("BAD_MESSAGE_KEY_ID") {
+                Error::StaleOneTimeKey { message: msg }
+            } else {
+                e
+            }
+        })
     }
 
     /// Queue a message for later delivery when the peer comes online.

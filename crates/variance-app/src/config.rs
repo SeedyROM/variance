@@ -99,8 +99,10 @@ pub struct StorageConfig {
     pub group_message_max_age_days: u64,
 }
 
+const DEFAULT_GROUP_MESSAGE_MAX_AGE_DAYS: u64 = 90;
+
 fn default_group_message_max_age_days() -> u64 {
-    90
+    DEFAULT_GROUP_MESSAGE_MAX_AGE_DAYS
 }
 
 impl Default for AppConfig {
@@ -131,7 +133,7 @@ impl Default for AppConfig {
                 identity_path: variance_data_dir().join("identity.json"),
                 identity_cache_dir: variance_data_dir().join("identity_cache"),
                 message_db_path: variance_data_dir().join("messages.db"),
-                group_message_max_age_days: 90,
+                group_message_max_age_days: DEFAULT_GROUP_MESSAGE_MAX_AGE_DAYS,
             },
         }
     }

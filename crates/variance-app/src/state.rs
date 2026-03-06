@@ -89,7 +89,7 @@ pub struct AppState {
     pub ws_manager: WebSocketManager,
 
     /// P2P event channels for real-time updates
-    pub event_channels: Option<Arc<variance_p2p::EventChannels>>,
+    pub event_channels: Arc<variance_p2p::EventChannels>,
 
     /// Username registry (username#discriminator → DID)
     pub username_registry: Arc<UsernameRegistry>,
@@ -190,7 +190,7 @@ impl AppState {
         db_path: &str,
         identity_cache_dir: &str,
         node_handle: variance_p2p::NodeHandle,
-        event_channels: Option<Arc<variance_p2p::EventChannels>>,
+        event_channels: Arc<variance_p2p::EventChannels>,
         ipfs_storage: Arc<dyn IdentityStorage>,
         passphrase: Option<&str>,
     ) -> anyhow::Result<Self> {
@@ -423,7 +423,7 @@ impl AppState {
             created_at: "".to_string(),
             node_handle: Self::test_node_handle(),
             ws_manager: WebSocketManager::new(),
-            event_channels: None,
+            event_channels: Arc::new(variance_p2p::EventChannels::default()),
             username_registry: Arc::new(UsernameRegistry::new()),
             identity_cache: Arc::new(
                 MultiLayerCache::new(&identity_cache_path.to_string_lossy())

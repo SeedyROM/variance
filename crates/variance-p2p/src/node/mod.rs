@@ -96,8 +96,11 @@ pub struct Node {
 
 impl Node {
     /// Create a new P2P node and return both the node and a handle for sending commands
-    pub fn new(config: Config) -> Result<(Self, NodeHandle)> {
-        let keypair = libp2p::identity::Keypair::generate_ed25519();
+    pub fn new(mut config: Config) -> Result<(Self, NodeHandle)> {
+        let keypair = config
+            .keypair
+            .take()
+            .unwrap_or_else(libp2p::identity::Keypair::generate_ed25519);
         let peer_id = keypair.public().to_peer_id();
 
         info!("Creating P2P node with peer ID: {}", peer_id);

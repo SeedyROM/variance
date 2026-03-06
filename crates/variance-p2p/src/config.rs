@@ -4,6 +4,14 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    /// Pre-derived libp2p keypair for a stable PeerId across restarts.
+    ///
+    /// Derive this from the identity file's Ed25519 signing key so the node
+    /// always advertises the same PeerId. When `None`, a fresh keypair is
+    /// generated each run and the PeerId is ephemeral.
+    #[serde(skip)]
+    pub keypair: Option<libp2p::identity::Keypair>,
+
     /// Local listen addresses
     pub listen_addresses: Vec<Multiaddr>,
 
@@ -50,6 +58,7 @@ fn default_storage_path() -> PathBuf {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            keypair: None,
             listen_addresses: vec![
                 "/ip4/0.0.0.0/tcp/0".parse().unwrap(),
                 "/ip4/0.0.0.0/udp/0/quic-v1".parse().unwrap(),

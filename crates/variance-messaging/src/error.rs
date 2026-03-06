@@ -38,6 +38,9 @@ pub enum Error {
     #[snafu(display("Double Ratchet error: {message}"))]
     DoubleRatchet { message: String },
 
+    #[snafu(display("One-time pre-key was already consumed or invalid: {message}"))]
+    StaleOneTimeKey { message: String },
+
     #[snafu(display("Message expired: {message_id}"))]
     MessageExpired { message_id: String },
 

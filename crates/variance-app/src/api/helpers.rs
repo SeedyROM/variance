@@ -49,18 +49,26 @@ pub async fn ensure_olm_session(state: &AppState, recipient_did: &str) -> Result
         recipient_did
     );
 
-    // Ask connected peers for the recipient's Olm keys
-    let found = state
-        .node_handle
-        .resolve_identity_by_did(recipient_did.to_string())
-        .await
-        .map_err(|e| Error::SessionRequired {
-            message: format!(
-                "Cannot reach peer via P2P. \
-                 Make sure both nodes are running and connected. ({})",
-                e
-            ),
-        })?;
+    // Ask connected peers for the recipient's Olm keys, with a 10s deadline.
+    // Without the timeout, an unresponsive peer causes the handler to hang forever.
+    let found = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        state
+            .node_handle
+            .resolve_identity_by_did(recipient_did.to_string()),
+    )
+    .await
+    .map_err(|_| Error::SessionRequired {
+        message: "Timed out resolving peer identity (10s). Make sure both nodes are connected."
+            .to_string(),
+    })?
+    .map_err(|e| Error::SessionRequired {
+        message: format!(
+            "Cannot reach peer via P2P. \
+             Make sure both nodes are running and connected. ({})",
+            e
+        ),
+    })?;
 
     let ik_bytes: [u8; 32] =
         found
@@ -97,14 +105,8 @@ pub async fn ensure_olm_session(state: &AppState, recipient_did: &str) -> Result
                 return Ok(());
             }
             Err(e) => {
-                let err_msg = e.to_string();
-                if err_msg.contains("unknown one-time key")
-                    || err_msg.contains("BAD_MESSAGE_KEY_ID")
-                {
-                    tracing::debug!(
-                        "OTK failed (likely already consumed), trying next: {}",
-                        err_msg
-                    );
+                if matches!(e, variance_messaging::Error::StaleOneTimeKey { .. }) {
+                    tracing::debug!("OTK failed (likely already consumed), trying next: {}", e);
                     last_error = Some(e);
                     continue;
                 }
@@ -346,14 +348,14 @@ pub async fn send_dm_to_peer(
     }
 }
 
-/// Emit a `DirectMessageSent` event if event channels are available.
+/// Emit a `DirectMessageSent` event on the event channels.
 pub fn emit_dm_sent_event(state: &AppState, message_id: &str, recipient_did: &str) {
-    if let Some(ref channels) = state.event_channels {
-        channels.send_direct_message(variance_p2p::events::DirectMessageEvent::MessageSent {
+    state.event_channels.send_direct_message(
+        variance_p2p::events::DirectMessageEvent::MessageSent {
             message_id: message_id.to_string(),
             recipient: recipient_did.to_string(),
-        });
-    }
+        },
+    );
 }
 
 // ===== Call helper functions =====

@@ -328,14 +328,14 @@ async fn handle_client_message(client_id: &str, msg: ClientMessage, state: &AppS
                         );
                     }
 
-                    // Emit event if channels available
-                    if let Some(ref channels) = state.event_channels {
-                        use variance_p2p::events::DirectMessageEvent;
-                        channels.send_direct_message(DirectMessageEvent::MessageSent {
+                    // Emit event
+                    use variance_p2p::events::DirectMessageEvent;
+                    state
+                        .event_channels
+                        .send_direct_message(DirectMessageEvent::MessageSent {
                             message_id: message.id.clone(),
                             recipient: recipient_did,
                         });
-                    }
                 }
                 Err(e) => {
                     warn!("Failed to send message from client {}: {}", client_id, e);
@@ -398,13 +398,13 @@ async fn handle_client_message(client_id: &str, msg: ClientMessage, state: &AppS
                             .store_group_last_read_at(&state.local_did, &group_id, timestamp)
                             .await;
 
-                        if let Some(ref channels) = state.event_channels {
-                            use variance_p2p::events::GroupMessageEvent;
-                            channels.send_group_message(GroupMessageEvent::MessageSent {
+                        use variance_p2p::events::GroupMessageEvent;
+                        state
+                            .event_channels
+                            .send_group_message(GroupMessageEvent::MessageSent {
                                 message_id: message_id.clone(),
                                 group_id: group_id.clone(),
                             });
-                        }
 
                         if let Some(client) = state.ws_manager.clients.get(client_id) {
                             let _ = client.tx.send(WsMessage::GroupMessageReceived {

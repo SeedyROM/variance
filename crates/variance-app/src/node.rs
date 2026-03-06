@@ -115,6 +115,35 @@ pub async fn start_node(
 ) -> Result<RunningNode> {
     tracing::info!("Initializing Variance node...");
 
+    // Load identity early to derive a stable libp2p PeerId from the Ed25519 signing key.
+    // Without this, Node::new() generates a fresh ephemeral keypair each restart, causing
+    // PeerStore cache misses (stale PeerId) and "known but not connected" send failures.
+    let libp2p_keypair = match AppState::load_identity_with_passphrase(identity_path, passphrase) {
+        Ok(identity) => match hex::decode(&identity.signing_key) {
+            Ok(bytes) => match variance_p2p::keypair_from_ed25519(bytes) {
+                Some(kp) => {
+                    tracing::debug!("Derived stable libp2p PeerId from identity key");
+                    Some(kp)
+                }
+                None => {
+                    tracing::warn!("Failed to derive libp2p keypair from signing key bytes; PeerId will be ephemeral");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Cannot hex-decode signing key for keypair derivation: {}; PeerId will be ephemeral", e);
+                None
+            }
+        },
+        Err(e) => {
+            tracing::warn!(
+                "Cannot load identity for keypair derivation: {}; PeerId will be ephemeral",
+                e
+            );
+            None
+        }
+    };
+
     // Create P2P node configuration
     let mut listen_addresses = Vec::new();
     for addr_str in &config.p2p.listen_addrs {
@@ -155,6 +184,7 @@ pub async fn start_node(
         relay_peers,
         enable_mdns: true,
         storage_path: config.storage.base_dir.clone(),
+        keypair: libp2p_keypair,
         ..Default::default()
     };
 
@@ -208,7 +238,7 @@ pub async fn start_node(
         config.storage.message_db_path.to_str().unwrap(),
         config.storage.identity_cache_dir.to_str().unwrap(),
         node_handle,
-        Some(event_channels.clone()),
+        event_channels.clone(),
         ipfs_storage,
         passphrase,
     )

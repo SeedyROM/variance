@@ -96,6 +96,9 @@ pub struct PeerRateLimiter {
     configs: DashMap<&'static str, BucketConfig>,
     /// Global per-peer config
     global_config: BucketConfig,
+    /// Inverted index: PeerId → list of protocol labels the peer has used.
+    /// Enables O(1) cleanup in `remove_peer` — we only touch buckets for this peer.
+    peer_protocols: DashMap<PeerId, Vec<&'static str>>,
 }
 
 /// Result of a rate-limit check.
@@ -139,6 +142,7 @@ impl PeerRateLimiter {
             global_buckets: DashMap::new(),
             configs: DashMap::new(),
             global_config: BucketConfig::from_window(500, 60),
+            peer_protocols: DashMap::new(),
         };
 
         // Priority tier 1: core messaging
@@ -195,10 +199,18 @@ impl PeerRateLimiter {
         };
 
         let proto_key = (*peer, protocol_label);
-        let mut proto_bucket = self
-            .protocol_buckets
-            .entry(proto_key)
-            .or_insert_with(|| TokenBucket::new(proto_config.max_tokens, proto_config.refill_rate));
+        // Split field borrows so the closure can reference peer_protocols without
+        // conflicting with the protocol_buckets entry borrow.
+        let protocol_buckets = &self.protocol_buckets;
+        let peer_protocols = &self.peer_protocols;
+        let mut proto_bucket = protocol_buckets.entry(proto_key).or_insert_with(|| {
+            // First request from this peer on this protocol — record for O(1) cleanup.
+            peer_protocols
+                .entry(*peer)
+                .or_default()
+                .push(protocol_label);
+            TokenBucket::new(proto_config.max_tokens, proto_config.refill_rate)
+        });
 
         if !proto_bucket.try_consume() {
             return RateLimitDecision::ProtocolLimited;
@@ -222,19 +234,17 @@ impl PeerRateLimiter {
     }
 
     /// Remove all state for a disconnected peer to prevent unbounded memory growth.
+    ///
+    /// O(P) where P is the number of distinct protocols the peer used (≤ 6),
+    /// not O(total entries across all peers).
     pub fn remove_peer(&self, peer: &PeerId) {
         self.global_buckets.remove(peer);
 
-        // Remove all protocol buckets for this peer
-        let keys_to_remove: Vec<(PeerId, &'static str)> = self
-            .protocol_buckets
-            .iter()
-            .filter(|entry| entry.key().0 == *peer)
-            .map(|entry| *entry.key())
-            .collect();
-
-        for key in keys_to_remove {
-            self.protocol_buckets.remove(&key);
+        // Use the inverted index to remove only this peer's protocol buckets.
+        if let Some((_, protocols)) = self.peer_protocols.remove(peer) {
+            for protocol in protocols {
+                self.protocol_buckets.remove(&(*peer, protocol));
+            }
         }
     }
 
@@ -428,6 +438,32 @@ mod tests {
 
         limiter.remove_peer(&peer);
         assert_eq!(limiter.tracked_peer_count(), 0);
+        // Verify protocol_buckets are also cleaned up (no memory leak)
+        assert!(!limiter
+            .protocol_buckets
+            .contains_key(&(peer, protocol::IDENTITY)));
+        assert!(!limiter
+            .protocol_buckets
+            .contains_key(&(peer, protocol::DIRECT_MESSAGES)));
+        assert!(!limiter.peer_protocols.contains_key(&peer));
+    }
+
+    #[test]
+    fn remove_peer_only_removes_that_peers_buckets() {
+        let limiter = PeerRateLimiter::new();
+        let alice = test_peer();
+        let bob = test_peer();
+
+        limiter.check(&alice, protocol::IDENTITY);
+        limiter.check(&bob, protocol::IDENTITY);
+        assert_eq!(limiter.tracked_peer_count(), 2);
+
+        limiter.remove_peer(&alice);
+        assert_eq!(limiter.tracked_peer_count(), 1);
+        // Bob's buckets untouched
+        assert!(limiter
+            .protocol_buckets
+            .contains_key(&(bob, protocol::IDENTITY)));
     }
 
     #[test]

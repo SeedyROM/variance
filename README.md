@@ -1,6 +1,8 @@
 # Variance
 
-A peer-to-peer Discord alternative built with Rust, libp2p, and WebRTC.
+Variance is a private, decentralized messaging app for people who think their conversations are nobody else's business. No accounts, no phone numbers, no company holding your data. You generate an identity that belongs to you, pick a username, and start talking. The encryption, the peer discovery, the relay infrastructure — all of it happens invisibly. You shouldn't have to understand cryptography to deserve privacy.
+
+Conversations in Variance are ephemeral by design. Messages fade after 30 days, because that's how real conversations work — you remember what matters and let the rest go. There are no servers to subpoena, no message archives to leak, and no social graph being harvested in the background. Find your people however you find them: share a username in person, send a link, scan a code. Variance doesn't want to know who your friends are.
 
 ## Architecture
 
@@ -66,7 +68,7 @@ variance/
 
 ### Prerequisites
 
-- Rust 1.75+ (with 2021 edition)
+- Latest stable Rust (2021 edition)
 - Protocol Buffers compiler (`protoc`)
 
 ### Install protoc
@@ -139,6 +141,37 @@ cargo run --bin variance -- identity show
 ```
 
 See [docs/CLI-USAGE.md](docs/CLI-USAGE.md) for the full command reference.
+
+## Running a Relay Node
+
+A relay node enables NAT traversal for peers behind restrictive firewalls. It accepts circuit reservations and forwards traffic between peers that cannot connect directly.
+
+```bash
+# Build the relay binary
+cargo build -p variance-relay --release
+
+# Run (listens on port 4001 by default)
+./target/release/variance-relay --port 4001
+```
+
+The relay prints its PeerId on startup:
+
+```
+INFO variance_relay: Relay PeerId: 12D3KooW...
+INFO variance_relay: Listening on /ip4/0.0.0.0/tcp/4001
+```
+
+To configure clients to use the relay, add to your `config.toml`:
+
+```toml
+[[p2p.relay_peers]]
+peer_id = "12D3KooW..."
+multiaddr = "/ip4/<YOUR_IP>/tcp/4001"
+```
+
+The client will dial the relay on startup, reserve a circuit slot, and become reachable at `/ip4/<YOUR_IP>/tcp/4001/p2p/12D3KooW.../p2p-circuit/p2p/<CLIENT_PEER_ID>`.
+
+See [docs/NAT-TRAVERSAL.md](docs/NAT-TRAVERSAL.md) for design details.
 
 ## Development
 
@@ -244,10 +277,17 @@ RUST_LOG=variance=trace,libp2p=debug just dev
 3. **Custom libp2p protocols**: Direct peer queries with multi-layer caching
 4. **Protobuf everywhere**: Type-safe schemas for all P2P communication
 
+## Known Limitations
+
+- **Local message history**: Messages are encrypted at rest with keys derived from your identity file. Losing the identity file means losing message history — there is no cloud backup.
+- **No automatic group sync on reconnect**: If you go offline and come back, group messages sent while you were away are not automatically fetched. Workaround: stay connected or request a manual sync from a group member.
+- **IPFS/IPNS requires a local daemon**: Identity storage uses IPFS/IPNS when a local daemon is reachable (`http://127.0.0.1:5001`). When unavailable, Variance falls back to local-only identity storage — peers cannot resolve your DID via IPFS, only via P2P direct query.
+
 ## Documentation
 
 ### Architecture
 - [docs/](docs/) - Architecture documentation
+- [docs/NAT-TRAVERSAL.md](docs/NAT-TRAVERSAL.md) - Relay node and NAT traversal design
 
 ### Usage as standalone node (debugging/testing only)
 - [CLI-USAGE.md](docs/CLI-USAGE.md) - CLI reference (debugging/testing only)
@@ -265,7 +305,7 @@ RUST_LOG=variance=trace,libp2p=debug just dev
 - [x] DID generation (ed25519 keys)
 - [x] Identity resolution protocol handler
 - [x] In-memory caching layer
-- [x] IPFS/IPNS integration for persistent storage (untested)
+- [x] IPFS/IPNS integration for persistent storage (degrades gracefully to local fallback)
 - [x] DHT provider records for username discovery (untested)
 
 **Messaging:**
@@ -307,10 +347,10 @@ RUST_LOG=variance=trace,libp2p=debug just dev
 
 ### Next Priorities
 
-1. **Integration Testing** — IPFS/IPNS and DHT provider records are implemented but untested end-to-end; integration tests need a live daemon
+1. **Relay Network Testing** — Relay infrastructure is implemented; needs real-world multi-hop testing across NATs
 2. **WebRTC Peer Connection** — Signaling protocol is complete; wire up actual media stream negotiation and STUN/TURN server configuration
-3. **Relay Node Selection** — Infrastructure for discovery and failover between relay nodes
-4. **Call UI** — Tauri frontend has message/conversation UI; call screens and media controls not yet wired
+3. **Call UI** — Tauri frontend has message/conversation UI; call screens and media controls not yet wired
+4. **Integration Testing** — IPFS/IPNS and DHT provider records need integration tests with a live daemon
 
 ## License
 
@@ -318,7 +358,7 @@ AGPL-3.0 License. See [LICENSE](LICENSE) for details.
 
 ## Contributing
 
-This is an early-stage project. Contributions welcome once foundation is stable.
+Contributions welcome. Core messaging, identity, and relay infrastructure are implemented and stable.
 
 Key areas for future work:
 - End-to-end integration testing (IPFS/IPNS, DHT provider records)
