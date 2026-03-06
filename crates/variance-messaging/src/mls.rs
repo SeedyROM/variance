@@ -36,7 +36,7 @@ use openmls::prelude::*;
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use prost::Message as ProstMessage;
-use rand::RngCore;
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 use sha2::Sha256;
 
@@ -571,7 +571,7 @@ impl MlsGroupHandler {
         let cipher = Aes256Gcm::new(key);
 
         let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let plaintext = content.encode_to_vec();
@@ -752,7 +752,7 @@ mod tests {
     use super::*;
 
     fn test_signing_key() -> SigningKey {
-        SigningKey::generate(&mut rand::rngs::OsRng)
+        SigningKey::generate(&mut OsRng)
     }
 
     #[test]

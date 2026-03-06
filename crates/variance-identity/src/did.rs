@@ -2,7 +2,7 @@ use crate::error::*;
 use chrono::Utc;
 use ed25519_dalek::SigningKey;
 use libp2p::PeerId;
-use rand::rngs::OsRng;
+use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -77,8 +77,7 @@ pub struct Service {
 impl Did {
     /// Create a new DID with a fresh signing key
     pub fn new(peer_id: &PeerId) -> Result<Self> {
-        let mut csprng = OsRng;
-        let signing_key = SigningKey::generate(&mut csprng);
+        let signing_key = SigningKey::generate(&mut OsRng);
         Self::from_signing_key(signing_key, peer_id)
     }
 

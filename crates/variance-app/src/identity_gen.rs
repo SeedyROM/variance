@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bip39::{Language, Mnemonic};
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use rand::RngCore;
+use rand_core::{OsRng, RngCore};
 use vodozemac::olm::Account;
 
 use crate::state::IdentityFile;
@@ -20,13 +20,13 @@ pub fn did_from_verifying_key(key: &VerifyingKey) -> String {
 /// Returns the identity file and the 12-word mnemonic phrase (space-separated).
 pub fn generate() -> Result<(IdentityFile, String)> {
     let mut entropy = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut entropy);
+    OsRng.fill_bytes(&mut entropy);
     let mnemonic = Mnemonic::from_entropy_in(Language::English, &entropy)
         .map_err(|e| anyhow::anyhow!("Failed to generate mnemonic: {}", e))?;
 
     let signing_key = derive_signing_key(&mnemonic);
     let verifying_key = signing_key.verifying_key();
-    let signaling_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+    let signaling_key = ed25519_dalek::SigningKey::generate(&mut OsRng);
     let olm_account = Account::new();
     let did = did_from_verifying_key(&verifying_key);
 
@@ -61,7 +61,7 @@ pub fn recover(mnemonic_phrase: &str) -> Result<IdentityFile> {
 
     let signing_key = derive_signing_key(&mnemonic);
     let verifying_key = signing_key.verifying_key();
-    let signaling_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+    let signaling_key = ed25519_dalek::SigningKey::generate(&mut OsRng);
     let olm_account = Account::new();
     let did = did_from_verifying_key(&verifying_key);
 
