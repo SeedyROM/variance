@@ -39,7 +39,7 @@ tracing = { workspace = true }
 # Crypto
 ed25519-dalek = { workspace = true }
 x25519-dalek = { workspace = true }
-rand = { workspace = true }
+rand_core = { workspace = true }
 
 # Storage
 sled = { workspace = true }

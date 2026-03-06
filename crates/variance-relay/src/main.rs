@@ -396,7 +396,7 @@ fn handle_relay_event(event: relay::Event, stats: &mut RelayStats) {
             stats.reservation_accepted(src_peer_id);
             info!(peer = %src_peer_id, "Relay reservation accepted");
         }
-        relay::Event::ReservationReqDenied { src_peer_id } => {
+        relay::Event::ReservationReqDenied { src_peer_id, .. } => {
             stats.denied_reservations += 1;
             warn!(peer = %src_peer_id, "Relay reservation denied");
         }
@@ -415,6 +415,7 @@ fn handle_relay_event(event: relay::Event, stats: &mut RelayStats) {
         relay::Event::CircuitReqDenied {
             src_peer_id,
             dst_peer_id,
+            ..
         } => {
             stats.denied_circuits += 1;
             debug!(src = %src_peer_id, dst = %dst_peer_id, "Circuit denied");

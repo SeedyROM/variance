@@ -29,7 +29,7 @@ tracing = { workspace = true }
 
 # Crypto (for Double Ratchet via Olm)
 ed25519-dalek = { workspace = true }
-rand = { workspace = true }
+rand_core = { workspace = true }
 vodozemac = "0.9"
 
 # Crypto (for Group messaging — legacy AES-GCM, being replaced by MLS)

@@ -7,7 +7,7 @@ use aes_gcm::{
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hkdf::Hkdf;
 use prost::Message;
-use rand::RngCore;
+use rand_core::{OsRng, RngCore};
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -140,7 +140,7 @@ impl DirectMessageHandler {
         let cipher = Aes256Gcm::new(key);
 
         let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let plaintext = content.encode_to_vec();
@@ -677,7 +677,7 @@ impl DirectMessageHandler {
 mod tests {
     use super::*;
     use crate::storage::LocalMessageStorage;
-    use rand::rngs::OsRng;
+    use rand_core::OsRng;
     use tempfile::tempdir;
 
     fn make_handler(did: &str, account: Account) -> (DirectMessageHandler, tempfile::TempDir) {

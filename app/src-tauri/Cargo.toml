@@ -9,15 +9,15 @@ name = "variance_desktop"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2.10.3", features = [] }
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-anyhow = "1"
-dirs = "5.0"
-tokio = { version = "1", features = ["full"] }
+anyhow = "1.0.102"
+dirs = "6.0.0"
+tokio = { version = "1.50.0", features = ["full"] }
 axum = { version = "0.8", features = ["macros", "ws"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -25,7 +25,7 @@ variance-app = { path = "../../crates/variance-app" }
 variance-p2p = { path = "../../crates/variance-p2p" }
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.5.6", features = [] }
 
 [dev-dependencies]
-tempfile = "3.15"
+tempfile = "3.26.0"

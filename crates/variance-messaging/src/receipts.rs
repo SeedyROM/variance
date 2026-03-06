@@ -145,7 +145,7 @@ impl ReceiptHandler {
 mod tests {
     use super::*;
     use crate::storage::LocalMessageStorage;
-    use rand::rngs::OsRng;
+    use rand_core::OsRng;
     use tempfile::tempdir;
     use ulid::Ulid;
 

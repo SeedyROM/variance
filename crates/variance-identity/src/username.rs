@@ -1,6 +1,5 @@
 use crate::error::*;
 use dashmap::DashMap;
-use rand::Rng as _;
 
 /// Maximum discriminator value (4-digit, 0001–9999)
 pub const MAX_DISCRIMINATOR: u32 = 9999;
@@ -74,9 +73,8 @@ impl UsernameRegistry {
             self.local_cache.remove(&old_key);
         }
 
-        let mut rng = rand::thread_rng();
         for _ in 0..MAX_DISCRIMINATOR_ATTEMPTS {
-            let disc = rng.gen_range(MIN_DISCRIMINATOR..=MAX_DISCRIMINATOR);
+            let disc = rand::random_range(MIN_DISCRIMINATOR..=MAX_DISCRIMINATOR);
             let key = Self::compound_key(&name, disc);
             if !self.local_cache.contains_key(&key) {
                 self.local_cache.insert(key, did.clone());

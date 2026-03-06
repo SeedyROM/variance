@@ -333,7 +333,7 @@ impl SignalingHandler {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use rand_core::OsRng;
 
     #[tokio::test]
     async fn test_create_handler() {

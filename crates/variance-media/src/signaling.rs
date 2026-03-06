@@ -1,7 +1,7 @@
 use crate::error::*;
 use dashmap::DashMap;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand::RngCore;
+use rand_core::{OsRng, RngCore};
 use std::collections::HashSet;
 use std::sync::Arc;
 use variance_proto::media_proto::{
@@ -129,7 +129,7 @@ impl SignalingHandler {
         let timestamp = chrono::Utc::now().timestamp_millis();
 
         let mut nonce = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut nonce);
+        OsRng.fill_bytes(&mut nonce);
 
         let mut signaling_msg = SignalingMessage {
             call_id,
@@ -262,7 +262,7 @@ impl SignalingHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::OsRng;
+    use rand_core::OsRng;
     use variance_proto::media_proto::CallType;
 
     #[test]

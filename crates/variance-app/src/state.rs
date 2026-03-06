@@ -383,8 +383,8 @@ impl AppState {
         use variance_identity::storage::LocalStorage;
 
         let storage = Arc::new(LocalMessageStorage::new(db_path).unwrap());
-        let signing_key = SigningKey::generate(&mut rand::rngs::OsRng);
-        let signaling_key = SigningKey::generate(&mut rand::rngs::OsRng);
+        let signing_key = SigningKey::generate(&mut rand_core::OsRng);
+        let signaling_key = SigningKey::generate(&mut rand_core::OsRng);
 
         let identity_temp = tempfile::tempdir().expect("Failed to create temp dir for identity");
         let identity_cache_path = identity_temp.path().join("identity-cache");
