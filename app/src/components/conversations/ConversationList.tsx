@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Settings, AtSign, Copy, Check, Users } from "lucide-react";
+import { Plus, Settings, AtSign, Copy, Check, Users, QrCode } from "lucide-react";
 import { ConversationItem } from "./ConversationItem";
 import { NewConversationModal } from "./NewConversationModal";
 import { ChangeUsernameDialog } from "./ChangeUsernameDialog";
 import { CreateGroupModal } from "./CreateGroupModal";
+import { ShareContactModal } from "./ShareContactModal";
 import { ThemeToggle } from "../ui/ThemeToggle";
 import { ScrollArea } from "../ui/ScrollArea";
 import { Avatar } from "../ui/Avatar";
@@ -21,6 +22,7 @@ export function ConversationList() {
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showUsernameDialog, setShowUsernameDialog] = useState(false);
+  const [showShareQr, setShowShareQr] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const activeConversation = useMessagingStore((s) => s.activeConversation);
@@ -248,6 +250,13 @@ export function ConversationList() {
               <AtSign className="h-3 w-3" />
               {displayName ? "Change username" : "Set username"}
             </button>
+            <button
+              onClick={() => setShowShareQr(true)}
+              className="flex items-center gap-1 text-xs text-primary-500 hover:underline"
+            >
+              <QrCode className="h-3 w-3" />
+              Share contact QR
+            </button>
           </div>
         )}
       </div>
@@ -275,6 +284,15 @@ export function ConversationList() {
         open={showUsernameDialog}
         onClose={() => setShowUsernameDialog(false)}
       />
+
+      {did && (
+        <ShareContactModal
+          open={showShareQr}
+          onClose={() => setShowShareQr(false)}
+          did={did}
+          displayName={displayName}
+        />
+      )}
     </div>
   );
 }
