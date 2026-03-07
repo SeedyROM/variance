@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn variance_data_dir() -> PathBuf {
     dirs::data_local_dir()
@@ -121,6 +121,9 @@ impl Default for AppConfig {
                 ipfs_api: "http://127.0.0.1:5001".to_string(),
                 cache_ttl_secs: 3600,
             },
+            // Default STUN servers are Google's public infrastructure.
+            // These reveal your external IP to Google during call setup.
+            // Replace with self-hosted or alternative STUN servers if needed.
             media: MediaConfig {
                 stun_servers: vec![
                     "stun:stun.l.google.com:19302".to_string(),
@@ -151,6 +154,33 @@ impl AppConfig {
     pub fn to_file(&self, path: &str) -> anyhow::Result<()> {
         let contents = toml::to_string_pretty(self)?;
         fs::write(path, contents)?;
+        Ok(())
+    }
+
+    /// Try to load `base_dir/config.toml`; fall back to [`AppConfig::default()`] if absent or unparseable.
+    pub fn load_or_default(base_dir: &Path) -> Self {
+        let config_path = base_dir.join("config.toml");
+        match fs::read_to_string(&config_path) {
+            Ok(contents) => match toml::from_str(&contents) {
+                Ok(config) => config,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse {}: {}; using defaults",
+                        config_path.display(),
+                        e
+                    );
+                    AppConfig::default()
+                }
+            },
+            Err(_) => AppConfig::default(),
+        }
+    }
+
+    /// Write this config to `base_dir/config.toml`.
+    pub fn save(&self, base_dir: &Path) -> anyhow::Result<()> {
+        let config_path = base_dir.join("config.toml");
+        let contents = toml::to_string_pretty(self)?;
+        fs::write(config_path, contents)?;
         Ok(())
     }
 }

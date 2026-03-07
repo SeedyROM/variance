@@ -12,6 +12,7 @@ pub mod helpers;
 pub mod types;
 
 mod calls;
+mod config;
 mod conversations;
 mod groups;
 mod identity;
@@ -122,6 +123,13 @@ pub fn create_router(state: AppState) -> Router {
         .route("/typing/{recipient}", get(social::get_typing_users))
         // Presence endpoint
         .route("/presence", get(social::get_presence))
+        // Config endpoints (relay management — changes take effect after restart)
+        .route("/config/relays", get(config::get_relays))
+        .route("/config/relays", post(config::add_relay))
+        .route(
+            "/config/relays/{peer_id}",
+            axum::routing::delete(config::remove_relay),
+        )
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state)

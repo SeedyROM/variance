@@ -16,7 +16,7 @@ use aes_gcm::{
     aead::{Aead, OsRng},
     AeadCore, Aes256Gcm, Key, KeyInit,
 };
-use argon2::{password_hash::SaltString, Argon2};
+use argon2::{password_hash::SaltString, Algorithm, Argon2, Params, Version};
 
 const MAGIC: &[u8; 4] = b"VEID";
 const VERSION: u8 = 1;
@@ -32,7 +32,11 @@ pub fn is_encrypted(data: &[u8]) -> bool {
 pub fn encrypt(plaintext: &str, passphrase: &str) -> anyhow::Result<Vec<u8>> {
     // Derive a 32-byte key with Argon2id.
     let salt = SaltString::generate(&mut OsRng);
-    let argon2 = Argon2::default();
+    let argon2 = Argon2::new(
+        Algorithm::Argon2id,
+        Version::V0x13,
+        Params::new(65536, 3, 4, None).unwrap(),
+    );
     let mut key_bytes = [0u8; 32];
     argon2
         .hash_password_into(
@@ -108,7 +112,11 @@ pub fn decrypt(data: &[u8], passphrase: &str) -> anyhow::Result<String> {
     // Derive key with Argon2id using the stored salt.
     let salt_str = std::str::from_utf8(salt_bytes)
         .map_err(|_| anyhow::anyhow!("Invalid salt encoding in encrypted file"))?;
-    let argon2 = Argon2::default();
+    let argon2 = Argon2::new(
+        Algorithm::Argon2id,
+        Version::V0x13,
+        Params::new(65536, 3, 4, None).unwrap(),
+    );
     let mut key_bytes = [0u8; 32];
     argon2
         .hash_password_into(passphrase.as_bytes(), salt_str.as_bytes(), &mut key_bytes)

@@ -106,6 +106,9 @@ pub struct AppState {
     /// Passphrase used to decrypt/re-encrypt the identity file (None for plaintext files).
     /// Stored for the session so identity file writes (OTK refresh, username) stay encrypted.
     pub identity_passphrase: Option<Arc<String>>,
+
+    /// Path to the on-disk config file (`base_dir/config.toml`) used for relay management.
+    pub config_path: PathBuf,
 }
 
 impl AppState {
@@ -185,6 +188,7 @@ impl AppState {
     }
 
     /// Create a new application state from identity file
+    #[allow(clippy::too_many_arguments)]
     pub fn from_identity_file(
         identity_path: &Path,
         db_path: &str,
@@ -193,9 +197,38 @@ impl AppState {
         event_channels: Arc<variance_p2p::EventChannels>,
         ipfs_storage: Arc<dyn IdentityStorage>,
         passphrase: Option<&str>,
+        stun_servers: Vec<String>,
+        config_path: PathBuf,
     ) -> anyhow::Result<Self> {
         let identity = Self::load_identity_with_passphrase(identity_path, passphrase)?;
+        Self::from_identity(
+            &identity,
+            identity_path,
+            db_path,
+            identity_cache_dir,
+            node_handle,
+            event_channels,
+            ipfs_storage,
+            passphrase,
+            stun_servers,
+            config_path,
+        )
+    }
 
+    /// Create application state from an already-loaded identity.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_identity(
+        identity: &IdentityFile,
+        identity_path: &Path,
+        db_path: &str,
+        identity_cache_dir: &str,
+        node_handle: variance_p2p::NodeHandle,
+        event_channels: Arc<variance_p2p::EventChannels>,
+        ipfs_storage: Arc<dyn IdentityStorage>,
+        passphrase: Option<&str>,
+        stun_servers: Vec<String>,
+        config_path: PathBuf,
+    ) -> anyhow::Result<Self> {
         // Parse signing key from hex
         let signing_key_bytes = hex::decode(&identity.signing_key)
             .map_err(|e| anyhow::anyhow!("Invalid signing key format: {}", e))?;
@@ -259,17 +292,14 @@ impl AppState {
             typing: Arc::new(TypingHandler::new(identity.did.clone())),
             offline_relay: Arc::new(OfflineRelayHandler::new(storage.clone())),
             calls: Arc::new(
-                CallManager::new(
-                    identity.did.clone(),
-                    vec!["stun:stun.l.google.com:19302".to_string()],
-                )
-                .map_err(|e| anyhow::anyhow!("Failed to create call manager: {}", e))?,
+                CallManager::new(identity.did.clone(), stun_servers)
+                    .map_err(|e| anyhow::anyhow!("Failed to create call manager: {}", e))?,
             ),
             signaling: Arc::new(SignalingHandler::new(identity.did.clone(), signaling_key)),
             storage,
-            local_did: identity.did,
-            verifying_key: identity.verifying_key,
-            created_at: identity.created_at,
+            local_did: identity.did.clone(),
+            verifying_key: identity.verifying_key.clone(),
+            created_at: identity.created_at.clone(),
             node_handle,
             ws_manager: WebSocketManager::new(),
             event_channels,
@@ -278,6 +308,7 @@ impl AppState {
             identity_path: identity_path.to_path_buf(),
             ipfs_storage,
             identity_passphrase: passphrase.map(|p| Arc::new(p.to_string())),
+            config_path,
         })
     }
 
@@ -410,11 +441,7 @@ impl AppState {
             typing: Arc::new(TypingHandler::new(local_did.clone())),
             offline_relay: Arc::new(OfflineRelayHandler::new(storage.clone())),
             calls: Arc::new(
-                CallManager::new(
-                    local_did.clone(),
-                    vec!["stun:stun.l.google.com:19302".to_string()],
-                )
-                .expect("Failed to create call manager"),
+                CallManager::new(local_did.clone(), vec![]).expect("Failed to create call manager"),
             ),
             signaling: Arc::new(SignalingHandler::new(local_did.clone(), signaling_key)),
             storage,
@@ -434,6 +461,7 @@ impl AppState {
                 LocalStorage::new(ipfs_storage_path).expect("Failed to create test IPFS storage"),
             ),
             identity_passphrase: None,
+            config_path: PathBuf::from("/tmp/test-config.toml"),
         }
     }
 }
@@ -471,10 +499,8 @@ mod tests {
         let state =
             AppState::with_db_path("did:variance:alice".to_string(), db_path.to_str().unwrap());
 
-        // Verify all components are initialized
-        assert_eq!(Arc::strong_count(&state.direct_messaging), 1);
-        assert_eq!(Arc::strong_count(&state.calls), 1);
-        assert_eq!(Arc::strong_count(&state.mls_groups), 1);
-        assert_eq!(Arc::strong_count(&state.storage), 4); // Shared by receipts, offline_relay, direct_messaging, and state itself
+        // Verify handlers are operational (not just initialized).
+        assert!(state.typing.get_typing_users_group("did:test").is_empty());
+        assert!(state.username_registry.get_username("did:test").is_none());
     }
 }

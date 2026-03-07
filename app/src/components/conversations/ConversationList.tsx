@@ -1,17 +1,14 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Settings, AtSign, Copy, Check, Users, QrCode } from "lucide-react";
+import { Plus, Settings, Users } from "lucide-react";
 import { ConversationItem } from "./ConversationItem";
+import { GroupConversationItem } from "./GroupConversationItem";
 import { NewConversationModal } from "./NewConversationModal";
-import { ChangeUsernameDialog } from "./ChangeUsernameDialog";
 import { CreateGroupModal } from "./CreateGroupModal";
-import { ShareContactModal } from "./ShareContactModal";
+import { SettingsModal } from "./SettingsModal";
 import { ThemeToggle } from "../ui/ThemeToggle";
 import { ScrollArea } from "../ui/ScrollArea";
 import { Avatar } from "../ui/Avatar";
-import { TypingDots } from "../messages/TypingIndicator";
-import { cn } from "../../utils/cn";
-import { relativeTime } from "../../utils/time";
 import { conversationsApi, groupsApi } from "../../api/client";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { useIdentityStore } from "../../stores/identityStore";
@@ -21,9 +18,6 @@ export function ConversationList() {
   const [showNew, setShowNew] = useState(false);
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [showUsernameDialog, setShowUsernameDialog] = useState(false);
-  const [showShareQr, setShowShareQr] = useState(false);
-  const [copied, setCopied] = useState(false);
 
   const activeConversation = useMessagingStore((s) => s.activeConversation);
   const setActiveConversation = useMessagingStore((s) => s.setActiveConversation);
@@ -96,6 +90,13 @@ export function ConversationList() {
         </h2>
         <div className="flex items-center gap-1">
           <button
+            onClick={() => setShowSettings(true)}
+            className="rounded-lg p-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 text-surface-500"
+            title="Settings"
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+          <button
             onClick={() => setShowNewGroup(true)}
             className="rounded-lg p-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 text-surface-500"
             title="New group"
@@ -149,52 +150,17 @@ export function ConversationList() {
               const groupTypingSet = typingUsers.get(`group:${g.id}`);
               const isGroupTyping = groupTypingSet !== undefined && groupTypingSet.size > 0;
               return (
-                <button
+                <GroupConversationItem
                   key={g.id}
-                  onClick={() => {
+                  group={g}
+                  isActive={isActive}
+                  hasUnread={item.has_unread}
+                  isTyping={isGroupTyping}
+                  onSelect={() => {
                     setActiveConversation({ type: "group", groupId: g.id });
                     markRead(g.id);
                   }}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors",
-                    isActive
-                      ? "bg-primary-500/10 text-primary-700 dark:text-primary-300"
-                      : "hover:bg-surface-200 dark:hover:bg-surface-800"
-                  )}
-                >
-                  {/* Group icon */}
-                  <div className="relative shrink-0 flex h-9 w-9 items-center justify-center rounded-full bg-surface-200 dark:bg-surface-700 text-surface-600 dark:text-surface-300">
-                    <Users className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0 flex-1 cursor-default">
-                    <div className="flex items-center justify-between gap-2">
-                      <p
-                        className={cn(
-                          "truncate text-sm text-surface-900 dark:text-surface-50",
-                          item.has_unread ? "font-bold" : "font-medium"
-                        )}
-                      >
-                        {g.name}
-                      </p>
-                      {item.has_unread && (
-                        <div className="shrink-0 w-2 h-2 rounded-full bg-primary-500" />
-                      )}
-                    </div>
-                    {isGroupTyping ? (
-                      <span className="flex items-center gap-1.5 text-xs text-primary-500">
-                        <TypingDots className="text-primary-500" />
-                        <span>typing</span>
-                      </span>
-                    ) : (
-                      <p className="truncate text-xs text-surface-500">
-                        {g.member_count} member{g.member_count !== 1 ? "s" : ""}
-                        {g.last_message_timestamp
-                          ? ` · ${relativeTime(g.last_message_timestamp)}`
-                          : ""}
-                      </p>
-                    )}
-                  </div>
-                </button>
+                />
               );
             }
           })
@@ -205,7 +171,7 @@ export function ConversationList() {
       <div className="border-t border-surface-200 px-3 py-2 dark:border-surface-800">
         <div className="flex items-center justify-between">
           <button
-            onClick={() => setShowSettings(!showSettings)}
+            onClick={() => setShowSettings(true)}
             className="flex items-center gap-2 rounded-lg p-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
           >
             {did && <Avatar did={did} size="sm" />}
@@ -220,48 +186,6 @@ export function ConversationList() {
 
           <ThemeToggle />
         </div>
-
-        {showSettings && did && (
-          <div className="mt-2 rounded-lg bg-surface-100 p-3 dark:bg-surface-800 cursor-default space-y-2">
-            {displayName && (
-              <div>
-                <p className="text-xs text-surface-500">Username</p>
-                <p className="text-sm font-semibold text-primary-500">{displayName}</p>
-              </div>
-            )}
-            <div>
-              <p className="text-xs text-surface-500">Your DID</p>
-              <p className="break-all font-mono text-xs text-surface-700 dark:text-surface-300">
-                {did}
-              </p>
-            </div>
-            <button
-              onClick={() => {
-                void navigator.clipboard.writeText(displayName ?? did);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 2000);
-              }}
-              className="flex items-center gap-1 text-xs text-primary-500 hover:underline"
-            >
-              {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-              {copied ? "Copied!" : displayName ? "Copy username" : "Copy DID"}
-            </button>
-            <button
-              onClick={() => setShowUsernameDialog(true)}
-              className="flex items-center gap-1 text-xs text-primary-500 hover:underline"
-            >
-              <AtSign className="h-3 w-3" />
-              {displayName ? "Change username" : "Set username"}
-            </button>
-            <button
-              onClick={() => setShowShareQr(true)}
-              className="flex items-center gap-1 text-xs text-primary-500 hover:underline"
-            >
-              <QrCode className="h-3 w-3" />
-              Share contact QR
-            </button>
-          </div>
-        )}
       </div>
 
       <NewConversationModal
@@ -283,19 +207,7 @@ export function ConversationList() {
         }}
       />
 
-      <ChangeUsernameDialog
-        open={showUsernameDialog}
-        onClose={() => setShowUsernameDialog(false)}
-      />
-
-      {did && (
-        <ShareContactModal
-          open={showShareQr}
-          onClose={() => setShowShareQr(false)}
-          did={did}
-          displayName={displayName}
-        />
-      )}
+      <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} />
     </div>
   );
 }

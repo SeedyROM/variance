@@ -9,6 +9,7 @@ import type {
   MessageResponse,
   MlsGroupInfo,
   RegisterUsernameResponse,
+  RelayPeer,
   ResolvedIdentity,
   ResolvedUsername,
   ResolvedUsernameMultiple,
@@ -202,4 +203,21 @@ export const typingApi = {
 export const presenceApi = {
   /** Get the list of currently connected peer DIDs. */
   get: () => request<{ online: string[] }>("/presence"),
+};
+
+// ===== Config / Relay =====
+
+export const configApi = {
+  getRelays: () => request<RelayPeer[]>("/config/relays"),
+
+  addRelay: (peer: RelayPeer) =>
+    request<{ success: boolean }>("/config/relays", {
+      method: "POST",
+      body: JSON.stringify(peer),
+    }),
+
+  removeRelay: (peerId: string) =>
+    request<{ success: boolean }>(`/config/relays/${encodeURIComponent(peerId)}`, {
+      method: "DELETE",
+    }),
 };

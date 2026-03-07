@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Avatar } from "../ui/Avatar";
 import { ScrollArea } from "../ui/ScrollArea";
@@ -106,7 +106,12 @@ export function MessageView({ peerDid }: MessageViewProps) {
   // Split reaction messages from regular messages.
   const reactionMessages = allMessages.filter((m) => m.metadata?.type === "reaction");
   const sortedMessages = allMessages.filter((m) => m.metadata?.type !== "reaction");
-  const reactionsByMsgId = aggregateReactions(reactionMessages, localDid);
+  const reactionsByMsgId = useMemo(
+    () => aggregateReactions(reactionMessages, localDid),
+    // reactionMessages identity changes when allMessages changes, which is correct
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [reactionMessages, localDid]
+  );
 
   const handleReact = useCallback(
     async (messageId: string, emoji: string) => {

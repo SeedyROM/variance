@@ -184,3 +184,10 @@ export interface ResolvedUsername {
 export interface ResolvedUsernameMultiple {
   matches: ResolvedUsername[];
 }
+
+// ===== Config / Relay =====
+
+export interface RelayPeer {
+  peer_id: string;
+  multiaddr: string;
+}

@@ -94,6 +94,8 @@ pub struct Node {
     pending_sync_responses: HashMap<request_response::InboundRequestId, PendingSyncResponse>,
 }
 
+const COMMAND_CHANNEL_CAPACITY: usize = 100;
+
 impl Node {
     /// Create a new P2P node and return both the node and a handle for sending commands
     pub fn new(mut config: Config) -> Result<(Self, NodeHandle)> {
@@ -106,7 +108,7 @@ impl Node {
         info!("Creating P2P node with peer ID: {}", peer_id);
 
         // Create command channel for application layer to send commands to the node
-        let (command_tx, command_rx) = sync::mpsc::channel(100);
+        let (command_tx, command_rx) = sync::mpsc::channel(COMMAND_CHANNEL_CAPACITY);
 
         // Capture config values needed inside the SwarmBuilder closure (closures can't
         // borrow config across the builder chain).
