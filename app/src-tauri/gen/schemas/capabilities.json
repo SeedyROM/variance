@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capabilities for Variance desktop","local":true,"windows":["main"],"permissions":["core:default","fs:default","dialog:default","notification:default"]}}
+{"default":{"identifier":"default","description":"Default capabilities for Variance desktop","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-start-dragging","fs:default","dialog:default","notification:default","decorum:allow-show-snap-overlay"]}}

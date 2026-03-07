@@ -4,6 +4,7 @@ mod state;
 use commands::*;
 use state::NodeState;
 use tauri::Manager;
+use tauri_plugin_decorum::WebviewWindowExt;
 use tracing::info;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -19,9 +20,17 @@ pub fn run() {
     info!("Variance Desktop initializing...");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_decorum::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .setup(|app| {
+            let win = app.get_webview_window("main").unwrap();
+            win.create_overlay_titlebar().unwrap();
+            #[cfg(target_os = "macos")]
+            win.set_traffic_lights_inset(12.0, 16.0).unwrap();
+            Ok(())
+        })
         .manage(NodeState::default())
         .invoke_handler(tauri::generate_handler![
             has_identity,

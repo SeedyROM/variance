@@ -2,5 +2,12 @@
   "identifier": "default",
   "description": "Default capabilities for Variance desktop",
   "windows": ["main"],
-  "permissions": ["core:default", "fs:default", "dialog:default", "notification:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "fs:default",
+    "dialog:default",
+    "notification:default",
+    "decorum:allow-show-snap-overlay"
+  ]
 }
