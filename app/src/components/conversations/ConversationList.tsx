@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Settings, AtSign, Copy, Check, Users, QrCode } from "lucide-react";
 import { ConversationItem } from "./ConversationItem";
@@ -87,14 +86,8 @@ export function ConversationList() {
 
   return (
     <div className="flex h-full w-72 flex-col border-r border-surface-200 bg-surface-50 dark:border-surface-800 dark:bg-surface-900">
-      {/* Drag region — sits above header, clears macOS traffic lights (~28px) */}
-      <div
-        className="h-7 shrink-0 bg-surface-50 dark:bg-surface-900"
-        onMouseDown={(e) => {
-          if (e.button !== 0) return;
-          void getCurrentWebviewWindow().startDragging();
-        }}
-      />
+      {/* Spacer — clears macOS traffic lights (~28px) */}
+      <div className="h-7 shrink-0" />
 
       {/* Header */}
       <div className="flex items-center justify-between border-b border-surface-200 px-4 py-3 dark:border-surface-800">

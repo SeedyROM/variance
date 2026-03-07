@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { OnboardingShell } from "./components/onboarding/OnboardingShell";
 import { UnlockScreen } from "./components/onboarding/UnlockScreen";
 import { ConversationList } from "./components/conversations/ConversationList";
@@ -39,8 +40,22 @@ function LoadingScreen() {
   );
 }
 
+const DRAG_ZONE_HEIGHT = 28; // matches the h-7 spacer in ConversationList
+
 function MainShell() {
   const activeConversation = useMessagingStore((s) => s.activeConversation);
+
+  useEffect(() => {
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      if (e.clientY > DRAG_ZONE_HEIGHT) return;
+      const el = e.target as HTMLElement;
+      if (el.closest('button, a, input, textarea, [role="button"]')) return;
+      void getCurrentWebviewWindow().startDragging();
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, []);
   const setIdentity = useIdentityStore((s) => s.setIdentity);
   const setUsernameStore = useIdentityStore((s) => s.setUsername);
 

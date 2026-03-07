@@ -25,10 +25,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            let win = app.get_webview_window("main").unwrap();
-            win.create_overlay_titlebar().unwrap();
             #[cfg(target_os = "macos")]
-            win.set_traffic_lights_inset(12.0, 16.0).unwrap();
+            {
+                let win = app.get_webview_window("main").unwrap();
+                win.set_traffic_lights_inset(12.0, 16.0).unwrap();
+            }
             Ok(())
         })
         .manage(NodeState::default())
