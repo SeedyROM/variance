@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
+import { X } from "lucide-react";
 import { cn } from "../../utils/cn";
+import { IconButton } from "./IconButton";
 
 interface DialogProps {
   open: boolean;
@@ -39,19 +41,9 @@ export function Dialog({ open, onClose, title, children, className }: DialogProp
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-50">{title}</h2>
-          <button
-            onClick={onClose}
-            className="rounded-lg p-1 hover:bg-surface-200 dark:hover:bg-surface-800 text-surface-500"
-          >
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M6 18L18 6M6 6l12 12"
-              />
-            </svg>
-          </button>
+          <IconButton onClick={onClose} title="Close">
+            <X className="h-5 w-5" />
+          </IconButton>
         </div>
         {children}
       </div>

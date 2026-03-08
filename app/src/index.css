@@ -19,6 +19,10 @@
   --color-surface-100: oklch(0.97 0 0);
   --color-surface-200: oklch(0.93 0 0);
   --color-surface-300: oklch(0.87 0 0);
+  --color-surface-400: oklch(0.74 0 0);
+  --color-surface-500: oklch(0.6 0 0);
+  --color-surface-600: oklch(0.45 0 0);
+  --color-surface-700: oklch(0.32 0 0);
   --color-surface-800: oklch(0.2 0 0);
   --color-surface-900: oklch(0.13 0 0);
   --color-surface-950: oklch(0.09 0 0);

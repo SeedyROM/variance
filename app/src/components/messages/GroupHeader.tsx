@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Users, Settings } from "lucide-react";
-import { cn } from "../../utils/cn";
+import { IconButton } from "../ui/IconButton";
 import { ManageGroupPanel } from "./ManageGroupPanel";
 import type { MlsGroupInfo } from "../../api/types";
 
@@ -28,23 +28,16 @@ export function GroupHeader({ group, onLeave, onToggleMembers, membersOpen }: Gr
             {group.member_count} member{group.member_count !== 1 ? "s" : ""}
           </p>
         </div>
-        <button
+        <IconButton
           onClick={onToggleMembers}
-          className={cn(
-            "rounded-lg p-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 transition-colors",
-            membersOpen ? "text-primary-500 bg-primary-500/10" : "text-surface-500"
-          )}
+          active={membersOpen}
           title={membersOpen ? "Hide members" : "Show members"}
         >
           <Users className="h-4 w-4" />
-        </button>
-        <button
-          onClick={() => setShowManage(true)}
-          className="rounded-lg p-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 text-surface-500"
-          title="Manage group"
-        >
+        </IconButton>
+        <IconButton onClick={() => setShowManage(true)} title="Manage group">
           <Settings className="h-4 w-4" />
-        </button>
+        </IconButton>
       </div>
 
       {showManage && (

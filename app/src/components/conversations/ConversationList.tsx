@@ -9,6 +9,7 @@ import { SettingsModal } from "./SettingsModal";
 import { ThemeToggle } from "../ui/ThemeToggle";
 import { ScrollArea } from "../ui/ScrollArea";
 import { Avatar } from "../ui/Avatar";
+import { IconButton } from "../ui/IconButton";
 import { conversationsApi, groupsApi } from "../../api/client";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { useIdentityStore } from "../../stores/identityStore";
@@ -89,27 +90,15 @@ export function ConversationList() {
           Messages
         </h2>
         <div className="flex items-center gap-1">
-          <button
-            onClick={() => setShowSettings(true)}
-            className="rounded-lg p-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 text-surface-500"
-            title="Settings"
-          >
+          <IconButton onClick={() => setShowSettings(true)} title="Settings">
             <Settings className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => setShowNewGroup(true)}
-            className="rounded-lg p-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 text-surface-500"
-            title="New group"
-          >
+          </IconButton>
+          <IconButton onClick={() => setShowNewGroup(true)} title="New group">
             <Users className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => setShowNew(true)}
-            className="rounded-lg p-1.5 hover:bg-surface-200 dark:hover:bg-surface-800 text-surface-500"
-            title="New conversation"
-          >
+          </IconButton>
+          <IconButton onClick={() => setShowNew(true)} title="New conversation">
             <Plus className="h-4 w-4" />
-          </button>
+          </IconButton>
         </div>
       </div>
 

@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AtSign, Copy, Check, QrCode, Trash2 } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
+import { Button } from "../ui/Button";
+import { IconButton } from "../ui/IconButton";
 import { Avatar } from "../ui/Avatar";
 import { ChangeUsernameDialog } from "./ChangeUsernameDialog";
 import { ShareContactModal } from "./ShareContactModal";
@@ -103,33 +105,28 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <button
+                <Button
+                  variant="secondary"
+                  size="xs"
                   onClick={() => {
                     void navigator.clipboard.writeText(displayName ?? did);
                     setCopied(true);
                     setTimeout(() => setCopied(false), 2000);
                   }}
-                  className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs bg-surface-100 hover:bg-surface-200 dark:bg-surface-800 dark:hover:bg-surface-700 text-surface-700 dark:text-surface-300 transition-colors"
                 >
                   {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
                   {copied ? "Copied!" : displayName ? "Copy username" : "Copy DID"}
-                </button>
+                </Button>
 
-                <button
-                  onClick={() => setShowShareQr(true)}
-                  className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs bg-surface-100 hover:bg-surface-200 dark:bg-surface-800 dark:hover:bg-surface-700 text-surface-700 dark:text-surface-300 transition-colors"
-                >
+                <Button variant="secondary" size="xs" onClick={() => setShowShareQr(true)}>
                   <QrCode className="h-3.5 w-3.5" />
                   Share QR
-                </button>
+                </Button>
 
-                <button
-                  onClick={() => setShowUsernameDialog(true)}
-                  className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs bg-surface-100 hover:bg-surface-200 dark:bg-surface-800 dark:hover:bg-surface-700 text-surface-700 dark:text-surface-300 transition-colors"
-                >
+                <Button variant="secondary" size="xs" onClick={() => setShowUsernameDialog(true)}>
                   <AtSign className="h-3.5 w-3.5" />
                   {displayName ? "Change username" : "Set username"}
-                </button>
+                </Button>
               </div>
             </section>
 
@@ -156,13 +153,13 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                           {relay.multiaddr}
                         </p>
                       </div>
-                      <button
+                      <IconButton
                         onClick={() => handleRemoveRelay(relay.peer_id)}
-                        className="shrink-0 mt-0.5 text-surface-400 hover:text-red-500 transition-colors"
+                        className="shrink-0 mt-0.5 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
                         title="Remove"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      </IconButton>
                     </li>
                   ))}
                 </ul>
@@ -181,13 +178,15 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                   placeholder="Multiaddr (e.g. /ip4/1.2.3.4/tcp/4001)"
                   className="w-full rounded-md px-2.5 py-1.5 text-xs bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 text-surface-900 dark:text-surface-100 placeholder-surface-400 focus:outline-none focus:ring-1 focus:ring-primary-500"
                 />
-                <button
+                <Button
+                  variant="secondary"
+                  size="xs"
                   onClick={handleAddToList}
                   disabled={!relayPeerId || !relayMultiaddr}
-                  className="w-full rounded-md px-2.5 py-1.5 text-xs bg-surface-100 hover:bg-surface-200 dark:bg-surface-800 dark:hover:bg-surface-700 text-surface-700 dark:text-surface-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  className="w-full"
                 >
                   Add to list
-                </button>
+                </Button>
               </div>
 
               <p className="text-xs text-surface-400 italic">
@@ -195,19 +194,17 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               </p>
 
               <div className="flex items-center justify-between pt-1">
-                <button
-                  onClick={handleRestoreDefaults}
-                  className="text-xs text-surface-500 hover:text-surface-700 dark:hover:text-surface-300 transition-colors"
-                >
+                <Button variant="ghost" size="xs" onClick={handleRestoreDefaults}>
                   Restore defaults
-                </button>
-                <button
+                </Button>
+                <Button
+                  size="xs"
                   onClick={handleSave}
                   disabled={!isDirty || saving}
-                  className="rounded-md px-3.5 py-1.5 text-xs font-medium bg-primary-500 text-white hover:bg-primary-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  loading={saving}
                 >
-                  {saving ? "Saving…" : "Save"}
-                </button>
+                  Save
+                </Button>
               </div>
             </section>
           </div>

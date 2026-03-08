@@ -3,7 +3,7 @@ import { cn } from "../../utils/cn";
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: "primary" | "secondary" | "ghost" | "danger";
-  size?: "sm" | "md" | "lg";
+  size?: "xs" | "sm" | "md" | "lg";
   loading?: boolean;
 }
 
@@ -14,17 +14,18 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         ref={ref}
         disabled={disabled || loading}
         className={cn(
-          "inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:pointer-events-none disabled:opacity-50",
+          "inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:pointer-events-none disabled:opacity-50",
           {
             "bg-primary-500 text-white hover:bg-primary-600 active:bg-primary-700":
               variant === "primary",
-            "bg-surface-200 text-surface-900 hover:bg-surface-300 dark:bg-surface-800 dark:text-surface-50 dark:hover:bg-surface-800":
+            "bg-surface-200 text-surface-900 hover:bg-surface-300 dark:bg-surface-800 dark:text-surface-50 dark:hover:bg-surface-700":
               variant === "secondary",
-            "hover:bg-surface-200 dark:hover:bg-surface-800 text-surface-700 dark:text-surface-300":
+            "text-surface-700 hover:text-surface-900 hover:bg-surface-200 dark:text-surface-300 dark:hover:text-surface-100 dark:hover:bg-surface-800":
               variant === "ghost",
-            "bg-red-500 text-white hover:bg-red-600": variant === "danger",
+            "bg-red-500 text-white hover:bg-red-600 active:bg-red-700": variant === "danger",
           },
           {
+            "px-2 py-1 text-xs": size === "xs",
             "px-2.5 py-1.5 text-sm": size === "sm",
             "px-4 py-2 text-sm": size === "md",
             "px-6 py-3 text-base": size === "lg",

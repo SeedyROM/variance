@@ -169,13 +169,14 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
                 >
                   Cancel
                 </Button>
-                <button
+                <Button
+                  variant="secondary"
                   onClick={() => leaveMutation.mutate()}
                   disabled={leaveMutation.isPending}
-                  className="rounded-lg bg-surface-700 px-4 py-2 text-sm font-medium text-white hover:bg-surface-800 disabled:opacity-50"
+                  loading={leaveMutation.isPending}
                 >
-                  {leaveMutation.isPending ? "Leaving…" : "Leave"}
-                </button>
+                  Leave
+                </Button>
               </div>
               {leaveMutation.error && (
                 <p className="text-xs text-red-500">{String(leaveMutation.error)}</p>
@@ -194,13 +195,14 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
                 >
                   Cancel
                 </Button>
-                <button
+                <Button
+                  variant="danger"
                   onClick={() => deleteMutation.mutate()}
                   disabled={deleteMutation.isPending}
-                  className="rounded-lg bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-50"
+                  loading={deleteMutation.isPending}
                 >
-                  {deleteMutation.isPending ? "Deleting…" : "Delete"}
-                </button>
+                  Delete
+                </Button>
               </div>
               {deleteMutation.error && (
                 <p className="text-xs text-red-500">{String(deleteMutation.error)}</p>
