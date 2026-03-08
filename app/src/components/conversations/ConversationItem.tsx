@@ -4,6 +4,7 @@ import { TypingDots } from "../messages/TypingIndicator";
 import { Tooltip } from "../ui/Tooltip";
 import { cn } from "../../utils/cn";
 import { relativeTime } from "../../utils/time";
+import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
 import type { Conversation } from "../../api/types";
 
@@ -20,6 +21,7 @@ export function ConversationItem({
   onSelect,
   onDelete,
 }: ConversationItemProps) {
+  const localDid = useIdentityStore((s) => s.did);
   const presenceMap = useMessagingStore((s) => s.presenceMap);
   const peerNames = useMessagingStore((s) => s.peerNames);
   const unreadConversations = useMessagingStore((s) => s.unreadConversations);
@@ -27,14 +29,16 @@ export function ConversationItem({
   const typingUsersSet = useMessagingStore((s) => s.typingUsers.get(conversation.peer_did));
   const isTyping = typingUsersSet !== undefined && typingUsersSet.size > 0;
 
-  const isOnline = presenceMap.get(conversation.peer_did) ?? false;
+  const isSelf = conversation.peer_did === localDid;
+  const isOnline = isSelf || (presenceMap.get(conversation.peer_did) ?? false);
   const hasUnread = (conversation.has_unread ?? false) || unreadConversations.has(conversation.id);
 
-  // Display name priority: backend API → WS-cached peer name → truncated DID
-  const displayName =
-    conversation.peer_username ??
-    peerNames.get(conversation.peer_did) ??
-    conversation.peer_did.slice(-12);
+  // Display name priority: self → backend API → WS-cached peer name → truncated DID
+  const displayName = isSelf
+    ? "Notes to Self"
+    : (conversation.peer_username ??
+      peerNames.get(conversation.peer_did) ??
+      conversation.peer_did.slice(-12));
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();

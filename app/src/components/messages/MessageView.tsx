@@ -210,8 +210,10 @@ export function MessageView({ peerDid }: MessageViewProps) {
   )?.sender_username;
   const peerUsername = peerNames.get(peerDid) ?? messageUsername;
 
+  const isSelf = peerDid === localDid;
   const presenceMap = useMessagingStore((s) => s.presenceMap);
-  const isOnline = presenceMap.get(peerDid) ?? false;
+  const isOnline = isSelf || (presenceMap.get(peerDid) ?? false);
+  const headerName = isSelf ? "Notes to Self" : (peerUsername ?? peerDid.slice(-16));
 
   return (
     <div className="flex h-full flex-col">
@@ -221,7 +223,7 @@ export function MessageView({ peerDid }: MessageViewProps) {
         <div className="cursor-default min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <p className="text-sm font-semibold text-surface-900 dark:text-surface-50 truncate">
-              {peerUsername ?? peerDid.slice(-16)}
+              {headerName}
             </p>
             <StatusDot online={isOnline} />
             <StatusLabel online={isOnline} />
@@ -243,7 +245,9 @@ export function MessageView({ peerDid }: MessageViewProps) {
 
         {sortedMessages.length === 0 ? (
           <div className="flex h-40 items-center justify-center">
-            <p className="text-sm text-surface-400">No messages yet. Say hello!</p>
+            <p className="text-sm text-surface-400">
+              {isSelf ? "No messages yet. Jot something down!" : "No messages yet. Say hello!"}
+            </p>
           </div>
         ) : (
           <div className="flex flex-col gap-1.5">
