@@ -161,7 +161,7 @@ export function ConversationList() {
         <div className="flex items-center justify-between">
           <button
             onClick={() => setShowSettings(true)}
-            className="flex items-center gap-2 rounded-lg p-1.5 hover:bg-surface-200 dark:hover:bg-surface-800"
+            className="flex items-center gap-2 rounded-lg p-1.5 cursor-pointer hover:bg-surface-200 dark:hover:bg-surface-800"
           >
             {did && <Avatar did={did} size="sm" />}
             {displayName ? (

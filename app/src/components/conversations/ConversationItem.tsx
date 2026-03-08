@@ -70,7 +70,7 @@ export function ConversationItem({
         onContextMenu={handleContextMenu}
         onClick={handleSelect}
         className={cn(
-          "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors",
+          "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors cursor-pointer",
           isActive
             ? "bg-primary-500/10 text-primary-700 dark:text-primary-300"
             : "hover:bg-surface-200 dark:hover:bg-surface-800"
@@ -89,7 +89,7 @@ export function ConversationItem({
           />
         </div>
 
-        <div className="min-w-0 flex-1 cursor-default">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
             <p
               className={cn(
