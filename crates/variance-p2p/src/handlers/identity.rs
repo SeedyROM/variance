@@ -22,6 +22,8 @@ struct LocalIdentity {
     username: Option<String>,
     /// 4-digit discriminator paired with username, e.g. 42
     discriminator: Option<u32>,
+    /// Opaque relay mailbox token (SHA-256 of signing key).
+    mailbox_token: Vec<u8>,
 }
 
 /// Identity resolution handler
@@ -65,6 +67,7 @@ impl IdentityHandler {
         olm_identity_key: Vec<u8>,
         one_time_keys: Vec<Vec<u8>>,
         mls_key_package: Option<Vec<u8>>,
+        mailbox_token: Vec<u8>,
     ) {
         *self.local_identity.write().await = Some(LocalIdentity {
             did,
@@ -73,6 +76,7 @@ impl IdentityHandler {
             mls_key_package,
             username: None,
             discriminator: None,
+            mailbox_token,
         });
     }
 
@@ -165,6 +169,7 @@ impl IdentityHandler {
                     discriminator: local_id.discriminator,
                     mls_key_package: local_id.mls_key_package.clone(),
                     username: local_id.username.clone(),
+                    mailbox_token: local_id.mailbox_token.clone(),
                     ..Default::default()
                 };
                 return Ok(IdentityResponse {

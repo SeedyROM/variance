@@ -595,7 +595,7 @@ impl Node {
                     self.events
                         .send_offline_message(OfflineMessageEvent::FetchRequested {
                             peer,
-                            did: request.did.clone(),
+                            mailbox_token: request.mailbox_token.clone(),
                             limit: request.limit,
                         });
 

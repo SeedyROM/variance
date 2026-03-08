@@ -93,13 +93,14 @@ pub struct StorageConfig {
     /// Message database path
     pub message_db_path: PathBuf,
 
-    /// Maximum age in days for group messages before they are purged.
+    /// Maximum age in days for messages (direct and group) before they are purged.
     /// Cleanup runs hourly alongside expired offline message cleanup.
+    /// Set to 0 to keep messages forever (cleanup is skipped entirely).
     #[serde(default = "default_group_message_max_age_days")]
     pub group_message_max_age_days: u64,
 }
 
-const DEFAULT_GROUP_MESSAGE_MAX_AGE_DAYS: u64 = 90;
+const DEFAULT_GROUP_MESSAGE_MAX_AGE_DAYS: u64 = 30;
 
 fn default_group_message_max_age_days() -> u64 {
     DEFAULT_GROUP_MESSAGE_MAX_AGE_DAYS
@@ -136,7 +137,7 @@ impl Default for AppConfig {
                 identity_path: variance_data_dir().join("identity.json"),
                 identity_cache_dir: variance_data_dir().join("identity_cache"),
                 message_db_path: variance_data_dir().join("messages.db"),
-                group_message_max_age_days: DEFAULT_GROUP_MESSAGE_MAX_AGE_DAYS,
+                group_message_max_age_days: DEFAULT_GROUP_MESSAGE_MAX_AGE_DAYS, // 30 days
             },
         }
     }

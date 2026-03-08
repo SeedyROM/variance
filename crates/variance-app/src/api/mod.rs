@@ -130,6 +130,11 @@ pub fn create_router(state: AppState) -> Router {
             "/config/relays/{peer_id}",
             axum::routing::delete(config::remove_relay),
         )
+        // Retention config
+        .route(
+            "/config/retention",
+            get(config::get_retention).put(config::set_retention),
+        )
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state)

@@ -399,6 +399,7 @@ async fn register_with_network(
             olm_identity_key,
             one_time_keys,
             generate_mls_key_package(state),
+            state.mailbox_token.to_vec(),
         )
         .await
     {
@@ -440,10 +441,17 @@ fn start_maintenance_task(
                 Err(e) => tracing::warn!("Offline message cleanup failed: {}", e),
             }
 
-            match storage.cleanup_old_group_messages(group_max_age).await {
-                Ok(n) if n > 0 => tracing::info!("Cleaned up {} old group messages", n),
-                Ok(_) => {}
-                Err(e) => tracing::warn!("Group message cleanup failed: {}", e),
+            if group_max_age > Duration::ZERO {
+                match storage.cleanup_old_group_messages(group_max_age).await {
+                    Ok(n) if n > 0 => tracing::info!("Cleaned up {} old group messages", n),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("Group message cleanup failed: {}", e),
+                }
+                match storage.cleanup_old_direct_messages(group_max_age).await {
+                    Ok(n) if n > 0 => tracing::info!("Cleaned up {} old direct messages", n),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("Direct message cleanup failed: {}", e),
+                }
             }
 
             cache.evict_expired();

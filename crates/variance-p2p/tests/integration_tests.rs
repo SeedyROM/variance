@@ -66,7 +66,7 @@ async fn test_offline_message_protocol_event_flow() {
     node.events()
         .send_offline_message(OfflineMessageEvent::FetchRequested {
             peer,
-            did: "did:variance:alice".to_string(),
+            mailbox_token: vec![0xa1u8; 32],
             limit: 10,
         });
 
@@ -79,11 +79,11 @@ async fn test_offline_message_protocol_event_flow() {
     match event {
         OfflineMessageEvent::FetchRequested {
             peer: recv_peer,
-            did,
+            mailbox_token,
             limit,
         } => {
             assert_eq!(recv_peer, peer);
-            assert_eq!(did, "did:variance:alice");
+            assert_eq!(mailbox_token, vec![0xa1u8; 32]);
             assert_eq!(limit, 10);
         }
         _ => panic!("Expected FetchRequested event"),

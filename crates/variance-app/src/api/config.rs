@@ -3,8 +3,14 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{config::RelayPeerConfig, state::AppState, Error, Result};
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RetentionConfig {
+    pub group_message_max_age_days: u64,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AddRelayRequest {
@@ -36,6 +42,35 @@ pub async fn add_relay(
         peer_id: body.peer_id,
         multiaddr: body.multiaddr,
     });
+    config.save(&base_dir).map_err(|e| Error::App {
+        message: e.to_string(),
+    })?;
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+pub async fn get_retention(State(state): State<AppState>) -> Result<Json<RetentionConfig>> {
+    let base_dir = state
+        .config_path
+        .parent()
+        .unwrap_or(&state.config_path)
+        .to_path_buf();
+    let config = crate::config::AppConfig::load_or_default(&base_dir);
+    Ok(Json(RetentionConfig {
+        group_message_max_age_days: config.storage.group_message_max_age_days,
+    }))
+}
+
+pub async fn set_retention(
+    State(state): State<AppState>,
+    Json(body): Json<RetentionConfig>,
+) -> Result<Json<Value>> {
+    let base_dir = state
+        .config_path
+        .parent()
+        .unwrap_or(&state.config_path)
+        .to_path_buf();
+    let mut config = crate::config::AppConfig::load_or_default(&base_dir);
+    config.storage.group_message_max_age_days = body.group_message_max_age_days;
     config.save(&base_dir).map_err(|e| Error::App {
         message: e.to_string(),
     })?;

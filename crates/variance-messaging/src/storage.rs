@@ -70,10 +70,10 @@ pub trait MessageStorage: Send + Sync {
     /// Store offline message for relay
     async fn store_offline(&self, envelope: &OfflineMessageEnvelope) -> Result<()>;
 
-    /// Fetch offline messages for a recipient
+    /// Fetch offline messages for a recipient by their mailbox token.
     async fn fetch_offline(
         &self,
-        recipient_did: &str,
+        mailbox_token: &[u8],
         since: Option<i64>,
         limit: usize,
     ) -> Result<Vec<OfflineMessageEnvelope>>;
@@ -351,9 +351,9 @@ impl LocalMessageStorage {
         format!("{group_id}:{timestamp:020}:{id}")
     }
 
-    /// Generate offline message key: recipient:timestamp:message_id
-    fn offline_key(recipient: &str, timestamp: i64, id: &str) -> String {
-        format!("{recipient}:{timestamp:020}:{id}")
+    /// Generate offline message key: hex(mailbox_token):timestamp:message_id
+    fn offline_key(mailbox_token: &[u8], timestamp: i64, id: &str) -> String {
+        format!("{}:{timestamp:020}:{id}", hex::encode(mailbox_token))
     }
 
     /// Parse a direct message key to extract `(conv_id, timestamp)`.
@@ -587,7 +587,7 @@ impl MessageStorage for LocalMessageStorage {
             }
         };
 
-        let key = Self::offline_key(&envelope.recipient_did, timestamp, id);
+        let key = Self::offline_key(&envelope.mailbox_token, timestamp, id);
 
         let bytes = prost::Message::encode_to_vec(envelope);
         tree.insert(key.as_bytes(), bytes.as_slice())
@@ -605,12 +605,14 @@ impl MessageStorage for LocalMessageStorage {
 
     async fn fetch_offline(
         &self,
-        recipient_did: &str,
+        mailbox_token: &[u8],
         since: Option<i64>,
         limit: usize,
     ) -> Result<Vec<OfflineMessageEnvelope>> {
         let tree = self.offline_tree()?;
-        let prefix = format!("{recipient_did}:");
+        // Key format: {64-char-hex}:{timestamp:020}:{id} — no colons in the hex prefix,
+        // so splitting from the right is unambiguous.
+        let prefix = format!("{}:", hex::encode(mailbox_token));
 
         let mut messages = Vec::new();
         let iter = tree.scan_prefix(prefix.as_bytes());
@@ -621,11 +623,11 @@ impl MessageStorage for LocalMessageStorage {
             // Check since timestamp if specified
             if let Some(since_ts) = since {
                 let key_str = String::from_utf8_lossy(&key);
-                let parts: Vec<&str> = key_str.split(':').collect();
-                // Key format: {recipient_did}:{timestamp:020}:{id}
-                // Since DID contains colons, timestamp is second-to-last part
-                if parts.len() >= 2 {
-                    if let Ok(ts) = parts[parts.len() - 2].parse::<i64>() {
+                // Key format: {hex}:{timestamp:020}:{id} — split from right, take second segment
+                let last = key_str.rfind(':').unwrap_or(0);
+                let before_id = &key_str[..last];
+                if let Some(ts_start) = before_id.rfind(':') {
+                    if let Ok(ts) = before_id[ts_start + 1..].parse::<i64>() {
                         if ts <= since_ts {
                             continue;
                         }
@@ -1224,6 +1226,34 @@ impl LocalMessageStorage {
         let ts_start = before_id.rfind(':')?;
         before_id[ts_start + 1..].parse::<i64>().ok()
     }
+
+    /// Delete direct messages older than `max_age`.
+    ///
+    /// Iterates the direct message tree and removes entries whose embedded
+    /// timestamp predates `now - max_age`. Returns the number of messages deleted.
+    pub async fn cleanup_old_direct_messages(&self, max_age: std::time::Duration) -> Result<usize> {
+        let tree = self.direct_tree()?;
+        let cutoff_ms = chrono::Utc::now().timestamp_millis() - max_age.as_millis() as i64;
+
+        let mut to_delete: Vec<Vec<u8>> = Vec::new();
+
+        for entry in tree.iter() {
+            let (key, _) = entry.map_err(|e| Error::Storage { source: e })?;
+            let key_str = String::from_utf8_lossy(&key);
+            if let Some((_, ts)) = Self::parse_direct_key(&key_str) {
+                if ts < cutoff_ms {
+                    to_delete.push(key.to_vec());
+                }
+            }
+        }
+
+        let deleted = to_delete.len();
+        for key in to_delete {
+            tree.remove(key).map_err(|e| Error::Storage { source: e })?;
+        }
+
+        Ok(deleted)
+    }
 }
 
 #[cfg(test)]
@@ -1346,7 +1376,7 @@ mod tests {
         };
 
         let envelope = OfflineMessageEnvelope {
-            recipient_did: "did:variance:bob".to_string(),
+            mailbox_token: vec![0xb0u8; 32],
             message: Some(
                 variance_proto::messaging_proto::offline_message_envelope::Message::Direct(
                     direct.clone(),
@@ -1359,12 +1389,12 @@ mod tests {
         storage.store_offline(&envelope).await.unwrap();
 
         let messages = storage
-            .fetch_offline("did:variance:bob", None, 10)
+            .fetch_offline(&[0xb0u8; 32], None, 10)
             .await
             .unwrap();
 
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].recipient_did, "did:variance:bob");
+        assert_eq!(messages[0].mailbox_token, vec![0xb0u8; 32]);
     }
 
     #[tokio::test]
@@ -1386,7 +1416,7 @@ mod tests {
         };
 
         let envelope = OfflineMessageEnvelope {
-            recipient_did: "did:variance:bob".to_string(),
+            mailbox_token: vec![0xb0u8; 32],
             message: Some(
                 variance_proto::messaging_proto::offline_message_envelope::Message::Direct(
                     direct.clone(),
@@ -1403,7 +1433,7 @@ mod tests {
             .unwrap();
 
         let messages = storage
-            .fetch_offline("did:variance:bob", None, 10)
+            .fetch_offline(&[0xb0u8; 32], None, 10)
             .await
             .unwrap();
 
@@ -1536,7 +1566,7 @@ mod tests {
         };
 
         let envelope1 = OfflineMessageEnvelope {
-            recipient_did: "did:variance:bob".to_string(),
+            mailbox_token: vec![0xb0u8; 32],
             message: Some(
                 variance_proto::messaging_proto::offline_message_envelope::Message::Direct(expired),
             ),
@@ -1559,7 +1589,7 @@ mod tests {
         };
 
         let envelope2 = OfflineMessageEnvelope {
-            recipient_did: "did:variance:bob".to_string(),
+            mailbox_token: vec![0xb0u8; 32],
             message: Some(
                 variance_proto::messaging_proto::offline_message_envelope::Message::Direct(valid),
             ),
@@ -1574,7 +1604,7 @@ mod tests {
         assert_eq!(deleted, 1);
 
         let messages = storage
-            .fetch_offline("did:variance:bob", None, 10)
+            .fetch_offline(&[0xb0u8; 32], None, 10)
             .await
             .unwrap();
 
@@ -1643,7 +1673,7 @@ mod tests {
         };
 
         let envelope = OfflineMessageEnvelope {
-            recipient_did: "did:variance:bob".to_string(),
+            mailbox_token: vec![0xb0u8; 32],
             message: Some(
                 variance_proto::messaging_proto::offline_message_envelope::Message::Direct(direct),
             ),
@@ -1655,7 +1685,7 @@ mod tests {
         storage.store_offline(&envelope).await.unwrap();
 
         let messages = storage
-            .fetch_offline("did:variance:bob", None, 10)
+            .fetch_offline(&[0xb0u8; 32], None, 10)
             .await
             .unwrap();
         assert_eq!(messages.len(), 1);
@@ -1664,7 +1694,7 @@ mod tests {
         storage.delete_offline("01OFFLINE_MSG_ID").await.unwrap();
 
         let messages = storage
-            .fetch_offline("did:variance:bob", None, 10)
+            .fetch_offline(&[0xb0u8; 32], None, 10)
             .await
             .unwrap();
         assert_eq!(messages.len(), 0);
@@ -1796,6 +1826,66 @@ mod tests {
         let after = storage.fetch_group("test-group", 10, None).await.unwrap();
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].id, "01ARZ3NDEKTSV4RRFFQ69G5FBB");
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_old_direct_messages() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+
+        // Old message: 40 days ago (deleted with 30-day cutoff)
+        let old_ts = now_ms - 40 * 86_400_000i64;
+        let old_msg = DirectMessage {
+            id: "01ARZ3NDEKTSV4RRFFQ69G5OLD".to_string(),
+            sender_did: "did:key:alice".to_string(),
+            recipient_did: "did:key:bob".to_string(),
+            ciphertext: vec![1],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: old_ts,
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+
+        // Recent message: 1 day ago (survives)
+        let recent_ts = now_ms - 86_400_000i64;
+        let recent_msg = DirectMessage {
+            id: "01ARZ3NDEKTSV4RRFFQ69G5NEW".to_string(),
+            sender_did: "did:key:alice".to_string(),
+            recipient_did: "did:key:bob".to_string(),
+            ciphertext: vec![2],
+            olm_message_type: 0,
+            signature: vec![],
+            timestamp: recent_ts,
+            r#type: MessageType::Text.into(),
+            reply_to: None,
+            sender_identity_key: None,
+        };
+
+        storage.store_direct(&old_msg).await.unwrap();
+        storage.store_direct(&recent_msg).await.unwrap();
+
+        let before = storage
+            .fetch_direct("did:key:alice", "did:key:bob", 10, None)
+            .await
+            .unwrap();
+        assert_eq!(before.len(), 2);
+
+        let deleted = storage
+            .cleanup_old_direct_messages(std::time::Duration::from_secs(30 * 86400))
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1, "only the 40-day-old message should be deleted");
+
+        let after = storage
+            .fetch_direct("did:key:alice", "did:key:bob", 10, None)
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, "01ARZ3NDEKTSV4RRFFQ69G5NEW");
     }
 
     #[tokio::test]

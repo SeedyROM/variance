@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Send } from "lucide-react";
+import { useToastStore } from "../../stores/toastStore";
 import { GroupHeader } from "./GroupHeader";
 import { GroupMessageBubble } from "./GroupMessageBubble";
 import { TypingIndicator } from "./TypingIndicator";
@@ -42,6 +43,7 @@ function GroupMessageInput({ groupId }: { groupId: string }) {
   const queryClient = useQueryClient();
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTypingSentRef = useRef<number>(0);
+  const addToast = useToastStore((s) => s.addToast);
 
   const sendMutation = useMutation({
     mutationFn: () => groupsApi.sendMessage(groupId, text.trim()),
@@ -50,6 +52,7 @@ function GroupMessageInput({ groupId }: { groupId: string }) {
       void queryClient.invalidateQueries({ queryKey: ["messages", "group", groupId] });
       void queryClient.invalidateQueries({ queryKey: ["groups"] });
     },
+    onError: (e) => addToast(String(e), "error"),
   });
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {

@@ -68,6 +68,7 @@ pub fn create_success_response(did: &Did) -> identity_proto::IdentityResponse {
                 one_time_keys: vec![],
                 mls_key_package: None,
                 username: None,
+                mailbox_token: vec![],
             },
         )),
         timestamp: Utc::now().timestamp(),

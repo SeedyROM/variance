@@ -89,6 +89,9 @@ message IdentityFound {
   // Registered username of the responding peer (e.g. "alice").
   // Use together with discriminator to form "alice#0042".
   optional string username = 8;
+  // Opaque 32-byte relay mailbox token: SHA-256(signing_key || "variance-mailbox-v1").
+  // Senders use this to address offline messages so the relay never sees DIDs.
+  bytes mailbox_token = 9;
 }
 
 message IdentityNotFound {

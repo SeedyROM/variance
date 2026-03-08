@@ -37,7 +37,7 @@ pub enum OfflineMessageEvent {
     /// Received a fetch request from a peer
     FetchRequested {
         peer: PeerId,
-        did: String,
+        mailbox_token: Vec<u8>,
         limit: u32,
     },
 

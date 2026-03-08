@@ -109,6 +109,10 @@ pub struct AppState {
 
     /// Path to the on-disk config file (`base_dir/config.toml`) used for relay management.
     pub config_path: PathBuf,
+
+    /// Opaque relay mailbox token: SHA-256(signing_key || "variance-mailbox-v1").
+    /// Passed to the relay when fetching offline messages; never a human-readable DID.
+    pub mailbox_token: [u8; 32],
 }
 
 impl AppState {
@@ -233,6 +237,8 @@ impl AppState {
         let signing_key_bytes = hex::decode(&identity.signing_key)
             .map_err(|e| anyhow::anyhow!("Invalid signing key format: {}", e))?;
 
+        let mailbox_token = variance_identity::mailbox_token(&signing_key_bytes);
+
         let signing_key = ed25519_dalek::SigningKey::from_bytes(
             &signing_key_bytes
                 .try_into()
@@ -309,6 +315,7 @@ impl AppState {
             ipfs_storage,
             identity_passphrase: passphrase.map(|p| Arc::new(p.to_string())),
             config_path,
+            mailbox_token,
         })
     }
 
@@ -380,6 +387,7 @@ impl AppState {
                             one_time_keys: vec![],
                             mls_key_package: None,
                             username: None,
+                            mailbox_token: vec![],
                         }));
                     }
                     NodeCommand::GetConnectedDids { response_tx } => {
@@ -416,6 +424,7 @@ impl AppState {
         let storage = Arc::new(LocalMessageStorage::new(db_path).unwrap());
         let signing_key = SigningKey::generate(&mut rand_core::OsRng);
         let signaling_key = SigningKey::generate(&mut rand_core::OsRng);
+        let mailbox_token = variance_identity::mailbox_token(signing_key.as_bytes());
 
         let identity_temp = tempfile::tempdir().expect("Failed to create temp dir for identity");
         let identity_cache_path = identity_temp.path().join("identity-cache");
@@ -462,6 +471,7 @@ impl AppState {
             ),
             identity_passphrase: None,
             config_path: PathBuf::from("/tmp/test-config.toml"),
+            mailbox_token,
         }
     }
 }

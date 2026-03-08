@@ -6,6 +6,7 @@ import { Button } from "../ui/Button";
 import { groupsApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
+import { useToastStore } from "../../stores/toastStore";
 import type { MlsGroupInfo } from "../../api/types";
 
 interface ManageGroupPanelProps {
@@ -21,6 +22,7 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
   const queryClient = useQueryClient();
   const localDid = useIdentityStore((s) => s.did);
   const markRead = useMessagingStore((s) => s.markRead);
+  const addToast = useToastStore((s) => s.addToast);
 
   const { data: members = [] } = useQuery({
     queryKey: ["group-members", group.id],
@@ -35,6 +37,7 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
       void queryClient.invalidateQueries({ queryKey: ["groups"] });
       void queryClient.invalidateQueries({ queryKey: ["group-members", group.id] });
     },
+    onError: (e) => addToast(String(e), "error"),
   });
 
   const kickMutation = useMutation({
@@ -43,6 +46,7 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
       void queryClient.invalidateQueries({ queryKey: ["group-members", group.id] });
       void queryClient.invalidateQueries({ queryKey: ["groups"] });
     },
+    onError: (e) => addToast(String(e), "error"),
   });
 
   const leaveMutation = useMutation({
@@ -51,6 +55,7 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
       void queryClient.invalidateQueries({ queryKey: ["groups"] });
       onLeave();
     },
+    onError: (e) => addToast(String(e), "error"),
   });
 
   const deleteMutation = useMutation({
@@ -60,6 +65,7 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
       void queryClient.invalidateQueries({ queryKey: ["groups"] });
       onLeave();
     },
+    onError: (e) => addToast(String(e), "error"),
   });
 
   const canInvite = invitee.trim().length > 0;
@@ -99,9 +105,6 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
               );
             })}
           </div>
-          {kickMutation.error && (
-            <p className="text-xs text-red-500 mt-1">{String(kickMutation.error)}</p>
-          )}
         </div>
 
         {/* Invite */}
@@ -121,9 +124,6 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
                 focus:outline-none focus:ring-2 focus:ring-primary-500"
             />
           </div>
-          {inviteMutation.error && (
-            <p className="text-xs text-red-500">{String(inviteMutation.error)}</p>
-          )}
           {inviteMutation.isSuccess && (
             <p className="text-xs text-green-600 dark:text-green-400">Invite sent.</p>
           )}
@@ -178,9 +178,6 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
                   Leave
                 </Button>
               </div>
-              {leaveMutation.error && (
-                <p className="text-xs text-red-500">{String(leaveMutation.error)}</p>
-              )}
             </div>
           ) : (
             <div className="flex flex-col gap-2">
@@ -204,9 +201,6 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
                   Delete
                 </Button>
               </div>
-              {deleteMutation.error && (
-                <p className="text-xs text-red-500">{String(deleteMutation.error)}</p>
-              )}
             </div>
           )}
         </div>

@@ -248,6 +248,13 @@ pub(super) async fn mls_create_group(
     State(state): State<AppState>,
     Json(req): Json<MlsCreateGroupRequest>,
 ) -> Result<Json<serde_json::Value>> {
+    let trimmed_name = req.name.trim();
+    if trimmed_name.is_empty() || trimmed_name.len() > 100 {
+        return Err(Error::BadRequest {
+            message: "Group name must be 1–100 characters".to_string(),
+        });
+    }
+
     let group_id = ulid::Ulid::new().to_string();
 
     state
@@ -300,6 +307,12 @@ pub(super) async fn mls_invite_to_group(
 ) -> Result<Json<serde_json::Value>> {
     use super::helpers::{ensure_olm_session, resolve_invitee_did, send_dm_to_peer};
     use variance_messaging::mls::MlsGroupHandler;
+
+    if req.invitee.trim().is_empty() {
+        return Err(Error::BadRequest {
+            message: "invitee must not be empty".to_string(),
+        });
+    }
 
     // ── Resolve invitee to a DID ────────────────────────────────────
     let invitee_did = resolve_invitee_did(&state, &req.invitee).await?;
@@ -603,6 +616,12 @@ pub(super) async fn mls_send_group_message(
     State(state): State<AppState>,
     Json(req): Json<SendGroupMessageRequest>,
 ) -> Result<Json<MessageResponse>> {
+    if req.text.trim().is_empty() || req.text.len() > 4096 {
+        return Err(Error::BadRequest {
+            message: "Message must be 1–4096 characters".to_string(),
+        });
+    }
+
     let content = MessageContent {
         text: req.text,
         attachments: vec![],
@@ -739,6 +758,12 @@ pub(super) async fn add_group_reaction(
     Path(message_id): Path<String>,
     Json(req): Json<AddGroupReactionRequest>,
 ) -> Result<Json<MessageResponse>> {
+    if req.emoji.is_empty() || req.emoji.len() > 8 {
+        return Err(Error::BadRequest {
+            message: "emoji must be 1–8 characters".to_string(),
+        });
+    }
+
     let mut metadata = HashMap::new();
     metadata.insert("type".to_string(), "reaction".to_string());
     metadata.insert("message_id".to_string(), message_id);

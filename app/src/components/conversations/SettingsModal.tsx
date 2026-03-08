@@ -9,6 +9,7 @@ import { ChangeUsernameDialog } from "./ChangeUsernameDialog";
 import { ShareContactModal } from "./ShareContactModal";
 import { configApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
+import { useToastStore } from "../../stores/toastStore";
 import type { RelayPeer } from "../../api/types";
 
 interface SettingsModalProps {
@@ -32,10 +33,17 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [saving, setSaving] = useState(false);
 
   const queryClient = useQueryClient();
+  const addToast = useToastStore((s) => s.addToast);
 
   const { data: savedRelays = [] } = useQuery({
     queryKey: ["relays"],
     queryFn: configApi.getRelays,
+    enabled: open,
+  });
+
+  const { data: retention } = useQuery({
+    queryKey: ["retention"],
+    queryFn: configApi.getRetention,
     enabled: open,
   });
 
@@ -66,6 +74,15 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     setPendingRelays([]);
   }
 
+  async function handleRetentionChange(days: number) {
+    try {
+      await configApi.setRetention({ group_message_max_age_days: days });
+      await queryClient.invalidateQueries({ queryKey: ["retention"] });
+    } catch (e) {
+      addToast(String(e), "error");
+    }
+  }
+
   async function handleSave() {
     if (!isDirty) return;
     setSaving(true);
@@ -78,6 +95,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       }
       await queryClient.invalidateQueries({ queryKey: ["relays"] });
       setPendingRelays(null);
+    } catch (e) {
+      addToast(String(e), "error");
     } finally {
       setSaving(false);
     }
@@ -206,6 +225,37 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                   Save
                 </Button>
               </div>
+            </section>
+
+            {/* Message History */}
+            <section className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-surface-400 dark:text-surface-500">
+                Message History
+              </h3>
+
+              <div className="flex items-center justify-between gap-3">
+                <label
+                  htmlFor="retention-select"
+                  className="text-xs text-surface-700 dark:text-surface-300"
+                >
+                  Keep messages for
+                </label>
+                <select
+                  id="retention-select"
+                  value={retention?.group_message_max_age_days ?? 30}
+                  onChange={(e) => void handleRetentionChange(Number(e.target.value))}
+                  className="rounded-md px-2 py-1 text-xs bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 text-surface-900 dark:text-surface-100 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                >
+                  <option value={0}>Keep forever</option>
+                  <option value={90}>90 days</option>
+                  <option value={30}>30 days (default)</option>
+                  <option value={14}>14 days</option>
+                </select>
+              </div>
+
+              <p className="text-xs text-surface-400 italic">
+                Applies to both direct and group messages locally stored on this device.
+              </p>
             </section>
           </div>
         )}

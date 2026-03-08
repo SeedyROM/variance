@@ -40,8 +40,10 @@ impl OfflineMessageHandler {
         request: OfflineMessageRequest,
     ) -> Result<OfflineMessageResponse> {
         debug!(
-            "Handling offline message request for DID: {} (limit: {}, since: {:?})",
-            request.did, request.limit, request.since_timestamp
+            "Handling offline message request (token_len: {}, limit: {}, since: {:?})",
+            request.mailbox_token.len(),
+            request.limit,
+            request.since_timestamp
         );
 
         match self.relay_handler.fetch_messages(request).await {
@@ -83,7 +85,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let handler = OfflineMessageHandler::with_local_storage(dir.path()).unwrap();
 
-        assert_eq!(handler.relay_handler().ttl_ms(), 30 * 24 * 60 * 60 * 1000);
+        assert_eq!(handler.relay_handler().ttl_ms(), 14 * 24 * 60 * 60 * 1000);
     }
 
     #[tokio::test]
@@ -92,7 +94,7 @@ mod tests {
         let handler = OfflineMessageHandler::with_local_storage(dir.path()).unwrap();
 
         let request = OfflineMessageRequest {
-            did: "did:variance:bob".to_string(),
+            mailbox_token: vec![0xb0u8; 32],
             since_timestamp: None,
             limit: 10,
         };
@@ -124,7 +126,7 @@ mod tests {
         };
 
         let envelope = handler.relay_handler().create_envelope(
-            "did:variance:bob".to_string(),
+            vec![0xb0u8; 32],
             variance_proto::messaging_proto::offline_message_envelope::Message::Direct(direct_msg),
         );
 
@@ -136,7 +138,7 @@ mod tests {
 
         // Fetch via the handler
         let request = OfflineMessageRequest {
-            did: "did:variance:bob".to_string(),
+            mailbox_token: vec![0xb0u8; 32],
             since_timestamp: None,
             limit: 10,
         };
@@ -145,7 +147,7 @@ mod tests {
 
         assert!(response.error_code.is_none());
         assert_eq!(response.messages.len(), 1);
-        assert_eq!(response.messages[0].recipient_did, "did:variance:bob");
+        assert_eq!(response.messages[0].mailbox_token, vec![0xb0u8; 32]);
         assert!(!response.has_more);
     }
 
@@ -170,7 +172,7 @@ mod tests {
             };
 
             let envelope = handler.relay_handler().create_envelope(
-                "did:variance:bob".to_string(),
+                vec![0xb0u8; 32],
                 variance_proto::messaging_proto::offline_message_envelope::Message::Direct(
                     direct_msg,
                 ),
@@ -185,7 +187,7 @@ mod tests {
 
         // Fetch with limit=2
         let request = OfflineMessageRequest {
-            did: "did:variance:bob".to_string(),
+            mailbox_token: vec![0xb0u8; 32],
             since_timestamp: None,
             limit: 2,
         };

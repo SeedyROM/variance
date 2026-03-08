@@ -10,6 +10,7 @@ import type {
   MlsGroupInfo,
   RegisterUsernameResponse,
   RelayPeer,
+  RetentionConfig,
   ResolvedIdentity,
   ResolvedUsername,
   ResolvedUsernameMultiple,
@@ -38,10 +39,23 @@ export function resetApiBase() {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const base = await getApiBase();
-  const res = await fetch(`${base}${path}`, {
-    headers: { "Content-Type": "application/json", ...init?.headers },
-    ...init,
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  let res: Response;
+  try {
+    res = await fetch(`${base}${path}`, {
+      headers: { "Content-Type": "application/json", ...init?.headers },
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    if (e instanceof Error && e.name === "AbortError") {
+      throw new Error("Request timed out");
+    }
+    throw e;
+  }
+  clearTimeout(timer);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error((err as { error?: string }).error ?? res.statusText);
@@ -219,5 +233,13 @@ export const configApi = {
   removeRelay: (peerId: string) =>
     request<{ success: boolean }>(`/config/relays/${encodeURIComponent(peerId)}`, {
       method: "DELETE",
+    }),
+
+  getRetention: () => request<RetentionConfig>("/config/retention"),
+
+  setRetention: (cfg: RetentionConfig) =>
+    request<{ success: boolean }>("/config/retention", {
+      method: "PUT",
+      body: JSON.stringify(cfg),
     }),
 };

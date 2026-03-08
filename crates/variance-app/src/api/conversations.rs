@@ -64,6 +64,18 @@ pub(super) async fn start_conversation(
     State(state): State<AppState>,
     Json(req): Json<StartConversationRequest>,
 ) -> Result<Json<StartConversationResponse>> {
+    if req.recipient_did.is_empty() || !req.recipient_did.starts_with("did:") {
+        return Err(Error::BadRequest {
+            message: "recipient_did must be a valid DID (starts with \"did:\")".to_string(),
+        });
+    }
+    let text_len = req.text.len();
+    if req.text.trim().is_empty() || text_len > 4096 {
+        return Err(Error::BadRequest {
+            message: "Message must be 1–4096 characters".to_string(),
+        });
+    }
+
     // If a conversation already exists (we have messages with this peer),
     // skip Olm session setup entirely — just send via the existing session.
     let existing = state
@@ -171,6 +183,12 @@ pub(super) async fn send_direct_message(
     State(state): State<AppState>,
     Json(req): Json<SendDirectMessageRequest>,
 ) -> Result<Json<MessageResponse>> {
+    if req.text.trim().is_empty() || req.text.len() > 4096 {
+        return Err(Error::BadRequest {
+            message: "Message must be 1–4096 characters".to_string(),
+        });
+    }
+
     // Ensure Olm session exists with the recipient (auto-initialize if needed)
     ensure_olm_session(&state, &req.recipient_did).await?;
 
@@ -297,6 +315,11 @@ pub(super) async fn add_reaction(
     Path(message_id): Path<String>,
     Json(req): Json<AddReactionRequest>,
 ) -> Result<Json<MessageResponse>> {
+    if req.emoji.is_empty() || req.emoji.len() > 8 {
+        return Err(Error::BadRequest {
+            message: "emoji must be 1–8 characters".to_string(),
+        });
+    }
     if !state.direct_messaging.has_session(&req.recipient_did).await {
         return Err(Error::SessionRequired {
             message: "No session with peer — open a conversation first".to_string(),

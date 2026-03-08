@@ -191,3 +191,9 @@ export interface RelayPeer {
   peer_id: string;
   multiaddr: string;
 }
+
+// ===== Config / Retention =====
+
+export interface RetentionConfig {
+  group_message_max_age_days: number;
+}

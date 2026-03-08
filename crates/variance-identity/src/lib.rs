@@ -11,8 +11,10 @@ pub mod cache;
 pub mod config;
 pub mod did;
 pub mod error;
+pub mod mailbox;
 pub mod protocol;
 pub mod storage;
 pub mod username;
 
 pub use error::{Error, Result};
+pub use mailbox::mailbox_token;

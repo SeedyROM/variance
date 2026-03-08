@@ -6,6 +6,7 @@ import { UnlockScreen } from "./components/onboarding/UnlockScreen";
 import { ConversationList } from "./components/conversations/ConversationList";
 import { MessageView } from "./components/messages/MessageView";
 import { GroupView } from "./components/messages/GroupView";
+import { Toaster } from "./components/ui/Toaster";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { usePresencePolling } from "./hooks/usePresencePolling";
 import { useNodeReady } from "./hooks/useNodeReady";
@@ -203,5 +204,10 @@ export function App() {
     );
   }
 
-  return <MainShell />;
+  return (
+    <>
+      <MainShell />
+      <Toaster />
+    </>
+  );
 }

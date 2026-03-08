@@ -177,7 +177,9 @@ message DirectMessageAck {
 
 // Offline message relay
 message OfflineMessageEnvelope {
-  string recipient_did = 1;
+  // Opaque 32-byte mailbox token (SHA-256 of recipient's signing key).
+  // The relay never sees the recipient's DID — only this token.
+  bytes mailbox_token = 1;
   oneof message {
     DirectMessage direct = 2;
     GroupMessage group = 3;
@@ -192,7 +194,8 @@ message OfflineMessageEnvelope {
 }
 
 message OfflineMessageRequest {
-  string did = 1;
+  // Opaque 32-byte mailbox token — SHA-256(signing_key || "variance-mailbox-v1").
+  bytes mailbox_token = 1;
   optional int64 since_timestamp = 2;  // Only messages after this
   uint32 limit = 3; // Max messages to fetch
 }

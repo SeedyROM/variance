@@ -6,12 +6,15 @@ type EventHandler = (event: WsEvent) => void;
 const INITIAL_RECONNECT_DELAY = 500;
 const MAX_RECONNECT_DELAY = 30_000;
 
+const HEARTBEAT_INTERVAL = 30_000;
+
 export class VarianceWebSocket {
   private ws: WebSocket | null = null;
   private handlers: Set<EventHandler> = new Set();
   private reconnectDelay = INITIAL_RECONNECT_DELAY;
   private stopped = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   on(handler: EventHandler): () => void {
     this.handlers.add(handler);
@@ -29,8 +32,16 @@ export class VarianceWebSocket {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.clearHeartbeat();
     this.ws?.close();
     this.ws = null;
+  }
+
+  private clearHeartbeat() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
   }
 
   private async attemptConnect() {
@@ -51,6 +62,11 @@ export class VarianceWebSocket {
 
     ws.onopen = () => {
       this.reconnectDelay = INITIAL_RECONNECT_DELAY;
+      this.heartbeatTimer = setInterval(() => {
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({ type: "Ping" }));
+        }
+      }, HEARTBEAT_INTERVAL);
     };
 
     ws.onmessage = (e) => {
@@ -63,12 +79,13 @@ export class VarianceWebSocket {
         // Flatten into { type, ...data } so the rest of the app can access fields directly.
         const event = { type: raw.type, ...(raw.data ?? {}) } as WsEvent;
         this.handlers.forEach((h) => h(event));
-      } catch {
-        // Ignore malformed messages
+      } catch (err) {
+        console.warn("[WebSocket] Failed to parse message:", e.data, err);
       }
     };
 
     ws.onclose = () => {
+      this.clearHeartbeat();
       this.ws = null;
       if (!this.stopped) this.scheduleReconnect();
     };
