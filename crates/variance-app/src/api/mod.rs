@@ -266,7 +266,8 @@ mod tests {
         let app = create_router(test_state());
 
         let req_body = serde_json::json!({
-            "message_id": "msg123"
+            "message_id": "msg123",
+            "sender_did": "did:variance:bob"
         });
 
         let response = app
