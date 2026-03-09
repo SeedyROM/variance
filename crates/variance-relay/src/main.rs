@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use axum::{extract::State, response::Json, routing::get, Router};
 use clap::Parser;
 use futures::StreamExt;
 use libp2p::{
@@ -8,11 +9,13 @@ use libp2p::{
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, SwarmBuilder,
 };
+use serde::Serialize;
 use std::{
     collections::HashMap,
     fs::{self, read_to_string},
     num::{NonZeroU32, NonZeroUsize},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tracing::{debug, info, warn};
@@ -55,6 +58,10 @@ struct Args {
     #[arg(long, default_value = "60")]
     stats_interval_secs: u64,
 
+    /// Port for the HTTP stats endpoint (0 = disabled)
+    #[arg(long, default_value = "9090")]
+    stats_port: u16,
+
     /// Bootstrap peers for DHT-based relay auto-discovery.
     /// Format: PEER_ID@MULTIADDR (repeat for multiple peers).
     /// Example: --bootstrap-peers 12D3...@/ip4/1.2.3.4/tcp/4001
@@ -62,10 +69,22 @@ struct Args {
     bootstrap_peers: Vec<String>,
 }
 
+/// Snapshot of relay stats for the HTTP `/stats` endpoint.
+#[derive(Serialize, Clone)]
+struct RelayStatsSnapshot {
+    active_reservations: usize,
+    active_circuits: usize,
+    total_reservations: usize,
+    total_circuits: usize,
+    denied_reservations: usize,
+    denied_circuits: usize,
+    tracked_peers: usize,
+}
+
 /// Tracks relay activity for operational monitoring.
 ///
-/// All fields are plain integers — this struct is only accessed from the
-/// single-threaded tokio event loop so atomics aren't needed.
+/// Wrapped in `Arc<Mutex<…>>` so the HTTP stats endpoint can read it
+/// concurrently with the swarm event loop.
 struct RelayStats {
     active_reservations: usize,
     active_circuits: usize,
@@ -133,6 +152,18 @@ impl RelayStats {
             tracked_peers = self.peer_reservations.len(),
             "Relay stats"
         );
+    }
+
+    fn snapshot(&self) -> RelayStatsSnapshot {
+        RelayStatsSnapshot {
+            active_reservations: self.active_reservations,
+            active_circuits: self.active_circuits,
+            total_reservations: self.total_reservations,
+            total_circuits: self.total_circuits,
+            denied_reservations: self.denied_reservations,
+            denied_circuits: self.denied_circuits,
+            tracked_peers: self.peer_reservations.len(),
+        }
     }
 }
 
@@ -286,7 +317,29 @@ async fn main() -> Result<()> {
         Err(e) => warn!("Failed to register relay provider: {:?}", e),
     }
 
-    let mut stats = RelayStats::new();
+    let stats = Arc::new(Mutex::new(RelayStats::new()));
+
+    // Spawn HTTP stats server if a port is configured.
+    if args.stats_port > 0 {
+        let stats_http = stats.clone();
+        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], args.stats_port));
+        let app = Router::new()
+            .route("/stats", get(stats_handler))
+            .with_state(stats_http);
+        tokio::spawn(async move {
+            info!("Relay stats HTTP server listening on {}", addr);
+            let listener = match tokio::net::TcpListener::bind(addr).await {
+                Ok(l) => l,
+                Err(e) => {
+                    warn!("Failed to bind stats HTTP server on {}: {}", addr, e);
+                    return;
+                }
+            };
+            if let Err(e) = axum::serve(listener, app).await {
+                warn!("Stats HTTP server error: {}", e);
+            }
+        });
+    }
 
     // Optional periodic stats reporting
     let stats_interval = if args.stats_interval_secs > 0 {
@@ -312,11 +365,15 @@ async fn main() -> Result<()> {
                     Some(SwarmEvent::ConnectionClosed { peer_id: remote, num_established, cause, .. }) => {
                         debug!("Connection closed with {}: {:?}", remote, cause);
                         if num_established == 0 {
-                            stats.peer_disconnected(&remote);
+                            if let Ok(mut s) = stats.lock() {
+                                s.peer_disconnected(&remote);
+                            }
                         }
                     }
                     Some(SwarmEvent::Behaviour(RelayBehaviourEvent::Relay(event))) => {
-                        handle_relay_event(event, &mut stats);
+                        if let Ok(mut s) = stats.lock() {
+                            handle_relay_event(event, &mut s);
+                        }
                     }
                     Some(SwarmEvent::Behaviour(RelayBehaviourEvent::Identify(
                         identify::Event::Received { peer_id: remote, info, .. },
@@ -377,17 +434,37 @@ async fn main() -> Result<()> {
                     None => std::future::pending().await,
                 }
             } => {
-                stats.log_summary();
+                if let Ok(s) = stats.lock() {
+                    s.log_summary();
+                }
             }
             _ = tokio::signal::ctrl_c() => {
                 info!("Shutting down relay node");
-                stats.log_summary();
+                if let Ok(s) = stats.lock() {
+                    s.log_summary();
+                }
                 break;
             }
         }
     }
 
     Ok(())
+}
+
+async fn stats_handler(State(stats): State<Arc<Mutex<RelayStats>>>) -> Json<RelayStatsSnapshot> {
+    let snapshot = stats
+        .lock()
+        .map(|s| s.snapshot())
+        .unwrap_or_else(|_| RelayStatsSnapshot {
+            active_reservations: 0,
+            active_circuits: 0,
+            total_reservations: 0,
+            total_circuits: 0,
+            denied_reservations: 0,
+            denied_circuits: 0,
+            tracked_peers: 0,
+        });
+    Json(snapshot)
 }
 
 fn handle_relay_event(event: relay::Event, stats: &mut RelayStats) {

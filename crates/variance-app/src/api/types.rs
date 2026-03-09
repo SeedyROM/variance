@@ -169,6 +169,14 @@ pub struct RegisterUsernameRequest {
     pub username: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ChangePassphraseRequest {
+    /// Current passphrase (omit or `null` for plaintext identity files).
+    pub current_passphrase: Option<String>,
+    /// New passphrase to encrypt with (omit or `null` to remove encryption).
+    pub new_passphrase: Option<String>,
+}
+
 // ===== MLS Types =====
 
 /// Response type for `GET /mls/groups`.

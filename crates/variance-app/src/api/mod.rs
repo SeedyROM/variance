@@ -53,6 +53,7 @@ pub fn create_router(state: AppState) -> Router {
             "/identity/username/resolve/{username}",
             get(identity::resolve_username),
         )
+        .route("/identity/passphrase", post(identity::change_passphrase))
         // Conversation endpoints
         .route("/conversations", get(conversations::list_conversations))
         .route("/conversations", post(conversations::start_conversation))

@@ -6,7 +6,7 @@ use axum::{
     response::Json,
 };
 
-use super::types::{IdentityStatusResponse, RegisterUsernameRequest};
+use super::types::{ChangePassphraseRequest, IdentityStatusResponse, RegisterUsernameRequest};
 
 // ===== Health Check =====
 
@@ -178,6 +178,46 @@ pub(super) async fn register_username(
         "discriminator": discriminator,
         "display_name": display_name,
         "did": state.local_did,
+    })))
+}
+
+/// Re-encrypt the identity file with a new passphrase (or remove encryption).
+///
+/// Validates the current passphrase matches the one the node was started with,
+/// then rewrites the file. The caller should restart the node for the in-memory
+/// `AppState.identity_passphrase` to reflect the new value.
+pub(super) async fn change_passphrase(
+    State(state): State<AppState>,
+    Json(req): Json<ChangePassphraseRequest>,
+) -> Result<Json<serde_json::Value>> {
+    // Verify the supplied current passphrase matches the one used at startup.
+    // This prevents an attacker with local access from silently changing the passphrase.
+    let stored = state.identity_passphrase.as_ref().map(|s| s.as_str());
+    if req.current_passphrase.as_deref() != stored {
+        return Err(Error::BadRequest {
+            message: "Current passphrase is incorrect".to_string(),
+        });
+    }
+
+    // Load with current, save with new — this is the re-encryption.
+    let identity =
+        AppState::load_identity_with_passphrase(&state.identity_path, stored).map_err(|e| {
+            Error::App {
+                message: format!("Failed to load identity: {}", e),
+            }
+        })?;
+    AppState::save_identity(
+        &state.identity_path,
+        &identity,
+        req.new_passphrase.as_deref(),
+    )
+    .map_err(|e| Error::App {
+        message: format!("Failed to save identity with new passphrase: {}", e),
+    })?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Passphrase changed. Restart the app for the change to take full effect."
     })))
 }
 
