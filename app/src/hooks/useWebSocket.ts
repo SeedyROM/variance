@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   isPermissionGranted,
@@ -69,20 +69,17 @@ async function notify(conversationKey: string, body: string, target: ActiveConve
   );
 }
 
-/**
- * Connect the WebSocket when the node is running and dispatch incoming events.
- *
- * For DirectMessageReceived we bump a Zustand tick instead of calling
- * invalidateQueries with event.from. The tick is watched by MessageView, which
- * calls its own refetch() — avoiding any dependency on whether event.from
- * exactly matches the React Query key used by the mounted component.
- */
 export function useWebSocket() {
   const nodeStatus = useAppStore((s) => s.nodeStatus);
   const localDid = useIdentityStore((s) => s.did);
+  // Keep localDid in a ref so event handlers always read the latest value
+  // without requiring the effect to re-run (and reconnect the WebSocket).
+  const localDidRef = useRef(localDid);
+  useEffect(() => {
+    localDidRef.current = localDid;
+  }, [localDid]);
+
   const queryClient = useQueryClient();
-  const tickInboundMessage = useMessagingStore((s) => s.tickInboundMessage);
-  const tickGroupMessage = useMessagingStore((s) => s.tickGroupMessage);
   const setPresence = useMessagingStore((s) => s.setPresence);
   const setPeerName = useMessagingStore((s) => s.setPeerName);
   const markUnread = useMessagingStore((s) => s.markUnread);
@@ -120,13 +117,14 @@ export function useWebSocket() {
           console.log("[WebSocket] Processing DirectMessageReceived:", event.message_id);
           // They sent a message, so they're no longer typing.
           setTyping(event.from, event.from, false);
-          // Bump the tick — MessageView will call refetch() in response.
-          tickInboundMessage();
+          // Invalidate this conversation's messages — MessageView will refetch.
+          void queryClient.invalidateQueries({ queryKey: ["messages", event.from] });
           // Update the conversation list (timestamp, ordering).
           void queryClient.invalidateQueries({ queryKey: ["conversations"] });
           // Mark conversation as unread + notify if it's not the active one
-          if (localDid) {
-            const dids = [localDid, event.from].sort();
+          const currentDid = localDidRef.current;
+          if (currentDid) {
+            const dids = [currentDid, event.from].sort();
             const conversationId = `${dids[0]}:${dids[1]}`;
             const isActive =
               activeConversation?.type === "dm" && activeConversation.peerId === event.from;
@@ -154,7 +152,7 @@ export function useWebSocket() {
         case "GroupMessageReceived": {
           // Sender sent a message — clear their typing indicator.
           setTyping(event.from, `group:${event.group_id}`, false);
-          tickGroupMessage();
+          void queryClient.invalidateQueries({ queryKey: ["messages", "group", event.group_id] });
           void queryClient.invalidateQueries({ queryKey: ["groups"] });
           const isActiveGroup =
             activeConversation?.type === "group" && activeConversation.groupId === event.group_id;
@@ -218,9 +216,9 @@ export function useWebSocket() {
           break;
 
         case "OfflineMessagesReceived":
-          // Relay delivered offline messages — refetch conversations and messages
-          // so the user sees them immediately if they have a chat open.
-          tickInboundMessage();
+          // Relay delivered offline messages — refetch all message queries so the
+          // user sees them immediately if they have a chat open.
+          void queryClient.invalidateQueries({ queryKey: ["messages"] });
           void queryClient.invalidateQueries({ queryKey: ["conversations"] });
           void notify("offline-relay", "You have new messages while you were away", null);
           break;
@@ -234,8 +232,9 @@ export function useWebSocket() {
 
         case "DirectMessageStatusChanged":
           // A message's delivery status changed (e.g. OutboundFailure after send)
-          // Refetch messages so the UI updates the status icon (✓✓ → ⏰)
-          tickInboundMessage();
+          // Refetch messages so the UI updates the status icon (✓✓ → ⏰).
+          // We don't know the peer DID from this event, so invalidate all message queries.
+          void queryClient.invalidateQueries({ queryKey: ["messages"] });
           void queryClient.invalidateQueries({ queryKey: ["conversations"] });
           break;
 
@@ -252,15 +251,12 @@ export function useWebSocket() {
   }, [
     nodeStatus,
     queryClient,
-    tickInboundMessage,
-    tickGroupMessage,
     setPresence,
     setPeerName,
     markUnread,
     markRead,
     setActiveConversation,
     activeConversation,
-    localDid,
     setTyping,
   ]);
 }

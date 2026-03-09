@@ -11,12 +11,6 @@ const TYPING_EXPIRY_MS = 3_000;
 interface MessagingStore {
   activeConversation: ActiveConversation | null;
   setActiveConversation: (conv: ActiveConversation | null) => void;
-  // Monotonically incrementing counter — bumped on DirectMessageReceived.
-  inboundMessageTick: number;
-  tickInboundMessage: () => void;
-  // Same pattern for group messages.
-  groupMessageTick: number;
-  tickGroupMessage: () => void;
   // Presence tracking: Map from DID to online status
   presenceMap: Map<string, boolean>;
   setPresence: (did: string, online: boolean) => void;
@@ -41,11 +35,26 @@ const typingExpireTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export const useMessagingStore = create<MessagingStore>((set) => ({
   activeConversation: null,
-  setActiveConversation: (activeConversation) => set({ activeConversation }),
-  inboundMessageTick: 0,
-  tickInboundMessage: () => set((s) => ({ inboundMessageTick: s.inboundMessageTick + 1 })),
-  groupMessageTick: 0,
-  tickGroupMessage: () => set((s) => ({ groupMessageTick: s.groupMessageTick + 1 })),
+  setActiveConversation: (activeConversation) =>
+    set((s) => {
+      // When switching away from a conversation, clear any stale typing indicators
+      // and cancel their auto-expiry timers so they don't bleed into the new view.
+      const newTypingUsers = new Map(s.typingUsers);
+      if (s.activeConversation) {
+        const oldKey =
+          s.activeConversation.type === "dm"
+            ? s.activeConversation.peerId
+            : `group:${s.activeConversation.groupId}`;
+        newTypingUsers.delete(oldKey);
+        for (const [timerKey, timer] of typingExpireTimers) {
+          if (timerKey.startsWith(`${oldKey}::`)) {
+            clearTimeout(timer);
+            typingExpireTimers.delete(timerKey);
+          }
+        }
+      }
+      return { activeConversation, typingUsers: newTypingUsers };
+    }),
   presenceMap: new Map(),
   setPresence: (did, online) =>
     set((s) => {

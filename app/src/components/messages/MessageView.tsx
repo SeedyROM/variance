@@ -75,25 +75,19 @@ export function MessageView({ peerDid }: MessageViewProps) {
   const [hasMore, setHasMore] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
 
-  const { data: messages = [], refetch } = useQuery({
+  const { data: messages = [] } = useQuery({
     queryKey: ["messages", peerDid],
-    queryFn: () => messagesApi.getDirect(peerDid),
+    queryFn: async () => {
+      const msgs = await messagesApi.getDirect(peerDid);
+      // Fetching messages updates last_read_at on the server — refresh the
+      // conversations list so the unread badge clears immediately.
+      void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      return msgs;
+    },
     staleTime: Infinity,
     refetchOnWindowFocus: false,
     refetchOnMount: "always",
   });
-
-  // When a DirectMessageReceived WebSocket event arrives, useWebSocket bumps this
-  // tick. We call our own refetch() here — using the peerDid already wired into
-  // this query — instead of relying on query-key matching in the WebSocket handler.
-  const inboundTick = useMessagingStore((s) => s.inboundMessageTick);
-  useEffect(() => {
-    if (inboundTick > 0) {
-      void refetch();
-    }
-    // refetch is a stable function reference from React Query; omit from deps intentionally.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inboundTick]);
 
   const typingUsersSet = useMessagingStore((s) => s.typingUsers.get(peerDid));
   const typingUsers = typingUsersSet ? Array.from(typingUsersSet) : [];

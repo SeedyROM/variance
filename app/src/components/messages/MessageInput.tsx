@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -21,6 +21,15 @@ export function MessageInput({ peerDid }: MessageInputProps) {
   const lastTypingSentRef = useRef<number>(0);
   // Stable ref so handleKeyDown can always call the latest send without stale closures
   const sendRef = useRef<() => void>(() => {});
+
+  // Cancel any pending stop-typing timer on unmount to avoid firing stale events
+  // for the old peer after a conversation switch.
+  useEffect(
+    () => () => {
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    },
+    []
+  );
   const queryClient = useQueryClient();
   const localDid = useIdentityStore((s) => s.did);
 

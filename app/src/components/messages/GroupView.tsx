@@ -45,6 +45,15 @@ function GroupMessageInput({ groupId }: { groupId: string }) {
   const lastTypingSentRef = useRef<number>(0);
   const addToast = useToastStore((s) => s.addToast);
 
+  // Cancel any pending stop-typing timer on unmount to avoid firing stale events
+  // for the old group after a conversation switch.
+  useEffect(
+    () => () => {
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    },
+    []
+  );
+
   const sendMutation = useMutation({
     mutationFn: () => groupsApi.sendMessage(groupId, text.trim()),
     onSuccess: () => {
@@ -166,7 +175,6 @@ export function GroupView({ groupId }: GroupViewProps) {
   const localDid = useIdentityStore((s) => s.did);
   const presenceMap = useMessagingStore((s) => s.presenceMap);
   const setActiveConversation = useMessagingStore((s) => s.setActiveConversation);
-  const groupMessageTick = useMessagingStore((s) => s.groupMessageTick);
   const typingUsersSet = useMessagingStore((s) => s.typingUsers.get(`group:${groupId}`));
   const typingUsers = typingUsersSet ? Array.from(typingUsersSet) : [];
   const queryClient = useQueryClient();
@@ -192,7 +200,7 @@ export function GroupView({ groupId }: GroupViewProps) {
     staleTime: 30_000,
   });
 
-  const { data: messages = [], refetch } = useQuery({
+  const { data: messages = [] } = useQuery({
     queryKey: ["messages", "group", groupId],
     queryFn: async () => {
       const msgs = await messagesApi.getGroup(groupId);
@@ -205,13 +213,6 @@ export function GroupView({ groupId }: GroupViewProps) {
     refetchOnWindowFocus: false,
     refetchOnMount: "always",
   });
-
-  // Refetch when a GroupMessageReceived WS event arrives for this group.
-  useEffect(() => {
-    if (groupMessageTick > 0) void refetch();
-    // refetch is stable; omit from deps intentionally.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupMessageTick]);
 
   // On mount, jump to bottom immediately.
   useEffect(() => {

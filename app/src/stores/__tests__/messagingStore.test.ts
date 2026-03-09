@@ -4,8 +4,6 @@ import { useMessagingStore } from "../messagingStore";
 beforeEach(() => {
   useMessagingStore.setState({
     activeConversation: null,
-    inboundMessageTick: 0,
-    groupMessageTick: 0,
     presenceMap: new Map(),
     peerNames: new Map(),
     unreadConversations: new Set(),
@@ -73,5 +71,26 @@ describe("setActiveConversation", () => {
     useMessagingStore.getState().setActiveConversation({ type: "dm", peerId: "did:x" });
     useMessagingStore.getState().setActiveConversation(null);
     expect(useMessagingStore.getState().activeConversation).toBeNull();
+  });
+
+  it("clears typing indicators for previous DM conversation on switch", () => {
+    const { setActiveConversation, setTyping } = useMessagingStore.getState();
+    setActiveConversation({ type: "dm", peerId: "did:alice" });
+    setTyping("did:alice", "did:alice", true);
+    expect(useMessagingStore.getState().typingUsers.get("did:alice")?.has("did:alice")).toBe(true);
+
+    setActiveConversation({ type: "dm", peerId: "did:bob" });
+    expect(useMessagingStore.getState().typingUsers.get("did:alice")).toBeUndefined();
+  });
+
+  it("clears typing indicators for previous group conversation on switch", () => {
+    const { setActiveConversation, setTyping } = useMessagingStore.getState();
+    setActiveConversation({ type: "group", groupId: "group-1" });
+    setTyping("did:alice", "group:group-1", true);
+    setTyping("did:bob", "group:group-1", true);
+    expect(useMessagingStore.getState().typingUsers.get("group:group-1")?.size).toBe(2);
+
+    setActiveConversation(null);
+    expect(useMessagingStore.getState().typingUsers.get("group:group-1")).toBeUndefined();
   });
 });

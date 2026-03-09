@@ -41,8 +41,11 @@ export function ConversationList() {
 
   const deleteMutation = useMutation({
     mutationFn: (peerDid: string) => conversationsApi.delete(peerDid),
-    onSuccess: () => {
+    onSuccess: (_data, peerDid) => {
       void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      if (activeConversation?.type === "dm" && activeConversation.peerId === peerDid) {
+        setActiveConversation(null);
+      }
     },
   });
 
