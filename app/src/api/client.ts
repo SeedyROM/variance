@@ -212,6 +212,22 @@ export const typingApi = {
   get: (recipient: string) => request<TypingUsers>(`/typing/${encodeURIComponent(recipient)}`),
 };
 
+// ===== Receipts =====
+
+export const receiptsApi = {
+  sendRead: (messageId: string, senderDid: string) =>
+    request<{ message_id: string }>("/receipts/read", {
+      method: "POST",
+      body: JSON.stringify({ message_id: messageId, sender_did: senderDid }),
+    }),
+
+  sendDelivered: (messageId: string, senderDid: string) =>
+    request<{ message_id: string }>("/receipts/delivered", {
+      method: "POST",
+      body: JSON.stringify({ message_id: messageId, sender_did: senderDid }),
+    }),
+};
+
 // ===== Presence =====
 
 export const presenceApi = {

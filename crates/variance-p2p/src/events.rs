@@ -6,7 +6,9 @@ use libp2p::PeerId;
 use tokio::sync::broadcast;
 use variance_proto::identity_proto::{IdentityRequest, IdentityResponse};
 use variance_proto::media_proto::SignalingMessage;
-use variance_proto::messaging_proto::{DirectMessage, GroupMessage, OfflineMessageEnvelope};
+use variance_proto::messaging_proto::{
+    DirectMessage, GroupMessage, OfflineMessageEnvelope, ReadReceipt,
+};
 
 /// Events from the identity protocol
 #[allow(clippy::large_enum_variant)]
@@ -146,6 +148,13 @@ pub enum TypingEvent {
     },
 }
 
+/// Events from read receipt delivery
+#[derive(Debug, Clone)]
+pub enum ReceiptEvent {
+    /// A peer sent us a read receipt for one of our messages.
+    Received { receipt: ReadReceipt },
+}
+
 /// Events from username rename notifications
 #[derive(Debug, Clone)]
 pub enum RenameEvent {
@@ -205,6 +214,7 @@ pub struct EventChannels {
     pub typing: broadcast::Sender<TypingEvent>,
     pub rename: broadcast::Sender<RenameEvent>,
     pub group_sync: broadcast::Sender<GroupSyncEvent>,
+    pub receipts: broadcast::Sender<ReceiptEvent>,
 }
 
 impl EventChannels {
@@ -218,6 +228,7 @@ impl EventChannels {
         let (typing_tx, _) = broadcast::channel(buffer_size);
         let (rename_tx, _) = broadcast::channel(buffer_size);
         let (group_sync_tx, _) = broadcast::channel(buffer_size);
+        let (receipts_tx, _) = broadcast::channel(buffer_size);
 
         Self {
             identity: identity_tx,
@@ -228,6 +239,7 @@ impl EventChannels {
             typing: typing_tx,
             rename: rename_tx,
             group_sync: group_sync_tx,
+            receipts: receipts_tx,
         }
     }
 
@@ -271,6 +283,11 @@ impl EventChannels {
         self.group_sync.subscribe()
     }
 
+    /// Subscribe to receipt events
+    pub fn subscribe_receipts(&self) -> broadcast::Receiver<ReceiptEvent> {
+        self.receipts.subscribe()
+    }
+
     /// Send an identity event
     pub fn send_identity(&self, event: IdentityEvent) {
         let _ = self.identity.send(event);
@@ -309,6 +326,11 @@ impl EventChannels {
     /// Send a group sync event
     pub fn send_group_sync(&self, event: GroupSyncEvent) {
         let _ = self.group_sync.send(event);
+    }
+
+    /// Send a receipt event
+    pub fn send_receipt(&self, event: ReceiptEvent) {
+        let _ = self.receipts.send(event);
     }
 }
 

@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 use variance_proto::identity_proto::{IdentityFound, IdentityRequest, IdentityResponse};
 use variance_proto::media_proto::SignalingMessage;
 use variance_proto::messaging_proto::{
-    DirectMessage, GroupMessage, GroupSyncResponse, TypingIndicator,
+    DirectMessage, GroupMessage, GroupSyncResponse, ReadReceipt, TypingIndicator,
 };
 
 use crate::error::Result;
@@ -161,6 +161,12 @@ pub enum NodeCommand {
     RespondGroupSync {
         request_id: libp2p::request_response::InboundRequestId,
         response: GroupSyncResponse,
+    },
+
+    /// Send a read receipt to the original message sender (fire-and-forget).
+    SendReceipt {
+        peer_did: String,
+        receipt: ReadReceipt,
     },
 }
 
@@ -551,6 +557,18 @@ impl NodeHandle {
             .map_err(|_| crate::error::Error::Protocol {
                 message: "Failed to receive response from node".to_string(),
             })?
+    }
+
+    /// Send a read receipt to the original message sender (fire-and-forget).
+    ///
+    /// Failures are silently dropped — receipt delivery is best-effort.
+    pub async fn send_receipt(&self, peer_did: String, receipt: ReadReceipt) -> Result<()> {
+        self.command_tx
+            .send(NodeCommand::SendReceipt { peer_did, receipt })
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to send command to node".to_string(),
+            })
     }
 
     /// Respond to an inbound group sync request with messages from storage.

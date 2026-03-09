@@ -24,6 +24,15 @@ pub(super) async fn send_delivered_receipt(
             message: e.to_string(),
         })?;
 
+    // Best-effort P2P delivery to the original sender
+    if let Err(e) = state
+        .node_handle
+        .send_receipt(req.sender_did, receipt.clone())
+        .await
+    {
+        tracing::debug!("Failed to deliver receipt (best-effort): {}", e);
+    }
+
     Ok(Json(ReceiptResponse {
         message_id: receipt.message_id,
         reader_did: receipt.reader_did,
@@ -43,6 +52,15 @@ pub(super) async fn send_read_receipt(
         .map_err(|e| Error::App {
             message: e.to_string(),
         })?;
+
+    // Best-effort P2P delivery to the original sender
+    if let Err(e) = state
+        .node_handle
+        .send_receipt(req.sender_did, receipt.clone())
+        .await
+    {
+        tracing::debug!("Failed to deliver receipt (best-effort): {}", e);
+    }
 
     Ok(Json(ReceiptResponse {
         message_id: receipt.message_id,

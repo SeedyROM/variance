@@ -18,8 +18,8 @@ pub use commands::{NodeCommand, NodeHandle};
 pub use config::{BootstrapPeer, Config};
 pub use error::{Error, Result};
 pub use events::{
-    EventChannels, GroupSyncEvent, IdentityEvent, OfflineMessageEvent, P2pEvent, RenameEvent,
-    SignalingEvent, TypingEvent,
+    EventChannels, GroupSyncEvent, IdentityEvent, OfflineMessageEvent, P2pEvent, ReceiptEvent,
+    RenameEvent, SignalingEvent, TypingEvent,
 };
 pub use node::Node;
 

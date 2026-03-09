@@ -410,6 +410,9 @@ impl AppState {
                     NodeCommand::RespondGroupSync { .. } => {
                         // Response sent on stored channel, nothing to do in mock
                     }
+                    NodeCommand::SendReceipt { .. } => {
+                        // Fire-and-forget, no response channel
+                    }
                 }
             }
         });

@@ -133,6 +133,14 @@ pub enum WsMessage {
         recipient: String,
     },
 
+    // Read receipts
+    ReceiptRead {
+        message_id: String,
+    },
+    ReceiptDelivered {
+        message_id: String,
+    },
+
     // Presence/identity
     PresenceUpdated {
         did: String,

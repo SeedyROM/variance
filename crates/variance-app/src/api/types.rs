@@ -60,6 +60,8 @@ pub struct SignalingResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SendReceiptRequest {
     pub message_id: String,
+    /// DID of the original message sender. Required for P2P receipt delivery.
+    pub sender_did: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

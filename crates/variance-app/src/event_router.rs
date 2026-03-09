@@ -12,12 +12,13 @@ use variance_media::{CallManager, SignalingHandler};
 use variance_messaging::{
     direct::DirectMessageHandler,
     mls::MlsGroupHandler,
+    receipts::ReceiptHandler,
     storage::{LocalMessageStorage, MessageStorage},
     typing::TypingHandler,
 };
 use variance_p2p::{
-    EventChannels, GroupSyncEvent, IdentityEvent, NodeHandle, OfflineMessageEvent, RenameEvent,
-    SignalingEvent, TypingEvent,
+    EventChannels, GroupSyncEvent, IdentityEvent, NodeHandle, OfflineMessageEvent, ReceiptEvent,
+    RenameEvent, SignalingEvent, TypingEvent,
 };
 
 /// All dependencies needed by the EventRouter, grouped to avoid too-many-arguments.
@@ -37,6 +38,8 @@ pub struct EventRouterDeps {
     /// Identity cache — evicted on peer disconnect so reconnecting peers with
     /// new keys don't get served stale identity documents.
     pub identity_cache: Arc<MultiLayerCache>,
+    /// Receipt handler — stores inbound receipts from peers.
+    pub receipts: Arc<ReceiptHandler>,
 }
 
 /// Bridges P2P events to WebSocket clients
@@ -52,6 +55,7 @@ pub struct EventRouter {
     storage: Arc<LocalMessageStorage>,
     local_did: String,
     identity_cache: Arc<MultiLayerCache>,
+    receipts: Arc<ReceiptHandler>,
 }
 
 impl EventRouter {
@@ -68,6 +72,7 @@ impl EventRouter {
             storage,
             local_did,
             identity_cache,
+            receipts,
         } = deps;
 
         Self {
@@ -82,6 +87,7 @@ impl EventRouter {
             storage,
             local_did,
             identity_cache,
+            receipts,
         }
     }
 
@@ -560,6 +566,38 @@ impl EventRouter {
             }
 
             warn!("EventRouter: Typing event listener ended");
+        });
+
+        // Spawn task for receipt events
+        let ws_manager_receipts = self.ws_manager.clone();
+        let receipts = self.receipts.clone();
+        let events_clone = events.clone();
+        tokio::spawn(async move {
+            let mut rx = events_clone.subscribe_receipts();
+            debug!("EventRouter: Started receipt event listener");
+
+            while let Ok(ReceiptEvent::Received { receipt }) = rx.recv().await {
+                let message_id = receipt.message_id.clone();
+                let status = receipt.status;
+
+                if let Err(e) = receipts.receive_receipt(receipt).await {
+                    warn!(
+                        "EventRouter: Failed to store receipt for {}: {}",
+                        message_id, e
+                    );
+                    continue;
+                }
+
+                use variance_proto::messaging_proto::ReceiptStatus;
+                let msg = if status == ReceiptStatus::Read as i32 {
+                    WsMessage::ReceiptRead { message_id }
+                } else {
+                    WsMessage::ReceiptDelivered { message_id }
+                };
+                ws_manager_receipts.broadcast(msg);
+            }
+
+            warn!("EventRouter: Receipt event listener ended");
         });
 
         // Spawn task for rename events
@@ -1074,6 +1112,7 @@ mod tests {
             storage: state.storage.clone(),
             local_did: state.local_did.clone(),
             identity_cache: state.identity_cache.clone(),
+            receipts: state.receipts.clone(),
         })
     }
 
@@ -1129,6 +1168,7 @@ mod tests {
             storage: state.storage.clone(),
             local_did: state.local_did.clone(),
             identity_cache: state.identity_cache.clone(),
+            receipts: state.receipts.clone(),
         });
         let events = EventChannels::default();
 

@@ -49,4 +49,7 @@ pub struct VarianceBehaviour {
 
     /// Custom protocol: Group history sync (P2P epoch-based catch-up)
     pub group_sync: request_response::Behaviour<crate::protocols::messaging::GroupSyncCodec>,
+
+    /// Custom protocol: Read receipts (fire-and-forget)
+    pub receipts: request_response::Behaviour<crate::protocols::messaging::ReceiptCodec>,
 }
