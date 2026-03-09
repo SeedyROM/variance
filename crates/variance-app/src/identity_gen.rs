@@ -8,7 +8,7 @@ use crate::state::IdentityFile;
 
 pub fn derive_signing_key(mnemonic: &Mnemonic) -> SigningKey {
     let seed = mnemonic.to_seed("");
-    SigningKey::from_bytes(&seed[..32].try_into().unwrap())
+    SigningKey::from_bytes(&seed[..32].try_into().expect("seed is at least 32 bytes"))
 }
 
 pub fn did_from_verifying_key(key: &VerifyingKey) -> String {
@@ -18,7 +18,9 @@ pub fn did_from_verifying_key(key: &VerifyingKey) -> String {
 /// Generate a new identity with a random BIP39 mnemonic.
 ///
 /// Returns the identity file and the 12-word mnemonic phrase (space-separated).
-pub fn generate() -> Result<(IdentityFile, String)> {
+/// If a passphrase is provided, the mnemonic is encrypted and stored in the
+/// identity file so it can be recovered later via the Settings UI.
+pub fn generate(passphrase: Option<&str>) -> Result<(IdentityFile, String)> {
     let mut entropy = [0u8; 16];
     OsRng.fill_bytes(&mut entropy);
     let mnemonic = Mnemonic::from_entropy_in(Language::English, &entropy)
@@ -31,6 +33,15 @@ pub fn generate() -> Result<(IdentityFile, String)> {
     let did = did_from_verifying_key(&verifying_key);
 
     let phrase = mnemonic.to_string();
+
+    let encrypted_mnemonic = match passphrase {
+        Some(pp) if !pp.is_empty() => {
+            let ciphertext = crate::identity_crypto::encrypt(&phrase, pp)?;
+            Some(hex::encode(ciphertext))
+        }
+        _ => None,
+    };
+
     let identity = IdentityFile {
         did,
         signing_key: hex::encode(signing_key.to_bytes()),
@@ -42,6 +53,7 @@ pub fn generate() -> Result<(IdentityFile, String)> {
         discriminator: None,
         created_at: chrono::Utc::now().to_rfc3339(),
         ipns_key: None,
+        encrypted_mnemonic,
     };
 
     Ok((identity, phrase))
@@ -76,6 +88,7 @@ pub fn recover(mnemonic_phrase: &str) -> Result<IdentityFile> {
         discriminator: None,
         created_at: chrono::Utc::now().to_rfc3339(),
         ipns_key: None,
+        encrypted_mnemonic: None,
     })
 }
 
@@ -85,7 +98,7 @@ mod tests {
 
     #[test]
     fn test_round_trip() {
-        let (identity, phrase) = generate().unwrap();
+        let (identity, phrase) = generate(None).unwrap();
         let recovered = recover(&phrase).unwrap();
         assert_eq!(identity.did, recovered.did);
         assert_eq!(identity.signing_key, recovered.signing_key);
@@ -115,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_generate_produces_valid_olm_account_pickle() {
-        let (identity, _phrase) = generate().unwrap();
+        let (identity, _phrase) = generate(None).unwrap();
         let pickle: vodozemac::olm::AccountPickle =
             serde_json::from_str(&identity.olm_account_pickle).unwrap();
         let account = Account::from_pickle(pickle);

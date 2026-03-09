@@ -10,6 +10,7 @@ use variance_messaging::{
     direct::DirectMessageHandler, mls::MlsGroupHandler, offline::OfflineRelayHandler,
     receipts::ReceiptHandler, storage::LocalMessageStorage, typing::TypingHandler,
 };
+use zeroize::Zeroizing;
 
 use crate::websocket::WebSocketManager;
 
@@ -38,6 +39,10 @@ pub struct IdentityFile {
     /// Absent in pre-IPFS identities; set on first publish.
     #[serde(default)]
     pub ipns_key: Option<String>,
+    /// Hex-encoded AES-256-GCM ciphertext of the BIP39 mnemonic phrase.
+    /// Only present when the identity was created with a passphrase.
+    #[serde(default)]
+    pub encrypted_mnemonic: Option<String>,
 }
 
 /// Application state shared across HTTP handlers
@@ -105,7 +110,8 @@ pub struct AppState {
 
     /// Passphrase used to decrypt/re-encrypt the identity file (None for plaintext files).
     /// Stored for the session so identity file writes (OTK refresh, username) stay encrypted.
-    pub identity_passphrase: Option<Arc<String>>,
+    /// Wrapped in `Zeroizing` so the passphrase is scrubbed from heap memory on drop.
+    pub identity_passphrase: Option<Arc<Zeroizing<String>>>,
 
     /// Path to the on-disk config file (`base_dir/config.toml`) used for relay management.
     pub config_path: PathBuf,
@@ -313,7 +319,7 @@ impl AppState {
             identity_cache,
             identity_path: identity_path.to_path_buf(),
             ipfs_storage,
-            identity_passphrase: passphrase.map(|p| Arc::new(p.to_string())),
+            identity_passphrase: passphrase.map(|p| Arc::new(Zeroizing::new(p.to_string()))),
             config_path,
             mailbox_token,
         })

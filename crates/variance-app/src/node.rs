@@ -174,8 +174,20 @@ pub async fn start_node(
     let app_state = AppState::from_identity(
         &identity,
         identity_path,
-        config.storage.message_db_path.to_str().unwrap(),
-        config.storage.identity_cache_dir.to_str().unwrap(),
+        config
+            .storage
+            .message_db_path
+            .to_str()
+            .ok_or_else(|| crate::Error::App {
+                message: "Message DB path contains invalid UTF-8".to_string(),
+            })?,
+        config
+            .storage
+            .identity_cache_dir
+            .to_str()
+            .ok_or_else(|| crate::Error::App {
+                message: "Identity cache dir contains invalid UTF-8".to_string(),
+            })?,
         node_handle,
         event_channels.clone(),
         ipfs_storage,

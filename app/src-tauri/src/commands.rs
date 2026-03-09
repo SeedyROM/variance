@@ -45,7 +45,7 @@ pub async fn generate_identity(
     output_path: String,
     passphrase: Option<String>,
 ) -> Result<GeneratedIdentity, String> {
-    let (identity, phrase) = identity_gen::generate().map_err(|e| e.to_string())?;
+    let (identity, phrase) = identity_gen::generate(passphrase.as_deref()).map_err(|e| e.to_string())?;
 
     let dir = std::path::Path::new(&output_path).parent().and_then(|p| {
         if p == std::path::Path::new("") {
@@ -277,10 +277,10 @@ pub async fn change_passphrase(
         .ok_or_else(|| "Node is not running".to_string())?;
 
     let identity_path = app_state.identity_path.clone();
-    let stored_passphrase = app_state
+    let stored_passphrase: Option<String> = app_state
         .identity_passphrase
         .as_ref()
-        .map(|s| s.as_ref().clone());
+        .map(|s| s.as_str().to_string());
     drop(app_state_guard);
 
     // Verify current passphrase matches

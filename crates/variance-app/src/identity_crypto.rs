@@ -17,6 +17,7 @@ use aes_gcm::{
     AeadCore, Aes256Gcm, Key, KeyInit,
 };
 use argon2::{password_hash::SaltString, Algorithm, Argon2, Params, Version};
+use zeroize::Zeroize;
 
 const MAGIC: &[u8; 4] = b"VEID";
 const VERSION: u8 = 1;
@@ -35,7 +36,7 @@ pub fn encrypt(plaintext: &str, passphrase: &str) -> anyhow::Result<Vec<u8>> {
     let argon2 = Argon2::new(
         Algorithm::Argon2id,
         Version::V0x13,
-        Params::new(65536, 3, 4, None).unwrap(),
+        Params::new(65536, 3, 4, None).expect("hardcoded Argon2 params are valid"),
     );
     let mut key_bytes = [0u8; 32];
     argon2
@@ -49,6 +50,7 @@ pub fn encrypt(plaintext: &str, passphrase: &str) -> anyhow::Result<Vec<u8>> {
     let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
     let cipher = Aes256Gcm::new(key);
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    key_bytes.zeroize();
 
     let ciphertext = cipher
         .encrypt(&nonce, plaintext.as_bytes())
@@ -115,7 +117,7 @@ pub fn decrypt(data: &[u8], passphrase: &str) -> anyhow::Result<String> {
     let argon2 = Argon2::new(
         Algorithm::Argon2id,
         Version::V0x13,
-        Params::new(65536, 3, 4, None).unwrap(),
+        Params::new(65536, 3, 4, None).expect("hardcoded Argon2 params are valid"),
     );
     let mut key_bytes = [0u8; 32];
     argon2
@@ -125,6 +127,7 @@ pub fn decrypt(data: &[u8], passphrase: &str) -> anyhow::Result<String> {
     let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
     let cipher = Aes256Gcm::new(key);
     let nonce = aes_gcm::Nonce::from_slice(nonce_bytes);
+    key_bytes.zeroize();
 
     let plaintext = cipher
         .decrypt(nonce, ciphertext)

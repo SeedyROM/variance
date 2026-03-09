@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
+import remarkGfm from "remark-gfm";
 
 import type { GroupMessage, ReactionSummary } from "../../api/types";
 import { cn } from "../../utils/cn";
@@ -153,7 +154,23 @@ export function GroupMessageBubble({
                   isOwn ? "prose-invert" : "dark:prose-invert"
                 )}
               >
-                <ReactMarkdown remarkPlugins={[remarkBreaks]}>{message.text}</ReactMarkdown>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm, remarkBreaks]}
+                  components={{
+                    a: ({ href, children }) => (
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline cursor-pointer break-all"
+                      >
+                        {children}
+                      </a>
+                    ),
+                  }}
+                >
+                  {message.text}
+                </ReactMarkdown>
               </div>
             </div>
           </div>

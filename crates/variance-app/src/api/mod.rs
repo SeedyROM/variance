@@ -16,6 +16,7 @@ mod config;
 mod conversations;
 mod groups;
 mod identity;
+mod rate_limit;
 mod social;
 
 use crate::{state::AppState, Error};
@@ -54,6 +55,7 @@ pub fn create_router(state: AppState) -> Router {
             get(identity::resolve_username),
         )
         .route("/identity/passphrase", post(identity::change_passphrase))
+        .route("/identity/mnemonic", post(identity::get_mnemonic))
         // Conversation endpoints
         .route("/conversations", get(conversations::list_conversations))
         .route("/conversations", post(conversations::start_conversation))
@@ -137,6 +139,7 @@ pub fn create_router(state: AppState) -> Router {
             get(config::get_retention).put(config::set_retention),
         )
         .layer(cors)
+        .layer(rate_limit::LocalRateLimitLayer::new(500, 10))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -148,6 +151,7 @@ impl IntoResponse for Error {
         let (status, message) = match self {
             Error::BadRequest { message } => (StatusCode::BAD_REQUEST, message),
             Error::NotFound { message } => (StatusCode::NOT_FOUND, message),
+            Error::Unauthorized { message } => (StatusCode::UNAUTHORIZED, message),
             Error::SessionRequired { message } => (StatusCode::UNPROCESSABLE_ENTITY, message),
             Error::App { message } => (StatusCode::INTERNAL_SERVER_ERROR, message),
         };
@@ -693,5 +697,38 @@ mod tests {
         assert_eq!(json["username"], "alice");
         assert!(json["discriminator"].as_u64().is_some());
         assert!(json["display_name"].as_str().unwrap().starts_with("alice#"));
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_returns_429() {
+        use axum::routing::get as get_route;
+
+        // Minimal router with a low limit (3 req / 60s) to trigger 429 quickly
+        let app = Router::new()
+            .route("/ping", get_route(|| async { "pong" }))
+            .layer(rate_limit::LocalRateLimitLayer::new(3, 60));
+
+        // First 3 requests should succeed
+        for _ in 0..3 {
+            let resp = app
+                .clone()
+                .oneshot(Request::builder().uri("/ping").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        // 4th request should be rate-limited
+        let resp = app
+            .oneshot(Request::builder().uri("/ping").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "Rate limit exceeded");
     }
 }

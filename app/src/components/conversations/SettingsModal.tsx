@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AtSign, Copy, Check, QrCode, Trash2, Lock } from "lucide-react";
+import { AtSign, Copy, Check, QrCode, Trash2, Lock, KeyRound } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { Dialog } from "../ui/Dialog";
 import { Button } from "../ui/Button";
@@ -9,7 +9,7 @@ import { Avatar } from "../ui/Avatar";
 import { Input } from "../ui/Input";
 import { ChangeUsernameDialog } from "./ChangeUsernameDialog";
 import { ShareContactModal } from "./ShareContactModal";
-import { configApi } from "../../api/client";
+import { configApi, identityApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
 import { useAppStore } from "../../stores/appStore";
 import { useToastStore } from "../../stores/toastStore";
@@ -46,6 +46,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [confirmPassphrase, setConfirmPassphrase] = useState("");
   const [changingPassphrase, setChangingPassphrase] = useState(false);
 
+  // Mnemonic viewer state
+  const [mnemonicWords, setMnemonicWords] = useState<string[] | null>(null);
+  const [mnemonicPassphrase, setMnemonicPassphrase] = useState("");
+  const [loadingMnemonic, setLoadingMnemonic] = useState(false);
+
   const { data: savedRelays = [] } = useQuery({
     queryKey: ["relays"],
     queryFn: configApi.getRelays,
@@ -68,6 +73,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       setCurrentPassphrase("");
       setNewPassphrase("");
       setConfirmPassphrase("");
+      setMnemonicWords(null);
+      setMnemonicPassphrase("");
     }
   }, [open]);
 
@@ -89,6 +96,18 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       addToast(String(e), "error");
     } finally {
       setChangingPassphrase(false);
+    }
+  }
+
+  async function handleViewMnemonic() {
+    setLoadingMnemonic(true);
+    try {
+      const res = await identityApi.getMnemonic(mnemonicPassphrase || null);
+      setMnemonicWords(res.mnemonic);
+    } catch (e) {
+      addToast(String(e), "error");
+    } finally {
+      setLoadingMnemonic(false);
     }
   }
 
@@ -185,7 +204,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               </div>
             </section>
 
-            {/* Passphrase */}
+            {/* Security */}
             <section className="space-y-3">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-surface-400 dark:text-surface-500">
                 Security
@@ -239,6 +258,62 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                       Cancel
                     </Button>
                   </div>
+                </div>
+              )}
+
+              {/* View recovery phrase */}
+              {!mnemonicWords ? (
+                <div className="space-y-2">
+                  <Button
+                    variant="secondary"
+                    size="xs"
+                    onClick={() => {
+                      if (!mnemonicPassphrase) {
+                        addToast("Enter your passphrase first", "error");
+                        return;
+                      }
+                      void handleViewMnemonic();
+                    }}
+                    disabled={loadingMnemonic}
+                    loading={loadingMnemonic}
+                  >
+                    <KeyRound className="h-3.5 w-3.5" />
+                    View recovery phrase
+                  </Button>
+                  <Input
+                    type="password"
+                    placeholder="Enter passphrase to view recovery phrase"
+                    value={mnemonicPassphrase}
+                    onChange={(e) => setMnemonicPassphrase(e.target.value)}
+                  />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="rounded-lg border border-red-400/60 bg-red-50 p-2 dark:bg-red-950/30">
+                    <p className="text-xs font-bold text-red-800 dark:text-red-300">
+                      Do not share these words with anyone.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {mnemonicWords.map((word, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center gap-1.5 rounded-md border border-surface-200 bg-surface-100 px-2 py-1 dark:border-surface-800 dark:bg-surface-800"
+                      >
+                        <span className="w-4 text-xs text-surface-400">{i + 1}</span>
+                        <span className="text-xs font-mono font-medium text-surface-900 dark:text-surface-50">
+                          {word}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => setMnemonicWords(null)}
+                  >
+                    Hide
+                  </Button>
                 </div>
               )}
             </section>

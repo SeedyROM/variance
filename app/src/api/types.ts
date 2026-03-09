@@ -49,7 +49,7 @@ export interface DirectMessage {
   text: string;
   timestamp: number;
   reply_to?: string;
-  status?: "sent" | "pending" | "failed";
+  status?: "sent" | "pending" | "failed" | "delivered" | "read";
   sender_username?: string;
   metadata?: Record<string, string>;
 }
