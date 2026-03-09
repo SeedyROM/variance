@@ -6,6 +6,7 @@
 use crate::websocket::{WebSocketManager, WsMessage};
 use std::sync::Arc;
 use tracing::{debug, warn};
+use variance_identity::cache::MultiLayerCache;
 use variance_identity::username::UsernameRegistry;
 use variance_media::{CallManager, SignalingHandler};
 use variance_messaging::{
@@ -33,6 +34,9 @@ pub struct EventRouterDeps {
     pub storage: Arc<LocalMessageStorage>,
     /// Local DID — key under which MLS state is persisted.
     pub local_did: String,
+    /// Identity cache — evicted on peer disconnect so reconnecting peers with
+    /// new keys don't get served stale identity documents.
+    pub identity_cache: Arc<MultiLayerCache>,
 }
 
 /// Bridges P2P events to WebSocket clients
@@ -47,6 +51,7 @@ pub struct EventRouter {
     typing: Arc<TypingHandler>,
     storage: Arc<LocalMessageStorage>,
     local_did: String,
+    identity_cache: Arc<MultiLayerCache>,
 }
 
 impl EventRouter {
@@ -62,6 +67,7 @@ impl EventRouter {
             typing,
             storage,
             local_did,
+            identity_cache,
         } = deps;
 
         Self {
@@ -75,6 +81,7 @@ impl EventRouter {
             typing,
             storage,
             local_did,
+            identity_cache,
         }
     }
 
@@ -775,6 +782,7 @@ impl EventRouter {
         let username_registry = self.username_registry;
         let mls_groups_identity = self.mls_groups;
         let storage_identity = self.storage;
+        let identity_cache = self.identity_cache;
         tokio::spawn(async move {
             let mut rx = events.subscribe_identity();
             debug!("EventRouter: Started identity event listener");
@@ -826,6 +834,9 @@ impl EventRouter {
                         }
                     }
                     IdentityEvent::PeerOffline { did } => {
+                        // Evict stale identity so a reconnecting peer with new
+                        // keys (e.g. after reinstall) gets a fresh resolution.
+                        identity_cache.remove(&did);
                         let display_name = username_registry.get_display_name(&did);
                         ws_manager.broadcast(WsMessage::PresenceUpdated {
                             did,
@@ -1045,6 +1056,7 @@ mod tests {
             typing: state.typing.clone(),
             storage: state.storage.clone(),
             local_did: state.local_did.clone(),
+            identity_cache: state.identity_cache.clone(),
         })
     }
 
@@ -1099,6 +1111,7 @@ mod tests {
             typing: state.typing.clone(),
             storage: state.storage.clone(),
             local_did: state.local_did.clone(),
+            identity_cache: state.identity_cache.clone(),
         });
         let events = EventChannels::default();
 

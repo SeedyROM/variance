@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Send } from "lucide-react";
 import { useToastStore } from "../../stores/toastStore";
 import { GroupHeader } from "./GroupHeader";
 import { GroupMessageBubble } from "./GroupMessageBubble";
@@ -14,6 +13,7 @@ import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { isDifferentDay } from "../../utils/time";
 import { cn } from "../../utils/cn";
+import { MessageComposerShell, MAX_MESSAGE_LENGTH } from "./MessageComposerShell";
 import type { GroupMessage, GroupMemberInfo, ReactionSummary } from "../../api/types";
 
 /** Returns true when the viewport is narrower than the given pixel width. */
@@ -82,7 +82,7 @@ function GroupMessageInput({ groupId }: { groupId: string }) {
   };
 
   const handleSend = () => {
-    if (!text.trim() || sendMutation.isPending) return;
+    if (!text.trim() || text.length > MAX_MESSAGE_LENGTH || sendMutation.isPending) return;
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
     lastTypingSentRef.current = 0;
     void typingApi.stop({ recipient: groupId, is_group: true });
@@ -97,25 +97,21 @@ function GroupMessageInput({ groupId }: { groupId: string }) {
   };
 
   return (
-    <div className="border-t border-surface-200 bg-surface-50 px-4 py-3 dark:border-surface-800 dark:bg-surface-900">
-      <div className="flex items-center gap-2 rounded-xl border border-surface-300 bg-white px-3 py-2 focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500/20 dark:border-surface-700 dark:bg-surface-950">
-        <input
-          type="text"
-          value={text}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          placeholder="Message group"
-          className="flex-1 min-w-0 text-sm text-surface-900 dark:text-surface-50 bg-transparent focus:outline-none"
-        />
-        <button
-          onClick={handleSend}
-          disabled={!text.trim() || sendMutation.isPending}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary-500 text-white transition-colors hover:bg-primary-600 disabled:opacity-40"
-        >
-          <Send className="h-3.5 w-3.5" />
-        </button>
-      </div>
-    </div>
+    <MessageComposerShell
+      charCount={text.length}
+      isEmpty={!text.trim()}
+      isPending={sendMutation.isPending}
+      onSend={handleSend}
+    >
+      <input
+        type="text"
+        value={text}
+        onChange={handleChange}
+        onKeyDown={handleKeyDown}
+        placeholder="Message group"
+        className="flex-1 min-w-0 text-sm text-surface-900 dark:text-surface-50 bg-transparent focus:outline-none"
+      />
+    </MessageComposerShell>
   );
 }
 

@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use prost::Message;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use tracing::warn;
 use variance_proto::messaging_proto::{
     DirectMessage, Group, GroupMessage, OfflineMessageEnvelope, ReadReceipt,
 };
@@ -77,6 +78,9 @@ pub trait MessageStorage: Send + Sync {
         since: Option<i64>,
         limit: usize,
     ) -> Result<Vec<OfflineMessageEnvelope>>;
+
+    /// Count queued offline messages for a mailbox token (used to enforce per-mailbox limits).
+    async fn count_offline_for_mailbox(&self, mailbox_token: &[u8]) -> Result<usize>;
 
     /// Delete offline message (after delivery)
     async fn delete_offline(&self, message_id: &str) -> Result<()>;
@@ -603,6 +607,12 @@ impl MessageStorage for LocalMessageStorage {
         Ok(())
     }
 
+    async fn count_offline_for_mailbox(&self, mailbox_token: &[u8]) -> Result<usize> {
+        let tree = self.offline_tree()?;
+        let prefix = format!("{}:", hex::encode(mailbox_token));
+        Ok(tree.scan_prefix(prefix.as_bytes()).count())
+    }
+
     async fn fetch_offline(
         &self,
         mailbox_token: &[u8],
@@ -873,9 +883,20 @@ impl MessageStorage for LocalMessageStorage {
         tree.remove(key.as_bytes())
             .map_err(|e| Error::Storage { source: e })?;
 
-        // Also remove the stored plaintext cache entry
-        if let Ok(pt_tree) = self.plaintext_tree() {
-            let _ = pt_tree.remove(message_id.as_bytes());
+        // Also remove the stored plaintext cache entry; log on failure so leaked
+        // entries are visible in logs rather than silently accumulating.
+        match self.plaintext_tree() {
+            Ok(pt_tree) => {
+                if let Err(e) = pt_tree.remove(message_id.as_bytes()) {
+                    warn!("Failed to remove plaintext cache for {}: {}", message_id, e);
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to open plaintext tree while deleting {}: {}",
+                    message_id, e
+                );
+            }
         }
 
         Ok(())

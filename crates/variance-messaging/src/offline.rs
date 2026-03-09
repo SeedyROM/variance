@@ -5,6 +5,10 @@ use variance_proto::messaging_proto::{
     OfflineMessageEnvelope, OfflineMessageRequest, OfflineMessageResponse,
 };
 
+/// Maximum number of messages queued per mailbox token.
+/// Prevents a single mailbox from exhausting relay storage.
+const MAX_QUEUED_PER_MAILBOX: usize = 512;
+
 /// Offline message relay handler
 ///
 /// Implements store-and-forward protocol for offline users.
@@ -48,6 +52,15 @@ impl OfflineRelayHandler {
             return Err(Error::MessageExpired {
                 message_id: "envelope".to_string(),
             });
+        }
+
+        // Enforce per-mailbox queue limit before storing
+        let queued = self
+            .storage
+            .count_offline_for_mailbox(&envelope.mailbox_token)
+            .await?;
+        if queued >= MAX_QUEUED_PER_MAILBOX {
+            return Err(Error::RelayStorageFull);
         }
 
         // Store envelope

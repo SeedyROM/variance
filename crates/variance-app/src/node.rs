@@ -235,6 +235,7 @@ pub async fn start_node(
         typing: app_state.typing.clone(),
         storage: app_state.storage.clone(),
         local_did: app_state.local_did.clone(),
+        identity_cache: app_state.identity_cache.clone(),
     });
     event_router.start((*event_channels).clone());
     tracing::debug!("EventRouter started");

@@ -215,6 +215,15 @@ impl MultiLayerCache {
         Ok(())
     }
 
+    /// Remove a single entry from all cache layers (e.g. when a peer reconnects with new keys).
+    pub fn remove(&self, key: &str) {
+        let mut l1 = self.l1.data.write().unwrap();
+        l1.remove(key);
+        let mut l2 = self.l2.data.write().unwrap();
+        l2.remove(key);
+        let _ = self.l3.db.remove(key.as_bytes());
+    }
+
     /// Evict expired entries from all cache layers
     pub fn evict_expired(&self) {
         self.l1.evict_expired();
