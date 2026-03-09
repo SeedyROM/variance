@@ -5,7 +5,7 @@ use libp2p::StreamProtocol;
 use std::io;
 use variance_proto::messaging_proto::{
     DirectMessage, DirectMessageAck, GroupSyncRequest, GroupSyncResponse, OfflineMessageRequest,
-    OfflineMessageResponse, TypingIndicator,
+    OfflineMessageResponse, ReadReceipt, TypingIndicator,
 };
 
 /// Protocol name for offline message relay
@@ -261,6 +261,90 @@ pub type TypingIndicatorBehaviour = request_response::Behaviour<TypingIndicatorC
 /// Create typing indicator protocol configuration
 pub fn create_typing_indicator_behaviour() -> TypingIndicatorBehaviour {
     let protocol = StreamProtocol::new(TYPING_INDICATOR_PROTOCOL);
+    request_response::Behaviour::new(
+        [(protocol, ProtocolSupport::Full)],
+        request_response::Config::default(),
+    )
+}
+
+/// Protocol name for read receipts
+pub const RECEIPT_PROTOCOL: &str = "/variance/receipts/1.0.0";
+
+/// Receipt codec: sends a ReadReceipt, receives an empty ReadReceipt ack (fire-and-forget).
+#[derive(Debug, Clone, Default)]
+pub struct ReceiptCodec;
+
+#[async_trait]
+impl request_response::Codec for ReceiptCodec {
+    type Protocol = StreamProtocol;
+    type Request = ReadReceipt;
+    type Response = ReadReceipt;
+
+    async fn read_request<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+    ) -> io::Result<Self::Request>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        let mut buf = Vec::new();
+        io.read_to_end(&mut buf).await?;
+        prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    async fn read_response<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+    ) -> io::Result<Self::Response>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        let mut buf = Vec::new();
+        io.read_to_end(&mut buf).await?;
+        prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    async fn write_request<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+        req: Self::Request,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        let mut buf = Vec::new();
+        prost::Message::encode(&req, &mut buf)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        io.write_all(&buf).await?;
+        io.close().await
+    }
+
+    async fn write_response<T>(
+        &mut self,
+        _protocol: &Self::Protocol,
+        io: &mut T,
+        res: Self::Response,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        let mut buf = Vec::new();
+        prost::Message::encode(&res, &mut buf)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        io.write_all(&buf).await?;
+        io.close().await
+    }
+}
+
+/// Receipt protocol behaviour
+pub type ReceiptBehaviour = request_response::Behaviour<ReceiptCodec>;
+
+/// Create receipt protocol configuration
+pub fn create_receipt_behaviour() -> ReceiptBehaviour {
+    let protocol = StreamProtocol::new(RECEIPT_PROTOCOL);
     request_response::Behaviour::new(
         [(protocol, ProtocolSupport::Full)],
         request_response::Config::default(),

@@ -262,6 +262,8 @@ export function useWebSocket() {
         case "ReceiptDelivered":
         case "ReceiptRead":
           void queryClient.invalidateQueries({ queryKey: ["receipts"] });
+          // Refresh messages so the status icon (✓ → ✓✓ → blue ✓✓) updates.
+          void queryClient.invalidateQueries({ queryKey: ["messages"] });
           break;
 
         case "TypingStarted":

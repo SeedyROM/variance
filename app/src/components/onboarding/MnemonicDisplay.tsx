@@ -11,10 +11,14 @@ export function MnemonicDisplay({ words, onConfirmed }: MnemonicDisplayProps) {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="rounded-lg border border-amber-400/40 bg-amber-50 p-3 dark:bg-amber-950/30">
-        <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
-          Write down these 12 words in order. They are the only way to recover your identity. Never
-          share them or store them digitally.
+      <div className="rounded-lg border border-red-400/60 bg-red-50 p-3 dark:bg-red-950/30">
+        <p className="text-sm font-bold text-red-800 dark:text-red-300">
+          This is the only time you will see these words.
+        </p>
+        <p className="mt-1 text-sm text-red-700 dark:text-red-400">
+          Write them down on paper and store them somewhere safe. If you lose your passphrase, these
+          12 words are the only way to recover your identity and message history. They cannot be
+          displayed again.
         </p>
       </div>
 

@@ -82,6 +82,11 @@ pub struct MlsAcceptWelcomeRequest {
 
 // ===== Helpers =====
 
+/// Soft cap on MLS group members. MLS commits scale quadratically, so large
+/// groups hit practical performance limits. This can be raised later as the
+/// protocol and implementation mature.
+const MAX_GROUP_MEMBERS: usize = 100;
+
 /// Persist the current MLS group state to storage after a mutation.
 async fn persist_mls_state(state: &AppState) {
     match state.mls_groups.export_state() {
@@ -311,6 +316,21 @@ pub(super) async fn mls_invite_to_group(
     if req.invitee.trim().is_empty() {
         return Err(Error::BadRequest {
             message: "invitee must not be empty".to_string(),
+        });
+    }
+
+    // Enforce group size cap to avoid quadratic MLS commit overhead.
+    let current_count = state
+        .mls_groups
+        .list_members(&id)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    if current_count >= MAX_GROUP_MEMBERS {
+        return Err(Error::BadRequest {
+            message: format!(
+                "Group has reached the maximum of {} members",
+                MAX_GROUP_MEMBERS
+            ),
         });
     }
 

@@ -44,6 +44,7 @@ bip39 = { workspace = true }
 vodozemac = "0.9"
 argon2 = "0.5"
 aes-gcm = "0.10"
+zeroize = "1"
 
 # Paths
 dirs = { workspace = true }

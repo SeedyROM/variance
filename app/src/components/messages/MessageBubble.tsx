@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { CheckCheck, Clock } from "lucide-react";
+import { Check, CheckCheck, Clock } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
@@ -149,7 +149,9 @@ export function MessageBubble({ message, isOwn, reactions, onReact }: MessageBub
             {isOwn && message.status && (
               <div className="mt-0.5 flex items-center justify-end gap-1">
                 {message.status === "pending" && <Clock className="h-3 w-3 text-white/60" />}
-                {message.status === "sent" && <CheckCheck className="h-3 w-3 text-white/70" />}
+                {message.status === "sent" && <Check className="h-3 w-3 text-white/70" />}
+                {message.status === "delivered" && <CheckCheck className="h-3 w-3 text-white/70" />}
+                {message.status === "read" && <CheckCheck className="h-3 w-3 text-blue-300" />}
                 {message.status === "failed" && (
                   <span className="text-[10px] text-white/60">Failed</span>
                 )}

@@ -2,7 +2,7 @@ use crate::behaviour::VarianceBehaviourEvent;
 use crate::error::*;
 use crate::events::{
     DirectMessageEvent, GroupMessageEvent, GroupSyncEvent, IdentityEvent, OfflineMessageEvent,
-    RenameEvent, SignalingEvent, TypingEvent,
+    ReceiptEvent, RenameEvent, SignalingEvent, TypingEvent,
 };
 use crate::rate_limiter::protocol as rl;
 
@@ -17,7 +17,7 @@ use variance_proto::identity_proto::{IdentityRequest, IdentityResponse, Username
 use variance_proto::media_proto::SignalingMessage;
 use variance_proto::messaging_proto::{
     DirectMessage, DirectMessageAck, GroupMessage, GroupSyncRequest, GroupSyncResponse,
-    OfflineMessageRequest, OfflineMessageResponse, TypingIndicator,
+    OfflineMessageRequest, OfflineMessageResponse, ReadReceipt, TypingIndicator,
 };
 
 impl Node {
@@ -85,6 +85,9 @@ impl Node {
             }
             VarianceBehaviourEvent::GroupSync(e) => {
                 self.handle_group_sync_event(e).await;
+            }
+            VarianceBehaviourEvent::Receipts(e) => {
+                self.handle_receipt_event(e).await;
             }
         }
     }
@@ -1280,6 +1283,49 @@ impl Node {
             );
         } else {
             debug!("Outgoing connection failed (transient): {}", error);
+        }
+    }
+
+    // ── Read Receipts ─────────────────────────────────────────────────
+
+    async fn handle_receipt_event(
+        &mut self,
+        event: request_response::Event<ReadReceipt, ReadReceipt>,
+    ) {
+        use request_response::{Event, Message};
+
+        match event {
+            Event::Message {
+                message:
+                    Message::Request {
+                        request, channel, ..
+                    },
+                ..
+            } => {
+                debug!(
+                    "Received read receipt for message {} from {}",
+                    request.message_id, request.reader_did
+                );
+                self.events
+                    .send_receipt(ReceiptEvent::Received { receipt: request });
+                let _ = self
+                    .swarm
+                    .behaviour_mut()
+                    .receipts
+                    .send_response(channel, ReadReceipt::default());
+            }
+            Event::OutboundFailure {
+                peer,
+                request_id,
+                error,
+                ..
+            } => {
+                debug!(
+                    "Receipt {:?} to {} failed (best-effort): {}",
+                    request_id, peer, error
+                );
+            }
+            _ => {}
         }
     }
 }

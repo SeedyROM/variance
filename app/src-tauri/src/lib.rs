@@ -43,6 +43,7 @@ pub fn run() {
             stop_node,
             get_api_port,
             get_node_status,
+            change_passphrase,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {

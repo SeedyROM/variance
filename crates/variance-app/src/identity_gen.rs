@@ -8,7 +8,7 @@ use crate::state::IdentityFile;
 
 pub fn derive_signing_key(mnemonic: &Mnemonic) -> SigningKey {
     let seed = mnemonic.to_seed("");
-    SigningKey::from_bytes(&seed[..32].try_into().unwrap())
+    SigningKey::from_bytes(&seed[..32].try_into().expect("seed is at least 32 bytes"))
 }
 
 pub fn did_from_verifying_key(key: &VerifyingKey) -> String {
@@ -31,6 +31,7 @@ pub fn generate() -> Result<(IdentityFile, String)> {
     let did = did_from_verifying_key(&verifying_key);
 
     let phrase = mnemonic.to_string();
+
     let identity = IdentityFile {
         did,
         signing_key: hex::encode(signing_key.to_bytes()),

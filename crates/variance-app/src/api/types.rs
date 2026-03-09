@@ -60,6 +60,8 @@ pub struct SignalingResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SendReceiptRequest {
     pub message_id: String,
+    /// DID of the original message sender. Required for P2P receipt delivery.
+    pub sender_did: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -167,6 +169,14 @@ pub struct StartConversationResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RegisterUsernameRequest {
     pub username: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChangePassphraseRequest {
+    /// Current passphrase (omit or `null` for plaintext identity files).
+    pub current_passphrase: Option<String>,
+    /// New passphrase to encrypt with (omit or `null` to remove encryption).
+    pub new_passphrase: Option<String>,
 }
 
 // ===== MLS Types =====

@@ -8046,6 +8046,7 @@ dependencies = [
  "pin-project-lite",
  "sync_wrapper",
  "tokio",
+ "tokio-util",
  "tower-layer",
  "tower-service",
  "tracing",
@@ -8477,6 +8478,7 @@ dependencies = [
  "variance-p2p",
  "variance-proto",
  "vodozemac",
+ "zeroize",
 ]
 
 [[package]]
@@ -8655,11 +8657,13 @@ name = "variance-relay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "dirs 6.0.0",
  "futures",
  "hex",
  "libp2p",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

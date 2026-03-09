@@ -278,7 +278,22 @@ pub(super) async fn get_direct_messages(
         let status = if m.sender_did == state.local_did {
             match state.direct_messaging.is_message_pending(&m.id).await {
                 Ok(true) => Some("pending".to_string()),
-                Ok(false) => Some("sent".to_string()),
+                Ok(false) => {
+                    // Check receipt status: read > delivered > sent
+                    let receipt_status =
+                        state.receipts.get_receipts(&m.id).await.unwrap_or_default();
+                    if receipt_status.iter().any(|r| {
+                        r.status == variance_proto::messaging_proto::ReceiptStatus::Read as i32
+                    }) {
+                        Some("read".to_string())
+                    } else if receipt_status.iter().any(|r| {
+                        r.status == variance_proto::messaging_proto::ReceiptStatus::Delivered as i32
+                    }) {
+                        Some("delivered".to_string())
+                    } else {
+                        Some("sent".to_string())
+                    }
+                }
                 Err(e) => {
                     tracing::warn!("Failed to check pending status for {}: {}", m.id, e);
                     Some("sent".to_string())

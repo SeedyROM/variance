@@ -199,6 +199,7 @@ impl Node {
                     crate::protocols::messaging::create_typing_indicator_behaviour();
                 let rename = crate::protocols::identity::create_rename_behaviour();
                 let group_sync = crate::protocols::messaging::create_group_sync_behaviour();
+                let receipts = crate::protocols::messaging::create_receipt_behaviour();
 
                 Ok(VarianceBehaviour {
                     relay_client,
@@ -215,6 +216,7 @@ impl Node {
                     typing_indicators,
                     rename,
                     group_sync,
+                    receipts,
                 })
             })
             .map_err(|e| Error::Transport {
@@ -836,6 +838,21 @@ impl Node {
                         .send_response(channel, response);
                 } else {
                     warn!("No pending sync response for request {:?}", request_id);
+                }
+            }
+            NodeCommand::SendReceipt { peer_did, receipt } => {
+                let did_to_peer = self.did_to_peer.read().await;
+                let peer = did_to_peer
+                    .get(&peer_did)
+                    .copied()
+                    .or_else(|| self.peer_store.get(&peer_did));
+                if let Some(peer) = peer {
+                    self.swarm
+                        .behaviour_mut()
+                        .receipts
+                        .send_request(&peer, receipt);
+                } else {
+                    debug!("Cannot send receipt: unknown peer DID {}", peer_did);
                 }
             }
         }

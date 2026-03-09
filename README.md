@@ -27,6 +27,7 @@ variance/
 │   ├── variance-media/      # WebRTC media handling
 │   ├── variance-relay/      # libp2p relay with DCUTR support to safely pass data between nodes (uses encrypted mailboxs for offline messages)
 │   ├── variance-app/        # Application logic & HTTP API
+│   ├── variance-relay/      # Standalone relay node (NAT traversal)
 │   └── variance-cli/        # Standalone CLI (headless/debugging only)
 ├── app/                     # Tauri desktop application (React/TypeScript)
 │   ├── src/                 # UI components (onboarding, conversations, messages)
@@ -45,6 +46,7 @@ variance/
 | `variance-messaging` | Messaging logic | variance-proto, variance-identity, ulid |
 | `variance-media` | WebRTC signaling logic | variance-proto, ed25519-dalek |
 | `variance-app` | HTTP API & state | axum, variance-p2p, variance-{identity,messaging,media} |
+| `variance-relay` | Standalone relay node (NAT traversal) | libp2p, axum, clap |
 | `variance-cli` | Standalone CLI (headless/debugging) | variance-app, clap |
 | `variance-desktop` | Tauri desktop host (primary runtime) | tauri, variance-app |
 

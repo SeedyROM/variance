@@ -7,7 +7,7 @@ import { MessageBubble } from "./MessageBubble";
 import { MessageInput } from "./MessageInput";
 import { TypingIndicator } from "./TypingIndicator";
 import { DateDivider } from "./DateDivider";
-import { messagesApi, reactionsApi } from "../../api/client";
+import { messagesApi, reactionsApi, receiptsApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { isDifferentDay } from "../../utils/time";
@@ -196,6 +196,19 @@ export function MessageView({ peerDid }: MessageViewProps) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView();
   }, []);
+
+  // Send read receipts for incoming messages. Track which IDs we've already
+  // receipted in a ref so we don't re-fire on every query refetch.
+  const receiptedIds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!localDid) return;
+    for (const msg of messages) {
+      if (msg.sender_did === localDid) continue;
+      if (receiptedIds.current.has(msg.id)) continue;
+      receiptedIds.current.add(msg.id);
+      void receiptsApi.sendRead(msg.id, msg.sender_did).catch(() => {});
+    }
+  }, [messages, localDid]);
 
   // Try to get the peer's display name: WS-cached name → message sender_username → truncated DID
   const peerNames = useMessagingStore((s) => s.peerNames);

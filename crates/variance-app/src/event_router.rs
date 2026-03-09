@@ -12,12 +12,13 @@ use variance_media::{CallManager, SignalingHandler};
 use variance_messaging::{
     direct::DirectMessageHandler,
     mls::MlsGroupHandler,
+    receipts::ReceiptHandler,
     storage::{LocalMessageStorage, MessageStorage},
     typing::TypingHandler,
 };
 use variance_p2p::{
-    EventChannels, GroupSyncEvent, IdentityEvent, NodeHandle, OfflineMessageEvent, RenameEvent,
-    SignalingEvent, TypingEvent,
+    EventChannels, GroupSyncEvent, IdentityEvent, NodeHandle, OfflineMessageEvent, ReceiptEvent,
+    RenameEvent, SignalingEvent, TypingEvent,
 };
 
 /// All dependencies needed by the EventRouter, grouped to avoid too-many-arguments.
@@ -37,6 +38,8 @@ pub struct EventRouterDeps {
     /// Identity cache — evicted on peer disconnect so reconnecting peers with
     /// new keys don't get served stale identity documents.
     pub identity_cache: Arc<MultiLayerCache>,
+    /// Receipt handler — stores inbound receipts from peers.
+    pub receipts: Arc<ReceiptHandler>,
 }
 
 /// Bridges P2P events to WebSocket clients
@@ -52,6 +55,7 @@ pub struct EventRouter {
     storage: Arc<LocalMessageStorage>,
     local_did: String,
     identity_cache: Arc<MultiLayerCache>,
+    receipts: Arc<ReceiptHandler>,
 }
 
 impl EventRouter {
@@ -68,6 +72,7 @@ impl EventRouter {
             storage,
             local_did,
             identity_cache,
+            receipts,
         } = deps;
 
         Self {
@@ -82,6 +87,7 @@ impl EventRouter {
             storage,
             local_did,
             identity_cache,
+            receipts,
         }
     }
 
@@ -337,24 +343,27 @@ impl EventRouter {
                                     ws_manager.broadcast(msg);
                                 }
 
-                                // If this was a PreKey message, it consumed an OTK.
-                                // Refresh the P2P handler's OTK list so other peers don't
-                                // try to use the consumed key.
+                                // If this was a PreKey message, it consumed an OTK from the
+                                // published pool. Generate a fresh replacement batch, mark it
+                                // published, then update what we advertise to peers.
+                                // NOTE: one_time_keys() only returns *unpublished* keys — calling
+                                // it before generate_one_time_keys would yield an empty set
+                                // (all were marked published at startup). Always generate first.
                                 if was_prekey {
-                                    debug!(
-                                    "PreKey message consumed an OTK, refreshing advertised keys"
-                                );
-                                    let one_time_keys = direct_messaging
+                                    debug!("PreKey message consumed an OTK, replenishing pool");
+                                    direct_messaging.generate_one_time_keys(10).await;
+                                    let fresh_otks = direct_messaging
                                         .one_time_keys()
                                         .await
                                         .values()
                                         .map(|k| k.to_bytes().to_vec())
                                         .collect();
+                                    direct_messaging.mark_one_time_keys_as_published().await;
 
                                     if let Err(e) =
-                                        node_handle.update_one_time_keys(one_time_keys).await
+                                        node_handle.update_one_time_keys(fresh_otks).await
                                     {
-                                        warn!("Failed to update OTK list in P2P handler: {}", e);
+                                        warn!("Failed to replenish OTK pool in P2P handler: {}", e);
                                     }
                                 }
                             }
@@ -557,6 +566,38 @@ impl EventRouter {
             }
 
             warn!("EventRouter: Typing event listener ended");
+        });
+
+        // Spawn task for receipt events
+        let ws_manager_receipts = self.ws_manager.clone();
+        let receipts = self.receipts.clone();
+        let events_clone = events.clone();
+        tokio::spawn(async move {
+            let mut rx = events_clone.subscribe_receipts();
+            debug!("EventRouter: Started receipt event listener");
+
+            while let Ok(ReceiptEvent::Received { receipt }) = rx.recv().await {
+                let message_id = receipt.message_id.clone();
+                let status = receipt.status;
+
+                if let Err(e) = receipts.receive_receipt(receipt).await {
+                    warn!(
+                        "EventRouter: Failed to store receipt for {}: {}",
+                        message_id, e
+                    );
+                    continue;
+                }
+
+                use variance_proto::messaging_proto::ReceiptStatus;
+                let msg = if status == ReceiptStatus::Read as i32 {
+                    WsMessage::ReceiptRead { message_id }
+                } else {
+                    WsMessage::ReceiptDelivered { message_id }
+                };
+                ws_manager_receipts.broadcast(msg);
+            }
+
+            warn!("EventRouter: Receipt event listener ended");
         });
 
         // Spawn task for rename events
@@ -783,6 +824,8 @@ impl EventRouter {
         let mls_groups_identity = self.mls_groups;
         let storage_identity = self.storage;
         let identity_cache = self.identity_cache;
+        let signaling_identity = self.signaling;
+        let call_manager_identity = self.call_manager;
         tokio::spawn(async move {
             let mut rx = events.subscribe_identity();
             debug!("EventRouter: Started identity event listener");
@@ -837,6 +880,18 @@ impl EventRouter {
                         // Evict stale identity so a reconnecting peer with new
                         // keys (e.g. after reinstall) gets a fresh resolution.
                         identity_cache.remove(&did);
+
+                        // Purge signaling nonces for any call involving this peer.
+                        // Without this, nonce sets for abandoned calls (peer dropped
+                        // connection without sending hangup) would leak indefinitely.
+                        for call in call_manager_identity.list_active_calls() {
+                            if call_manager_identity.get_remote_peer(&call.id).as_deref()
+                                == Some(did.as_str())
+                            {
+                                signaling_identity.purge_call_nonces(&call.id);
+                            }
+                        }
+
                         let display_name = username_registry.get_display_name(&did);
                         ws_manager.broadcast(WsMessage::PresenceUpdated {
                             did,
@@ -1057,6 +1112,7 @@ mod tests {
             storage: state.storage.clone(),
             local_did: state.local_did.clone(),
             identity_cache: state.identity_cache.clone(),
+            receipts: state.receipts.clone(),
         })
     }
 
@@ -1112,6 +1168,7 @@ mod tests {
             storage: state.storage.clone(),
             local_did: state.local_did.clone(),
             identity_cache: state.identity_cache.clone(),
+            receipts: state.receipts.clone(),
         });
         let events = EventChannels::default();
 

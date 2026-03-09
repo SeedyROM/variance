@@ -174,8 +174,20 @@ pub async fn start_node(
     let app_state = AppState::from_identity(
         &identity,
         identity_path,
-        config.storage.message_db_path.to_str().unwrap(),
-        config.storage.identity_cache_dir.to_str().unwrap(),
+        config
+            .storage
+            .message_db_path
+            .to_str()
+            .ok_or_else(|| crate::Error::App {
+                message: "Message DB path contains invalid UTF-8".to_string(),
+            })?,
+        config
+            .storage
+            .identity_cache_dir
+            .to_str()
+            .ok_or_else(|| crate::Error::App {
+                message: "Identity cache dir contains invalid UTF-8".to_string(),
+            })?,
         node_handle,
         event_channels.clone(),
         ipfs_storage,
@@ -236,6 +248,7 @@ pub async fn start_node(
         storage: app_state.storage.clone(),
         local_did: app_state.local_did.clone(),
         identity_cache: app_state.identity_cache.clone(),
+        receipts: app_state.receipts.clone(),
     });
     event_router.start((*event_channels).clone());
     tracing::debug!("EventRouter started");

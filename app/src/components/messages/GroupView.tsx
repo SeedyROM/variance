@@ -8,12 +8,12 @@ import { DateDivider } from "./DateDivider";
 import { ScrollArea } from "../ui/ScrollArea";
 import { Avatar } from "../ui/Avatar";
 import { StatusDot } from "../ui/StatusIndicator";
-import { messagesApi, groupsApi, reactionsApi, typingApi } from "../../api/client";
+import { MessageEditor } from "./MessageEditor";
+import { messagesApi, groupsApi, reactionsApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { isDifferentDay } from "../../utils/time";
 import { cn } from "../../utils/cn";
-import { MessageComposerShell, MAX_MESSAGE_LENGTH } from "./MessageComposerShell";
 import type { GroupMessage, GroupMemberInfo, ReactionSummary } from "../../api/types";
 
 /** Returns true when the viewport is narrower than the given pixel width. */
@@ -35,83 +35,26 @@ interface GroupViewProps {
   groupId: string;
 }
 
-/** Don't send another /typing/start within this window (ms). */
-const TYPING_SEND_COOLDOWN_MS = 500;
-
 function GroupMessageInput({ groupId }: { groupId: string }) {
-  const [text, setText] = useState("");
   const queryClient = useQueryClient();
-  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastTypingSentRef = useRef<number>(0);
   const addToast = useToastStore((s) => s.addToast);
 
-  // Cancel any pending stop-typing timer on unmount to avoid firing stale events
-  // for the old group after a conversation switch.
-  useEffect(
-    () => () => {
-      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
-    },
-    []
-  );
-
   const sendMutation = useMutation({
-    mutationFn: () => groupsApi.sendMessage(groupId, text.trim()),
+    mutationFn: (message: string) => groupsApi.sendMessage(groupId, message),
     onSuccess: () => {
-      setText("");
       void queryClient.invalidateQueries({ queryKey: ["messages", "group", groupId] });
       void queryClient.invalidateQueries({ queryKey: ["groups"] });
     },
     onError: (e) => addToast(String(e), "error"),
   });
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value;
-    setText(value);
-
-    if (!value.trim()) return;
-    const now = Date.now();
-    if (now - lastTypingSentRef.current >= TYPING_SEND_COOLDOWN_MS) {
-      lastTypingSentRef.current = now;
-      void typingApi.start({ recipient: groupId, is_group: true });
-    }
-    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
-    typingTimerRef.current = setTimeout(() => {
-      lastTypingSentRef.current = 0;
-      void typingApi.stop({ recipient: groupId, is_group: true });
-    }, 1500);
-  };
-
-  const handleSend = () => {
-    if (!text.trim() || text.length > MAX_MESSAGE_LENGTH || sendMutation.isPending) return;
-    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
-    lastTypingSentRef.current = 0;
-    void typingApi.stop({ recipient: groupId, is_group: true });
-    sendMutation.mutate();
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
   return (
-    <MessageComposerShell
-      charCount={text.length}
-      isEmpty={!text.trim()}
+    <MessageEditor
+      placeholder="Message group"
+      onSend={(md) => sendMutation.mutate(md)}
       isPending={sendMutation.isPending}
-      onSend={handleSend}
-    >
-      <input
-        type="text"
-        value={text}
-        onChange={handleChange}
-        onKeyDown={handleKeyDown}
-        placeholder="Message group"
-        className="flex-1 min-w-0 text-sm text-surface-900 dark:text-surface-50 bg-transparent focus:outline-none"
-      />
-    </MessageComposerShell>
+      typing={{ recipient: groupId, isGroup: true, cooldownMs: 500, stopDelayMs: 1_500 }}
+    />
   );
 }
 
@@ -264,7 +207,11 @@ export function GroupView({ groupId }: GroupViewProps) {
           <ScrollArea className="flex-1 px-4 py-4">
             {sortedMessages.length === 0 ? (
               <div className="flex h-40 items-center justify-center">
-                <p className="text-sm text-surface-400">No messages yet. Say something!</p>
+                <p className="text-sm text-surface-400">
+                  {members.length > 1
+                    ? "You joined this group. Messages sent before you joined are not available."
+                    : "No messages yet. Say something!"}
+                </p>
               </div>
             ) : (
               <div className="flex flex-col gap-1.5">

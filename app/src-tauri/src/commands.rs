@@ -258,6 +258,49 @@ pub async fn stop_node(state: State<'_, NodeState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Change the passphrase used to encrypt the identity file.
+///
+/// Validates `current_passphrase` against the one the node was started with,
+/// re-encrypts the file with `new_passphrase`, then stops the node so the
+/// stale in-memory passphrase cannot corrupt future saves.
+///
+/// The frontend should navigate the user back to the unlock screen after this.
+#[tauri::command]
+pub async fn change_passphrase(
+    state: State<'_, NodeState>,
+    current_passphrase: Option<String>,
+    new_passphrase: Option<String>,
+) -> Result<(), String> {
+    let app_state_guard = state.app_state.read().await;
+    let app_state = app_state_guard
+        .as_ref()
+        .ok_or_else(|| "Node is not running".to_string())?;
+
+    let identity_path = app_state.identity_path.clone();
+    let stored_passphrase: Option<String> = app_state
+        .identity_passphrase
+        .as_ref()
+        .map(|s| s.as_str().to_string());
+    drop(app_state_guard);
+
+    // Verify current passphrase matches
+    if current_passphrase != stored_passphrase {
+        return Err("Current passphrase is incorrect".to_string());
+    }
+
+    let identity =
+        AppState::load_identity_with_passphrase(&identity_path, current_passphrase.as_deref())
+            .map_err(|e| format!("Failed to load identity: {}", e))?;
+
+    AppState::save_identity(&identity_path, &identity, new_passphrase.as_deref())
+        .map_err(|e| format!("Failed to save identity with new passphrase: {}", e))?;
+
+    // Stop the node — the in-memory passphrase is now stale.
+    state.stop().await;
+
+    Ok(())
+}
+
 /// Return the current HTTP API port, if the node is running.
 #[tauri::command]
 pub async fn get_api_port(state: State<'_, NodeState>) -> Result<Option<u16>, String> {
