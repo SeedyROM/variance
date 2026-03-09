@@ -25,7 +25,7 @@ variance/
 │   ├── variance-identity/   # DID-based identity system
 │   ├── variance-messaging/  # Chat and messaging
 │   ├── variance-media/      # WebRTC media handling
-│   ├── variance-relay/      # libp2p relay with DCTUR support to safely pass data between nodes
+│   ├── variance-relay/      # libp2p relay with DCUTR support to safely pass data between nodes (uses encrypted mailboxs for offline messages)
 │   ├── variance-app/        # Application logic & HTTP API
 │   └── variance-cli/        # Standalone CLI (headless/debugging only)
 ├── app/                     # Tauri desktop application (React/TypeScript)
