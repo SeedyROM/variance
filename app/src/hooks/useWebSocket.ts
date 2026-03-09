@@ -4,6 +4,9 @@ import {
   isPermissionGranted,
   requestPermission,
   sendNotification,
+  removeActive,
+  onAction,
+  registerActionTypes,
 } from "@tauri-apps/plugin-notification";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../stores/appStore";
@@ -16,10 +19,13 @@ import type { WsEvent } from "../api/types";
 // Per-conversation debounce: a burst of messages collapses into one notification.
 // Each conversation gets a stable numeric id so the OS replaces (not stacks)
 // the previous notification for that conversation.
-// NOTIFY_TARGETS lets the action handler navigate to the right conversation on click.
 const NOTIFY_TIMERS = new Map<string, ReturnType<typeof setTimeout>>();
 const NOTIFY_BODIES = new Map<string, string>();
 const NOTIFY_IDS = new Map<string, number>();
+// Auto-clear timers: remove notifications from the OS notification center after 60s.
+const NOTIFY_CLEAR_TIMERS = new Map<string, ReturnType<typeof setTimeout>>();
+// Map notification ID → { target, conversationKey } so onAction can navigate.
+const NOTIFY_ACTION_TARGETS = new Map<number, { target: ActiveConversation | null; key: string }>();
 // Most-recent notification target + timestamp. When the window gains focus
 // (which happens when the user clicks a notification banner on macOS/Windows),
 // we navigate to this conversation if it was set recently enough.
@@ -33,6 +39,24 @@ function getNotifyId(conversationKey: string): number {
     NOTIFY_IDS.set(conversationKey, notifyIdCounter++);
   }
   return NOTIFY_IDS.get(conversationKey)!;
+}
+
+/** Remove a conversation's notification from the OS notification center. */
+function clearConversationNotification(conversationKey: string) {
+  const id = NOTIFY_IDS.get(conversationKey);
+  if (id !== undefined) {
+    void removeActive([{ id }]);
+  }
+  const timer = NOTIFY_CLEAR_TIMERS.get(conversationKey);
+  if (timer) {
+    clearTimeout(timer);
+    NOTIFY_CLEAR_TIMERS.delete(conversationKey);
+  }
+  if (pendingNavKey === conversationKey) {
+    pendingNavTarget = null;
+    pendingNavKey = null;
+    pendingNavAt = 0;
+  }
 }
 
 async function notify(conversationKey: string, body: string, target: ActiveConversation | null) {
@@ -53,18 +77,38 @@ async function notify(conversationKey: string, body: string, target: ActiveConve
         const permission = await requestPermission();
         granted = permission === "granted";
       }
-      if (granted) {
-        // Store pending navigation before firing — when the user clicks the banner,
-        // macOS brings the window to front which triggers onFocusChanged.
+      if (!granted) return;
+
+      const id = getNotifyId(conversationKey);
+      NOTIFY_ACTION_TARGETS.set(id, { target, key: conversationKey });
+
+      // Always record the pending nav target so that focus-based navigation works
+      // for both banner clicks (fast) and notification-center clicks (slow).
+      // clearConversationNotification() will reset this when the user views the
+      // conversation through any other path.
+      if (target) {
         pendingNavTarget = target;
         pendingNavKey = conversationKey;
         pendingNavAt = Date.now();
-        sendNotification({
-          title: "Variance",
-          body: latestBody,
-          id: getNotifyId(conversationKey),
-        });
       }
+
+      sendNotification({
+        title: "Variance",
+        body: latestBody,
+        id,
+        actionTypeId: "message",
+      });
+
+      // Auto-clear from OS notification center after 60 seconds.
+      const clearTimer = NOTIFY_CLEAR_TIMERS.get(conversationKey);
+      if (clearTimer) clearTimeout(clearTimer);
+      NOTIFY_CLEAR_TIMERS.set(
+        conversationKey,
+        setTimeout(() => {
+          void removeActive([{ id }]);
+          NOTIFY_CLEAR_TIMERS.delete(conversationKey);
+        }, 60_000)
+      );
     }, 500)
   );
 }
@@ -88,18 +132,55 @@ export function useWebSocket() {
   const activeConversation = useMessagingStore((s) => s.activeConversation);
   const setTyping = useMessagingStore((s) => s.setTyping);
 
+  // Clear the conversation's OS notification when the user opens it.
+  useEffect(() => {
+    if (!activeConversation || !localDid) return;
+    const key =
+      activeConversation.type === "dm"
+        ? [...[localDid, activeConversation.peerId]].sort().join(":")
+        : activeConversation.groupId;
+    clearConversationNotification(key);
+  }, [activeConversation, localDid]);
+
   useEffect(() => {
     if (nodeStatus !== "running") return;
 
-    // When the user clicks a notification banner, macOS/Windows brings the window
-    // to front. We intercept onFocusChanged to detect this and navigate to the
-    // conversation that triggered the notification.
+    // Register the "View" action button so users can explicitly navigate from
+    // a notification without having to click the banner body (which on macOS
+    // only brings the window to front — it doesn't tell us which conversation).
+    void registerActionTypes([
+      { id: "message", actions: [{ id: "view", title: "View", foreground: true }] },
+    ]);
+
+    // onAction fires when the user clicks the explicit "View" action button.
+    // Navigate immediately and clear the notification and pending focus-nav state.
+    const actionListenerPromise = onAction((notification) => {
+      if (notification.id === undefined) return;
+      const info = NOTIFY_ACTION_TARGETS.get(notification.id);
+      if (!info) return;
+      const { target, key } = info;
+      if (target) {
+        setActiveConversation(target);
+        markRead(key);
+      }
+      clearConversationNotification(key);
+    });
+
+    // When the user clicks a notification banner body (macOS/Windows), the OS
+    // brings the window to front — intercept onFocusChanged and navigate.
+    // We use a 30 s window to cover both fast banner clicks (~200 ms) and slower
+    // notification-center clicks. clearConversationNotification() resets
+    // pendingNavTarget when the conversation is opened via any other path, which
+    // prevents stale notifications from hijacking navigation.
     const focusListenerPromise = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
       if (!focused) return;
-      const NAV_WINDOW_MS = 5_000;
+      const NAV_WINDOW_MS = 30_000;
       if (pendingNavTarget && Date.now() - pendingNavAt < NAV_WINDOW_MS) {
         setActiveConversation(pendingNavTarget);
-        if (pendingNavKey) markRead(pendingNavKey);
+        if (pendingNavKey) {
+          markRead(pendingNavKey);
+          clearConversationNotification(pendingNavKey);
+        }
         pendingNavTarget = null;
         pendingNavKey = null;
         pendingNavAt = 0;
@@ -247,6 +328,7 @@ export function useWebSocket() {
       off();
       variantWs.disconnect();
       void focusListenerPromise.then((unlisten) => unlisten());
+      void actionListenerPromise.then((listener) => listener.unregister());
     };
   }, [
     nodeStatus,
