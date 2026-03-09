@@ -221,51 +221,6 @@ pub(super) async fn change_passphrase(
     })))
 }
 
-/// Retrieve the encrypted mnemonic from the identity file.
-///
-/// Requires the current passphrase. Returns 404 if no encrypted mnemonic is stored.
-pub(super) async fn get_mnemonic(
-    State(state): State<AppState>,
-    axum::Json(req): axum::Json<super::types::ChangePassphraseRequest>,
-) -> Result<Json<serde_json::Value>> {
-    let stored = state.identity_passphrase.as_ref().map(|s| s.as_str());
-    let provided = req.current_passphrase.as_deref();
-    if stored != provided {
-        return Err(Error::Unauthorized {
-            message: "Incorrect passphrase".to_string(),
-        });
-    }
-
-    let passphrase = stored.ok_or_else(|| Error::BadRequest {
-        message: "No passphrase set — mnemonic is only stored for passphrase-protected identities"
-            .to_string(),
-    })?;
-
-    let identity =
-        AppState::load_identity_with_passphrase(&state.identity_path, Some(passphrase)).map_err(
-            |e| Error::App {
-                message: format!("Failed to load identity: {}", e),
-            },
-        )?;
-
-    let encrypted_hex = identity.encrypted_mnemonic.ok_or_else(|| Error::NotFound {
-        message: "No encrypted mnemonic stored in this identity file".to_string(),
-    })?;
-
-    let ciphertext = hex::decode(&encrypted_hex).map_err(|_| Error::App {
-        message: "Corrupted encrypted mnemonic".to_string(),
-    })?;
-
-    let phrase =
-        crate::identity_crypto::decrypt(&ciphertext, passphrase).map_err(|e| Error::App {
-            message: format!("Failed to decrypt mnemonic: {}", e),
-        })?;
-
-    Ok(Json(serde_json::json!({
-        "mnemonic": phrase.split_whitespace().collect::<Vec<_>>()
-    })))
-}
-
 /// Write username + discriminator into the identity JSON file.
 fn persist_username_to_identity(
     state: &AppState,

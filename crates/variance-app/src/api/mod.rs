@@ -55,7 +55,6 @@ pub fn create_router(state: AppState) -> Router {
             get(identity::resolve_username),
         )
         .route("/identity/passphrase", post(identity::change_passphrase))
-        .route("/identity/mnemonic", post(identity::get_mnemonic))
         // Conversation endpoints
         .route("/conversations", get(conversations::list_conversations))
         .route("/conversations", post(conversations::start_conversation))

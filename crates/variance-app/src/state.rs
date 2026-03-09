@@ -39,10 +39,6 @@ pub struct IdentityFile {
     /// Absent in pre-IPFS identities; set on first publish.
     #[serde(default)]
     pub ipns_key: Option<String>,
-    /// Hex-encoded AES-256-GCM ciphertext of the BIP39 mnemonic phrase.
-    /// Only present when the identity was created with a passphrase.
-    #[serde(default)]
-    pub encrypted_mnemonic: Option<String>,
 }
 
 /// Application state shared across HTTP handlers

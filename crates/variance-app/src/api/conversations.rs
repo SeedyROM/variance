@@ -280,20 +280,15 @@ pub(super) async fn get_direct_messages(
                 Ok(true) => Some("pending".to_string()),
                 Ok(false) => {
                     // Check receipt status: read > delivered > sent
-                    let receipt_status = state
-                        .receipts
-                        .get_receipts(&m.id)
-                        .await
-                        .unwrap_or_default();
-                    if receipt_status
-                        .iter()
-                        .any(|r| r.status == variance_proto::messaging_proto::ReceiptStatus::Read as i32)
-                    {
+                    let receipt_status =
+                        state.receipts.get_receipts(&m.id).await.unwrap_or_default();
+                    if receipt_status.iter().any(|r| {
+                        r.status == variance_proto::messaging_proto::ReceiptStatus::Read as i32
+                    }) {
                         Some("read".to_string())
-                    } else if receipt_status
-                        .iter()
-                        .any(|r| r.status == variance_proto::messaging_proto::ReceiptStatus::Delivered as i32)
-                    {
+                    } else if receipt_status.iter().any(|r| {
+                        r.status == variance_proto::messaging_proto::ReceiptStatus::Delivered as i32
+                    }) {
                         Some("delivered".to_string())
                     } else {
                         Some("sent".to_string())

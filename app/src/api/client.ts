@@ -84,11 +84,6 @@ export const identityApi = {
     request<ResolvedUsername | ResolvedUsernameMultiple>(
       `/identity/username/resolve/${encodeURIComponent(username)}`
     ),
-  getMnemonic: (currentPassphrase: string | null) =>
-    request<{ mnemonic: string[] }>("/identity/mnemonic", {
-      method: "POST",
-      body: JSON.stringify({ current_passphrase: currentPassphrase, new_passphrase: null }),
-    }),
 };
 
 // ===== Conversations =====

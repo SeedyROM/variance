@@ -45,7 +45,7 @@ pub async fn generate_identity(
     output_path: String,
     passphrase: Option<String>,
 ) -> Result<GeneratedIdentity, String> {
-    let (identity, phrase) = identity_gen::generate(passphrase.as_deref()).map_err(|e| e.to_string())?;
+    let (identity, phrase) = identity_gen::generate().map_err(|e| e.to_string())?;
 
     let dir = std::path::Path::new(&output_path).parent().and_then(|p| {
         if p == std::path::Path::new("") {

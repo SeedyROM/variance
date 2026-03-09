@@ -318,7 +318,7 @@ fn generate_identity(output: String, force: bool) -> Result<()> {
         fs::create_dir_all(parent).context("Failed to create directory for identity file")?;
     }
 
-    let (identity, phrase) = identity_gen::generate(None).context("Failed to generate identity")?;
+    let (identity, phrase) = identity_gen::generate().context("Failed to generate identity")?;
     let did = identity.did.clone();
 
     fs::write(output_path, serde_json::to_string_pretty(&identity)?)
@@ -482,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_generate_and_recover_match() {
-        let (identity, phrase) = identity_gen::generate(None).unwrap();
+        let (identity, phrase) = identity_gen::generate().unwrap();
         let recovered = identity_gen::recover(&phrase).unwrap();
         assert_eq!(identity.did, recovered.did);
         assert_eq!(identity.signing_key, recovered.signing_key);
