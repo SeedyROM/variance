@@ -150,7 +150,9 @@ export type WsEvent =
   | { type: "PresenceUpdated"; did: string; online: boolean; display_name?: string }
   | { type: "OfflineMessagesReceived"; count: number }
   | { type: "PeerRenamed"; did: string; display_name: string }
-  | { type: "DirectMessageStatusChanged"; message_id: string; status: string };
+  | { type: "DirectMessageStatusChanged"; message_id: string; status: string }
+  | { type: "WsConnected" }
+  | { type: "WsDisconnected" };
 
 // ===== Tauri Commands =====
 

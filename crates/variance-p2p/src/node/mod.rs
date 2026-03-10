@@ -840,6 +840,12 @@ impl Node {
                     warn!("No pending sync response for request {:?}", request_id);
                 }
             }
+            NodeCommand::UpdateMlsKeyPackage { key_package } => {
+                let handler = self.identity_handler.clone();
+                tokio::spawn(async move {
+                    handler.update_mls_key_package(key_package).await;
+                });
+            }
             NodeCommand::SendReceipt { peer_did, receipt } => {
                 let did_to_peer = self.did_to_peer.read().await;
                 let peer = did_to_peer

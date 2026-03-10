@@ -231,6 +231,16 @@ pub trait MessageStorage: Send + Sync {
     /// Returns `(did, username, discriminator)` triples for seeding the
     /// `UsernameRegistry` at startup.
     async fn load_all_peer_names(&self) -> Result<Vec<(String, String, u32)>>;
+
+    /// Persist an outgoing receipt that could not be delivered because the target peer
+    /// was offline. Keyed by `target_did` so all pending receipts for a peer can be
+    /// drained at once when they reconnect.
+    async fn store_pending_receipt(&self, target_did: &str, receipt: &ReadReceipt) -> Result<()>;
+
+    /// Drain all pending receipts for `target_did`, deleting them from storage.
+    ///
+    /// Called when the peer reconnects so we can attempt delivery immediately.
+    async fn drain_pending_receipts(&self, target_did: &str) -> Result<Vec<ReadReceipt>>;
 }
 
 /// Local storage implementation using sled
@@ -324,6 +334,16 @@ impl LocalMessageStorage {
     fn peer_names_tree(&self) -> Result<sled::Tree> {
         self.db
             .open_tree("peer_names")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
+    /// Pending outgoing receipts tree.
+    ///
+    /// Key: `{target_did}:{message_id}`, value: serialized `ReadReceipt` proto.
+    /// Drained when the target peer reconnects.
+    fn pending_receipts_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("pending_receipts")
             .map_err(|e| Error::Storage { source: e })
     }
 
@@ -1171,6 +1191,32 @@ impl MessageStorage for LocalMessageStorage {
             }
         }
         Ok(result)
+    }
+
+    async fn store_pending_receipt(&self, target_did: &str, receipt: &ReadReceipt) -> Result<()> {
+        let tree = self.pending_receipts_tree()?;
+        let key = format!("{}:{}", target_did, receipt.message_id);
+        tree.insert(key.as_bytes(), receipt.encode_to_vec())
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    async fn drain_pending_receipts(&self, target_did: &str) -> Result<Vec<ReadReceipt>> {
+        let tree = self.pending_receipts_tree()?;
+        let prefix = format!("{}:", target_did);
+        let mut receipts = Vec::new();
+        let entries: Vec<_> = tree
+            .scan_prefix(prefix.as_bytes())
+            .filter_map(|r| r.ok())
+            .collect();
+        for (k, v) in &entries {
+            match ReadReceipt::decode(v.as_ref()) {
+                Ok(receipt) => receipts.push(receipt),
+                Err(e) => warn!("Failed to decode pending receipt {:?}: {}", k, e),
+            }
+            tree.remove(k).map_err(|e| Error::Storage { source: e })?;
+        }
+        Ok(receipts)
     }
 }
 

@@ -17,8 +17,8 @@ interface MessageViewProps {
   peerDid: string;
 }
 
-// Must match the backend default limit in get_direct_messages.
-const PAGE_SIZE = 1024;
+// Initial and paginated load size. Backend supports cursor pagination via ?before=<ts>.
+const PAGE_SIZE = 50;
 
 /** Squash reaction messages into per-message, per-emoji counts. */
 function aggregateReactions(
@@ -78,7 +78,7 @@ export function MessageView({ peerDid }: MessageViewProps) {
   const { data: messages = [] } = useQuery({
     queryKey: ["messages", peerDid],
     queryFn: async () => {
-      const msgs = await messagesApi.getDirect(peerDid);
+      const msgs = await messagesApi.getDirect(peerDid, undefined, PAGE_SIZE);
       // Fetching messages updates last_read_at on the server — refresh the
       // conversations list so the unread badge clears immediately.
       void queryClient.invalidateQueries({ queryKey: ["conversations"] });

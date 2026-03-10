@@ -6,18 +6,22 @@ interface AppStore {
   nodeStatus: NodeStatus;
   apiPort: number | null;
   error: string | null;
+  wsConnected: boolean;
 
   setNodeStatus: (status: NodeStatus) => void;
   setApiPort: (port: number | null) => void;
   setError: (error: string | null) => void;
+  setWsConnected: (connected: boolean) => void;
 }
 
 export const useAppStore = create<AppStore>((set) => ({
   nodeStatus: "idle",
   apiPort: null,
   error: null,
+  wsConnected: false,
 
   setNodeStatus: (nodeStatus) => set({ nodeStatus }),
   setApiPort: (apiPort) => set({ apiPort }),
   setError: (error) => set({ error }),
+  setWsConnected: (wsConnected) => set({ wsConnected }),
 }));

@@ -99,6 +99,13 @@ impl IdentityHandler {
         }
     }
 
+    /// Replace the advertised MLS KeyPackage after the previous one was consumed by a Welcome.
+    pub async fn update_mls_key_package(&self, key_package: Vec<u8>) {
+        if let Some(ref mut local_id) = *self.local_identity.write().await {
+            local_id.mls_key_package = Some(key_package);
+        }
+    }
+
     /// Handle an identity request
     pub async fn handle_request(&self, request: IdentityRequest) -> Result<IdentityResponse> {
         debug!("Handling identity request: {:?}", request);

@@ -257,6 +257,7 @@ impl EventRouter {
         let mls_groups_dm = self.mls_groups.clone();
         let storage_dm = self.storage.clone();
         let local_did_dm = self.local_did.clone();
+        let receipts_dm = self.receipts.clone();
         let events_clone = events.clone();
         tokio::spawn(async move {
             use variance_p2p::events::DirectMessageEvent;
@@ -305,6 +306,36 @@ impl EventRouter {
                                                     group_name,
                                                     inviter: from.clone(),
                                                 });
+
+                                                // The Welcome consumed our advertised KeyPackage.
+                                                // Generate a fresh one so future invites work.
+                                                use variance_messaging::mls::MlsGroupHandler;
+                                                match mls_groups_dm.generate_key_package() {
+                                                    Ok(kp) => match MlsGroupHandler::serialize_message_bytes(&kp) {
+                                                        Ok(kp_bytes) => {
+                                                            if let Err(e) = node_handle
+                                                                .update_mls_key_package(kp_bytes)
+                                                                .await
+                                                            {
+                                                                warn!(
+                                                                    "Failed to republish MLS \
+                                                                     KeyPackage after join: {}",
+                                                                    e
+                                                                );
+                                                            }
+                                                        }
+                                                        Err(e) => warn!(
+                                                            "Failed to serialize refreshed \
+                                                             KeyPackage: {}",
+                                                            e
+                                                        ),
+                                                    },
+                                                    Err(e) => warn!(
+                                                        "Failed to generate refreshed \
+                                                         KeyPackage: {}",
+                                                        e
+                                                    ),
+                                                }
                                             }
                                             Err(e) => {
                                                 warn!(
@@ -334,13 +365,44 @@ impl EventRouter {
                                     }
                                 } else {
                                     let msg = WsMessage::DirectMessageReceived {
-                                        from,
-                                        message_id,
+                                        from: from.clone(),
+                                        message_id: message_id.clone(),
                                         text: content.text,
                                         timestamp,
                                         reply_to,
                                     };
                                     ws_manager.broadcast(msg);
+
+                                    // Acknowledge delivery to the sender (best-effort).
+                                    // Store as pending in case the sender is currently offline.
+                                    use variance_messaging::storage::MessageStorage;
+                                    match receipts_dm.send_delivered(message_id.clone()).await {
+                                        Ok(receipt) => {
+                                            if let Err(e) = storage_dm
+                                                .store_pending_receipt(&from, &receipt)
+                                                .await
+                                            {
+                                                warn!(
+                                                    "Failed to store pending delivered receipt \
+                                                     for {}: {}",
+                                                    message_id, e
+                                                );
+                                            }
+                                            if let Err(e) =
+                                                node_handle.send_receipt(from, receipt).await
+                                            {
+                                                debug!(
+                                                    "Failed to send delivered receipt for \
+                                                     {} (best-effort): {}",
+                                                    message_id, e
+                                                );
+                                            }
+                                        }
+                                        Err(e) => warn!(
+                                            "Failed to create delivered receipt for {}: {}",
+                                            message_id, e
+                                        ),
+                                    }
                                 }
 
                                 // If this was a PreKey message, it consumed an OTK from the
@@ -951,6 +1013,23 @@ impl EventRouter {
                             Err(e) => {
                                 warn!("Failed to fetch pending messages for {}: {}", did, e);
                             }
+                        }
+
+                        // Flush pending receipts: receipts that couldn't be delivered
+                        // when the peer was offline are retried on reconnect.
+                        match storage_identity.drain_pending_receipts(&did).await {
+                            Ok(pending) if !pending.is_empty() => {
+                                debug!("Flushing {} pending receipt(s) to {}", pending.len(), did);
+                                for receipt in pending {
+                                    if let Err(e) =
+                                        node_handle.send_receipt(did.clone(), receipt).await
+                                    {
+                                        debug!("Failed to flush pending receipt to {}: {}", did, e);
+                                    }
+                                }
+                            }
+                            Err(e) => warn!("Failed to drain pending receipts for {}: {}", did, e),
+                            _ => {}
                         }
 
                         // Trigger group sync: for every MLS group we share with

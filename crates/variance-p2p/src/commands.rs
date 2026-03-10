@@ -168,6 +168,9 @@ pub enum NodeCommand {
         peer_did: String,
         receipt: ReadReceipt,
     },
+
+    /// Replace the advertised MLS KeyPackage after the previous one was consumed by a Welcome.
+    UpdateMlsKeyPackage { key_package: Vec<u8> },
 }
 
 /// Construct the DHT record key for a username, e.g. "alice#0001".
@@ -557,6 +560,19 @@ impl NodeHandle {
             .map_err(|_| crate::error::Error::Protocol {
                 message: "Failed to receive response from node".to_string(),
             })?
+    }
+
+    /// Replace the advertised MLS KeyPackage after the previous one was consumed.
+    ///
+    /// Call this after accepting a group invitation so the identity handler
+    /// advertises a fresh KeyPackage and future invites succeed.
+    pub async fn update_mls_key_package(&self, key_package: Vec<u8>) -> Result<()> {
+        self.command_tx
+            .send(NodeCommand::UpdateMlsKeyPackage { key_package })
+            .await
+            .map_err(|_| crate::error::Error::Protocol {
+                message: "Failed to send command to node".to_string(),
+            })
     }
 
     /// Send a read receipt to the original message sender (fire-and-forget).

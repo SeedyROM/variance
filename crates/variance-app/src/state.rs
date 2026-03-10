@@ -413,6 +413,9 @@ impl AppState {
                     NodeCommand::SendReceipt { .. } => {
                         // Fire-and-forget, no response channel
                     }
+                    NodeCommand::UpdateMlsKeyPackage { .. } => {
+                        // Fire-and-forget, no response channel
+                    }
                 }
             }
         });

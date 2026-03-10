@@ -62,6 +62,7 @@ export class VarianceWebSocket {
 
     ws.onopen = () => {
       this.reconnectDelay = INITIAL_RECONNECT_DELAY;
+      this.handlers.forEach((h) => h({ type: "WsConnected" } as never));
       this.heartbeatTimer = setInterval(() => {
         if (this.ws?.readyState === WebSocket.OPEN) {
           this.ws.send(JSON.stringify({ type: "Ping" }));
@@ -87,6 +88,7 @@ export class VarianceWebSocket {
     ws.onclose = () => {
       this.clearHeartbeat();
       this.ws = null;
+      this.handlers.forEach((h) => h({ type: "WsDisconnected" } as never));
       if (!this.stopped) this.scheduleReconnect();
     };
 

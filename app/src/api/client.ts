@@ -106,8 +106,11 @@ export const conversationsApi = {
 // ===== Messages =====
 
 export const messagesApi = {
-  getDirect: (peerDid: string, before?: number) => {
-    const qs = before !== undefined ? `?before=${before}` : "";
+  getDirect: (peerDid: string, before?: number, limit?: number) => {
+    const params = new URLSearchParams();
+    if (before !== undefined) params.set("before", String(before));
+    if (limit !== undefined) params.set("limit", String(limit));
+    const qs = params.size ? `?${params.toString()}` : "";
     return request<DirectMessage[]>(`/messages/direct/${encodeURIComponent(peerDid)}${qs}`);
   },
 

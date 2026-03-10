@@ -131,6 +131,7 @@ export function useWebSocket() {
   const setActiveConversation = useMessagingStore((s) => s.setActiveConversation);
   const activeConversation = useMessagingStore((s) => s.activeConversation);
   const setTyping = useMessagingStore((s) => s.setTyping);
+  const setWsConnected = useAppStore((s) => s.setWsConnected);
 
   // Clear the conversation's OS notification when the user opens it.
   useEffect(() => {
@@ -313,6 +314,14 @@ export function useWebSocket() {
           void queryClient.invalidateQueries({ queryKey: ["conversations"] });
           break;
 
+        case "WsConnected":
+          setWsConnected(true);
+          break;
+
+        case "WsDisconnected":
+          setWsConnected(false);
+          break;
+
         case "DirectMessageStatusChanged":
           // A message's delivery status changed (e.g. OutboundFailure after send)
           // Refetch messages so the UI updates the status icon (✓✓ → ⏰).
@@ -342,5 +351,6 @@ export function useWebSocket() {
     setActiveConversation,
     activeConversation,
     setTyping,
+    setWsConnected,
   ]);
 }

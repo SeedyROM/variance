@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use super::helpers::receipt_status_to_string;
 use super::types::{ReceiptResponse, SendReceiptRequest, TypingRequest, TypingUsersResponse};
+use variance_messaging::storage::MessageStorage;
 
 // ===== Receipt Handlers =====
 
@@ -24,7 +25,16 @@ pub(super) async fn send_delivered_receipt(
             message: e.to_string(),
         })?;
 
-    // Best-effort P2P delivery to the original sender
+    // Store as pending so it can be retried if the peer is currently offline.
+    if let Err(e) = state
+        .storage
+        .store_pending_receipt(&req.sender_did, &receipt)
+        .await
+    {
+        tracing::warn!("Failed to store pending receipt: {}", e);
+    }
+
+    // Best-effort P2P delivery to the original sender.
     if let Err(e) = state
         .node_handle
         .send_receipt(req.sender_did, receipt.clone())
@@ -53,7 +63,16 @@ pub(super) async fn send_read_receipt(
             message: e.to_string(),
         })?;
 
-    // Best-effort P2P delivery to the original sender
+    // Store as pending so it can be retried if the peer is currently offline.
+    if let Err(e) = state
+        .storage
+        .store_pending_receipt(&req.sender_did, &receipt)
+        .await
+    {
+        tracing::warn!("Failed to store pending receipt: {}", e);
+    }
+
+    // Best-effort P2P delivery to the original sender.
     if let Err(e) = state
         .node_handle
         .send_receipt(req.sender_did, receipt.clone())
