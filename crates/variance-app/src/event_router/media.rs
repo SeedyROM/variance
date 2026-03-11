@@ -1,6 +1,6 @@
 //! Media-related event listeners: call events, signaling, offline messages.
 
-use crate::websocket::{WebSocketManager, WsMessage};
+use crate::websocket::{encode_signaling, WebSocketManager, WsMessage};
 use std::sync::Arc;
 use tracing::{debug, warn};
 use variance_media::{CallManager, SignalingHandler};
@@ -115,7 +115,7 @@ fn spawn_signaling_event_listener(ws_manager: WebSocketManager, events: EventCha
                 } => WsMessage::CallIncoming {
                     call_id,
                     from: format!("{}", peer),
-                    message,
+                    signaling_payload: encode_signaling(&message),
                 },
                 SignalingEvent::AnswerReceived {
                     peer,
@@ -124,7 +124,7 @@ fn spawn_signaling_event_listener(ws_manager: WebSocketManager, events: EventCha
                 } => WsMessage::CallAnswer {
                     call_id,
                     from: format!("{}", peer),
-                    message,
+                    signaling_payload: encode_signaling(&message),
                 },
                 SignalingEvent::IceCandidateReceived {
                     peer,
@@ -133,7 +133,7 @@ fn spawn_signaling_event_listener(ws_manager: WebSocketManager, events: EventCha
                 } => WsMessage::IceCandidate {
                     call_id,
                     from: format!("{}", peer),
-                    message,
+                    signaling_payload: encode_signaling(&message),
                 },
                 SignalingEvent::ControlReceived {
                     peer,
@@ -142,7 +142,7 @@ fn spawn_signaling_event_listener(ws_manager: WebSocketManager, events: EventCha
                 } => WsMessage::CallControl {
                     call_id,
                     from: format!("{}", peer),
-                    message,
+                    signaling_payload: encode_signaling(&message),
                 },
                 SignalingEvent::CallEnded { call_id, reason } => {
                     WsMessage::CallEnded { call_id, reason }

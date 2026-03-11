@@ -5,6 +5,10 @@ use libp2p::StreamProtocol;
 use std::io;
 use variance_proto::identity_proto::{IdentityRequest, IdentityResponse, UsernameChanged};
 
+/// Maximum message size for identity protocols (256 KiB).
+/// DID documents and identity responses should never exceed this.
+const MAX_MESSAGE_SIZE: u64 = 256 * 1024;
+
 /// Protocol name for identity resolution
 pub const IDENTITY_PROTOCOL: &str = "/variance/identity/1.0.0";
 
@@ -27,7 +31,7 @@ impl request_response::Codec for IdentityCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
@@ -40,7 +44,7 @@ impl request_response::Codec for IdentityCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
@@ -116,7 +120,7 @@ impl request_response::Codec for RenameCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
@@ -129,7 +133,7 @@ impl request_response::Codec for RenameCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 

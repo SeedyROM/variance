@@ -61,4 +61,7 @@ pub enum Error {
 
     #[snafu(display("MLS commit error: {message}"))]
     MlsCommit { message: String },
+
+    #[snafu(display("Internal lock poisoned: {message}"))]
+    LockPoisoned { message: String },
 }

@@ -43,6 +43,13 @@ use sha2::Sha256;
 use crate::error::{Error, Result};
 use crate::storage::LocalMessageStorage;
 
+/// Helper to convert a `PoisonError` into our `Error::LockPoisoned` variant.
+fn lock_poisoned<T>(err: std::sync::PoisonError<T>) -> Error {
+    Error::LockPoisoned {
+        message: err.to_string(),
+    }
+}
+
 /// The ciphersuite used for all Variance MLS groups.
 ///
 /// X25519 for DHKEM, AES-128-GCM for AEAD, SHA-256 for hashing, Ed25519 for signatures.
@@ -226,7 +233,7 @@ impl MlsGroupHandler {
                 group_id: group_id.to_string(),
             })?;
 
-        let mut group = group_lock.write().expect("group lock poisoned");
+        let mut group = group_lock.write().map_err(lock_poisoned)?;
 
         let (commit, welcome, group_info) = group
             .add_members(&self.provider, &self.signature_keypair, &[key_package])
@@ -265,7 +272,7 @@ impl MlsGroupHandler {
                 group_id: group_id.to_string(),
             })?;
 
-        let mut group = group_lock.write().expect("group lock poisoned");
+        let mut group = group_lock.write().map_err(lock_poisoned)?;
 
         let (commit, welcome, group_info) = group
             .remove_members(&self.provider, &self.signature_keypair, &[member_index])
@@ -301,7 +308,7 @@ impl MlsGroupHandler {
                 group_id: group_id.to_string(),
             })?;
 
-        let group = group_lock.read().expect("group lock poisoned");
+        let group = group_lock.read().map_err(lock_poisoned)?;
         let did_bytes = member_did.as_bytes();
 
         for member in group.members() {
@@ -324,7 +331,7 @@ impl MlsGroupHandler {
                 group_id: group_id.to_string(),
             })?;
 
-        let mut group = group_lock.write().expect("group lock poisoned");
+        let mut group = group_lock.write().map_err(lock_poisoned)?;
 
         group
             .create_message(&self.provider, &self.signature_keypair, plaintext)
@@ -349,7 +356,7 @@ impl MlsGroupHandler {
                 group_id: group_id.to_string(),
             })?;
 
-        let mut group = group_lock.write().expect("group lock poisoned");
+        let mut group = group_lock.write().map_err(lock_poisoned)?;
 
         let protocol_message: ProtocolMessage =
             message
@@ -444,7 +451,7 @@ impl MlsGroupHandler {
                 group_id: group_id.to_string(),
             })?;
 
-        let group = group_lock.read().expect("group lock poisoned");
+        let group = group_lock.read().map_err(lock_poisoned)?;
         let mut dids = Vec::new();
 
         for member in group.members() {
@@ -469,7 +476,7 @@ impl MlsGroupHandler {
                 group_id: group_id.to_string(),
             })?;
 
-        let group = group_lock.read().expect("group lock poisoned");
+        let group = group_lock.read().map_err(lock_poisoned)?;
         Ok(group.epoch().as_u64())
     }
 
@@ -485,7 +492,7 @@ impl MlsGroupHandler {
                 group_id: group_id.to_string(),
             })?;
 
-        let mut group = group_lock.write().expect("group lock poisoned");
+        let mut group = group_lock.write().map_err(lock_poisoned)?;
 
         let msg = group
             .leave_group(&self.provider, &self.signature_keypair)
@@ -639,7 +646,7 @@ impl MlsGroupHandler {
             .storage()
             .values
             .read()
-            .expect("MLS storage lock poisoned");
+            .map_err(lock_poisoned)?;
 
         let storage_entries: Vec<[String; 2]> = values
             .iter()
@@ -697,7 +704,7 @@ impl MlsGroupHandler {
                 .storage()
                 .values
                 .write()
-                .expect("MLS storage lock poisoned");
+                .map_err(lock_poisoned)?;
             *values = restored_map;
         }
 

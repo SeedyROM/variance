@@ -383,17 +383,16 @@ async fn main() -> Result<()> {
                             agent = %info.agent_version,
                             "Identified peer"
                         );
-                        // Add observed addresses from peers so the relay knows
-                        // its own public address(es) for advertisement.
+                        // Add the remote peer's listen addresses to Kademlia routing.
                         for addr in &info.listen_addrs {
                             swarm
                                 .behaviour_mut()
                                 .kad
                                 .add_address(&remote, addr.clone());
                         }
-                        for addr in info.listen_addrs {
-                            swarm.add_external_address(addr);
-                        }
+                        // Use the address the remote peer observed us at to learn
+                        // our own public address — NOT the remote's listen_addrs.
+                        swarm.add_external_address(info.observed_addr);
                     }
                     Some(SwarmEvent::Behaviour(RelayBehaviourEvent::Kad(event))) => {
                         match event {

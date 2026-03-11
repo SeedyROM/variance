@@ -6,8 +6,10 @@
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::IntoResponse;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
+use prost::Message as ProstMessage;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -15,6 +17,11 @@ use tracing::{debug, warn};
 use variance_proto::media_proto::SignalingMessage;
 
 use crate::state::AppState;
+
+/// Encode a prost `SignalingMessage` as base64 for JSON transport.
+pub fn encode_signaling(msg: &SignalingMessage) -> String {
+    BASE64.encode(msg.encode_to_vec())
+}
 
 /// Messages sent FROM clients TO server
 #[derive(Debug, Deserialize)]
@@ -44,34 +51,45 @@ pub enum ClientMessage {
     },
 }
 
+/// Subscription category for a [`WsMessage`].
+///
+/// Each variant maps to one of the boolean flags in [`ClientSubscription`].
+/// Messages that don't belong to any optional category (e.g. `Connected`,
+/// `Ping`, `Pong`) are always delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MessageCategory {
+    Signaling,
+    Messages,
+    Presence,
+    /// Always delivered regardless of subscription flags.
+    System,
+}
+
 /// WebSocket message sent to clients
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum WsMessage {
-    // Signaling events
+    // Signaling events — `signaling_payload` is base64-encoded protobuf bytes
+    // of the full `SignalingMessage` so the frontend has access to SDP/ICE data.
     CallIncoming {
         call_id: String,
         from: String,
-        #[serde(skip)]
-        message: SignalingMessage,
+        signaling_payload: String,
     },
     CallAnswer {
         call_id: String,
         from: String,
-        #[serde(skip)]
-        message: SignalingMessage,
+        signaling_payload: String,
     },
     IceCandidate {
         call_id: String,
         from: String,
-        #[serde(skip)]
-        message: SignalingMessage,
+        signaling_payload: String,
     },
     CallControl {
         call_id: String,
         from: String,
-        #[serde(skip)]
-        message: SignalingMessage,
+        signaling_payload: String,
     },
     CallEnded {
         call_id: String,
@@ -162,6 +180,40 @@ pub enum WsMessage {
     Pong,
 }
 
+impl WsMessage {
+    /// Return the subscription category this message belongs to.
+    fn category(&self) -> MessageCategory {
+        match self {
+            // Signaling
+            Self::CallIncoming { .. }
+            | Self::CallAnswer { .. }
+            | Self::IceCandidate { .. }
+            | Self::CallControl { .. }
+            | Self::CallEnded { .. }
+            | Self::CallStateChanged { .. } => MessageCategory::Signaling,
+
+            // Messages (direct, group, offline, typing, receipts)
+            Self::DirectMessageReceived { .. }
+            | Self::DirectMessageSent { .. }
+            | Self::DirectMessageNack { .. }
+            | Self::DirectMessageStatusChanged { .. }
+            | Self::GroupMessageReceived { .. }
+            | Self::MlsGroupJoined { .. }
+            | Self::OfflineMessagesReceived { .. }
+            | Self::TypingStarted { .. }
+            | Self::TypingStopped { .. }
+            | Self::ReceiptRead { .. }
+            | Self::ReceiptDelivered { .. } => MessageCategory::Messages,
+
+            // Presence / identity
+            Self::PresenceUpdated { .. } | Self::PeerRenamed { .. } => MessageCategory::Presence,
+
+            // System — always delivered
+            Self::Connected { .. } | Self::Ping | Self::Pong => MessageCategory::System,
+        }
+    }
+}
+
 /// Client subscription preferences
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClientSubscription {
@@ -183,6 +235,18 @@ impl Default for ClientSubscription {
             signaling: true,
             messages: true,
             presence: true,
+        }
+    }
+}
+
+impl ClientSubscription {
+    /// Whether this subscription accepts messages of the given category.
+    fn accepts(&self, category: MessageCategory) -> bool {
+        match category {
+            MessageCategory::Signaling => self.signaling,
+            MessageCategory::Messages => self.messages,
+            MessageCategory::Presence => self.presence,
+            MessageCategory::System => true,
         }
     }
 }
@@ -221,12 +285,23 @@ impl WebSocketManager {
 
     /// Broadcast message to all subscribed clients
     pub fn broadcast(&self, message: WsMessage) {
-        let count = self.clients.len();
-        debug!("Broadcasting message to {} clients", count);
+        let category = message.category();
+        let mut sent = 0u32;
 
         for entry in self.clients.iter() {
-            let _ = entry.value().tx.send(message.clone());
+            let client = entry.value();
+            if client.subscriptions.accepts(category) {
+                let _ = client.tx.send(message.clone());
+                sent += 1;
+            }
         }
+
+        debug!(
+            "Broadcast {:?} message to {}/{} clients",
+            category,
+            sent,
+            self.clients.len()
+        );
     }
 
     /// Send message to specific client
@@ -633,6 +708,79 @@ mod tests {
         // Both clients should receive the message
         assert!(rx1.try_recv().is_ok());
         assert!(rx2.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_respects_subscriptions() {
+        let manager = WebSocketManager::new();
+        let (tx_all, mut rx_all) = mpsc::unbounded_channel();
+        let (tx_no_sig, mut rx_no_sig) = mpsc::unbounded_channel();
+        let (tx_no_msg, mut rx_no_msg) = mpsc::unbounded_channel();
+
+        // Client with all subscriptions enabled
+        manager.register(
+            "all".to_string(),
+            ConnectedClient {
+                did: None,
+                tx: tx_all,
+                subscriptions: ClientSubscription::default(),
+            },
+        );
+
+        // Client with signaling disabled
+        manager.register(
+            "no_sig".to_string(),
+            ConnectedClient {
+                did: None,
+                tx: tx_no_sig,
+                subscriptions: ClientSubscription {
+                    signaling: false,
+                    messages: true,
+                    presence: true,
+                },
+            },
+        );
+
+        // Client with messages disabled
+        manager.register(
+            "no_msg".to_string(),
+            ConnectedClient {
+                did: None,
+                tx: tx_no_msg,
+                subscriptions: ClientSubscription {
+                    signaling: true,
+                    messages: false,
+                    presence: true,
+                },
+            },
+        );
+
+        // Broadcast a signaling message
+        manager.broadcast(WsMessage::CallEnded {
+            call_id: "c1".into(),
+            reason: "bye".into(),
+        });
+        assert!(rx_all.try_recv().is_ok(), "all-sub client gets signaling");
+        assert!(rx_no_sig.try_recv().is_err(), "no-signaling client skipped");
+        assert!(rx_no_msg.try_recv().is_ok(), "no-msg client gets signaling");
+
+        // Broadcast a message event
+        manager.broadcast(WsMessage::DirectMessageReceived {
+            from: "did:test".into(),
+            message_id: "m1".into(),
+            text: "hi".into(),
+            timestamp: 0,
+            reply_to: None,
+        });
+        assert!(rx_all.try_recv().is_ok(), "all-sub client gets messages");
+        assert!(rx_no_sig.try_recv().is_ok(), "no-sig client gets messages");
+        assert!(rx_no_msg.try_recv().is_err(), "no-msg client skipped");
+
+        // System messages always delivered
+        manager.broadcast(WsMessage::Ping);
+        assert!(rx_all.try_recv().is_ok());
+        assert!(rx_no_sig.try_recv().is_ok());
+        assert!(rx_no_msg.try_recv().is_ok());
     }
 
     #[tokio::test]

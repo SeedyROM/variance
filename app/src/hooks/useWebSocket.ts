@@ -132,6 +132,13 @@ export function useWebSocket() {
   const markRead = useMessagingStore((s) => s.markRead);
   const setActiveConversation = useMessagingStore((s) => s.setActiveConversation);
   const activeConversation = useMessagingStore((s) => s.activeConversation);
+  // Keep activeConversation in a ref so event handlers always read the latest
+  // value without causing the WebSocket effect to re-run (and reconnect).
+  const activeConversationRef = useRef(activeConversation);
+  useEffect(() => {
+    activeConversationRef.current = activeConversation;
+  }, [activeConversation]);
+
   const setTyping = useMessagingStore((s) => s.setTyping);
   const setWsConnected = useAppStore((s) => s.setWsConnected);
 
@@ -212,7 +219,8 @@ export function useWebSocket() {
               const dids = [currentDid, event.from].sort();
               const conversationId = `${dids[0]}:${dids[1]}`;
               const isActive =
-                activeConversation?.type === "dm" && activeConversation.peerId === event.from;
+                activeConversationRef.current?.type === "dm" &&
+                activeConversationRef.current.peerId === event.from;
               if (!isActive) {
                 markUnread(conversationId);
                 const senderName =
@@ -240,7 +248,8 @@ export function useWebSocket() {
             void queryClient.invalidateQueries({ queryKey: ["messages", "group", event.group_id] });
             void queryClient.invalidateQueries({ queryKey: ["groups"] });
             const isActiveGroup =
-              activeConversation?.type === "group" && activeConversation.groupId === event.group_id;
+              activeConversationRef.current?.type === "group" &&
+              activeConversationRef.current.groupId === event.group_id;
             if (!isActiveGroup) {
               markUnread(event.group_id);
               const senderName =
@@ -356,7 +365,6 @@ export function useWebSocket() {
     markUnread,
     markRead,
     setActiveConversation,
-    activeConversation,
     setTyping,
     setWsConnected,
   ]);

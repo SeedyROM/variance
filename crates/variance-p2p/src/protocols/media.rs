@@ -5,6 +5,9 @@ use libp2p::StreamProtocol;
 use std::io;
 use variance_proto::media_proto::SignalingMessage;
 
+/// Maximum message size for signaling protocol (64 KiB).
+const MAX_MESSAGE_SIZE: u64 = 64 * 1024;
+
 /// Protocol name for WebRTC signaling
 pub const SIGNALING_PROTOCOL: &str = "/variance/webrtc-signaling/1.0.0";
 
@@ -27,7 +30,7 @@ impl request_response::Codec for SignalingCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
@@ -40,7 +43,7 @@ impl request_response::Codec for SignalingCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 

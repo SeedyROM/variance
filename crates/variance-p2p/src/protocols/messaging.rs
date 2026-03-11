@@ -8,6 +8,10 @@ use variance_proto::messaging_proto::{
     OfflineMessageResponse, ReadReceipt, TypingIndicator,
 };
 
+/// Maximum message size for messaging protocols (1 MiB).
+/// Protects against OOM from malicious peers sending unbounded data.
+const MAX_MESSAGE_SIZE: u64 = 1024 * 1024;
+
 /// Protocol name for offline message relay
 pub const OFFLINE_MESSAGE_PROTOCOL: &str = "/variance/offline-messages/1.0.0";
 
@@ -30,7 +34,7 @@ impl request_response::Codec for OfflineMessageCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
@@ -43,7 +47,7 @@ impl request_response::Codec for OfflineMessageCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
@@ -102,7 +106,7 @@ impl request_response::Codec for DirectMessageCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
@@ -115,7 +119,7 @@ impl request_response::Codec for DirectMessageCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
@@ -205,7 +209,7 @@ impl request_response::Codec for TypingIndicatorCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
@@ -218,7 +222,7 @@ impl request_response::Codec for TypingIndicatorCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
@@ -289,7 +293,7 @@ impl request_response::Codec for ReceiptCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
@@ -302,7 +306,7 @@ impl request_response::Codec for ReceiptCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
@@ -373,7 +377,7 @@ impl request_response::Codec for GroupSyncCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
@@ -386,7 +390,7 @@ impl request_response::Codec for GroupSyncCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 

@@ -185,32 +185,38 @@ impl CallManager {
 
     /// Reject an incoming call
     pub async fn reject_call(&self, call_id: &str) -> Result<Call> {
-        let mut call_ref = self
-            .calls
-            .get_mut(call_id)
-            .ok_or_else(|| Error::CallNotFound {
-                call_id: call_id.to_string(),
-            })?;
+        // Extract data and drop DashMap ref before awaiting — holding DashMap::get_mut()
+        // across .await would hold the shard write lock, risking deadlock.
+        let (call, peer_connection) = {
+            let mut call_ref = self
+                .calls
+                .get_mut(call_id)
+                .ok_or_else(|| Error::CallNotFound {
+                    call_id: call_id.to_string(),
+                })?;
 
-        if call_ref.status != CallStatus::Ringing {
-            return Err(Error::InvalidState {
-                message: format!("Cannot reject call in state {:?}", call_ref.status),
-            });
-        }
+            if call_ref.status != CallStatus::Ringing {
+                return Err(Error::InvalidState {
+                    message: format!("Cannot reject call in state {:?}", call_ref.status),
+                });
+            }
 
-        let now = chrono::Utc::now().timestamp_millis();
-        call_ref.status = CallStatus::Ended;
-        call_ref.ended_at = Some(now);
+            let now = chrono::Utc::now().timestamp_millis();
+            call_ref.status = CallStatus::Ended;
+            call_ref.ended_at = Some(now);
 
-        // Close peer connection if present
-        let pc_guard = call_ref.peer_connection.lock().await;
-        if let Some(ref peer_connection) = *pc_guard {
-            let _ = peer_connection.close().await; // Ignore close errors on reject
+            let pc = Arc::clone(&call_ref.peer_connection);
+            let call = call_ref.clone();
+            (call, pc)
+            // DashMap ref dropped here
+        };
+
+        // Close peer connection if present (no DashMap lock held)
+        let pc_guard = peer_connection.lock().await;
+        if let Some(ref pc) = *pc_guard {
+            let _ = pc.close().await;
         }
         drop(pc_guard);
-
-        let call = call_ref.clone();
-        drop(call_ref);
 
         // Remove from active calls
         self.calls.remove(call_id);
@@ -241,28 +247,34 @@ impl CallManager {
     ///
     /// Closes the WebRTC peer connection and removes call from active calls.
     pub async fn end_call(&self, call_id: &str) -> Result<Call> {
-        let mut call_ref = self
-            .calls
-            .get_mut(call_id)
-            .ok_or_else(|| Error::CallNotFound {
-                call_id: call_id.to_string(),
-            })?;
+        // Extract data and drop DashMap ref before awaiting — holding DashMap::get_mut()
+        // across .await would hold the shard write lock, risking deadlock.
+        let (call, peer_connection) = {
+            let mut call_ref = self
+                .calls
+                .get_mut(call_id)
+                .ok_or_else(|| Error::CallNotFound {
+                    call_id: call_id.to_string(),
+                })?;
 
-        let now = chrono::Utc::now().timestamp_millis();
-        call_ref.status = CallStatus::Ended;
-        call_ref.ended_at = Some(now);
+            let now = chrono::Utc::now().timestamp_millis();
+            call_ref.status = CallStatus::Ended;
+            call_ref.ended_at = Some(now);
 
-        // Close peer connection if present
-        let pc_guard = call_ref.peer_connection.lock().await;
-        if let Some(ref peer_connection) = *pc_guard {
-            peer_connection.close().await.map_err(|e| Error::WebRtc {
+            let pc = Arc::clone(&call_ref.peer_connection);
+            let call = call_ref.clone();
+            (call, pc)
+            // DashMap ref dropped here
+        };
+
+        // Close peer connection if present (no DashMap lock held)
+        let pc_guard = peer_connection.lock().await;
+        if let Some(ref pc) = *pc_guard {
+            pc.close().await.map_err(|e| Error::WebRtc {
                 message: format!("Failed to close peer connection: {}", e),
             })?;
         }
         drop(pc_guard);
-
-        let call = call_ref.clone();
-        drop(call_ref);
 
         // Remove from active calls
         self.calls.remove(call_id);
@@ -272,26 +284,32 @@ impl CallManager {
 
     /// Mark call as failed
     pub async fn fail_call(&self, call_id: &str) -> Result<Call> {
-        let mut call_ref = self
-            .calls
-            .get_mut(call_id)
-            .ok_or_else(|| Error::CallNotFound {
-                call_id: call_id.to_string(),
-            })?;
+        // Extract data and drop DashMap ref before awaiting — holding DashMap::get_mut()
+        // across .await would hold the shard write lock, risking deadlock.
+        let (call, peer_connection) = {
+            let mut call_ref = self
+                .calls
+                .get_mut(call_id)
+                .ok_or_else(|| Error::CallNotFound {
+                    call_id: call_id.to_string(),
+                })?;
 
-        let now = chrono::Utc::now().timestamp_millis();
-        call_ref.status = CallStatus::Failed;
-        call_ref.ended_at = Some(now);
+            let now = chrono::Utc::now().timestamp_millis();
+            call_ref.status = CallStatus::Failed;
+            call_ref.ended_at = Some(now);
 
-        // Close peer connection if present
-        let pc_guard = call_ref.peer_connection.lock().await;
-        if let Some(ref peer_connection) = *pc_guard {
-            let _ = peer_connection.close().await; // Ignore close errors on failure
+            let pc = Arc::clone(&call_ref.peer_connection);
+            let call = call_ref.clone();
+            (call, pc)
+            // DashMap ref dropped here
+        };
+
+        // Close peer connection if present (no DashMap lock held)
+        let pc_guard = peer_connection.lock().await;
+        if let Some(ref pc) = *pc_guard {
+            let _ = pc.close().await;
         }
         drop(pc_guard);
-
-        let call = call_ref.clone();
-        drop(call_ref);
 
         // Remove from active calls
         self.calls.remove(call_id);
@@ -303,9 +321,14 @@ impl CallManager {
     ///
     /// Creates a peer connection, generates an SDP offer, and returns the SDP string.
     pub async fn create_offer(&self, call_id: &str) -> Result<String> {
-        let call = self.calls.get(call_id).ok_or_else(|| Error::CallNotFound {
-            call_id: call_id.to_string(),
-        })?;
+        // Extract the peer_connection Arc and drop DashMap ref before awaiting
+        let pc_holder = {
+            let call = self.calls.get(call_id).ok_or_else(|| Error::CallNotFound {
+                call_id: call_id.to_string(),
+            })?;
+            Arc::clone(&call.peer_connection)
+            // DashMap ref dropped here
+        };
 
         // Create peer connection with state/ICE handlers wired to this call
         let peer_connection = self.create_peer_connection(call_id).await?;
@@ -335,8 +358,8 @@ impl CallManager {
                 message: format!("Failed to set local description: {}", e),
             })?;
 
-        // Store peer connection
-        let mut pc_guard = call.peer_connection.lock().await;
+        // Store peer connection (no DashMap lock held)
+        let mut pc_guard = pc_holder.lock().await;
         *pc_guard = Some(Arc::new(peer_connection));
 
         Ok(offer.sdp)
@@ -346,9 +369,14 @@ impl CallManager {
     ///
     /// Sets remote description from offer, creates answer, and returns SDP string.
     pub async fn handle_offer(&self, call_id: &str, offer_sdp: String) -> Result<String> {
-        let call = self.calls.get(call_id).ok_or_else(|| Error::CallNotFound {
-            call_id: call_id.to_string(),
-        })?;
+        // Extract the peer_connection Arc and drop DashMap ref before awaiting
+        let pc_holder = {
+            let call = self.calls.get(call_id).ok_or_else(|| Error::CallNotFound {
+                call_id: call_id.to_string(),
+            })?;
+            Arc::clone(&call.peer_connection)
+            // DashMap ref dropped here
+        };
 
         // Create peer connection with state/ICE handlers wired to this call
         let peer_connection = self.create_peer_connection(call_id).await?;
@@ -381,8 +409,8 @@ impl CallManager {
                 message: format!("Failed to set local description: {}", e),
             })?;
 
-        // Store peer connection
-        let mut pc_guard = call.peer_connection.lock().await;
+        // Store peer connection (no DashMap lock held)
+        let mut pc_guard = pc_holder.lock().await;
         *pc_guard = Some(Arc::new(peer_connection));
 
         Ok(answer.sdp)
@@ -392,11 +420,16 @@ impl CallManager {
     ///
     /// Sets remote description from answer to complete the connection.
     pub async fn handle_answer(&self, call_id: &str, answer_sdp: String) -> Result<()> {
-        let call = self.calls.get(call_id).ok_or_else(|| Error::CallNotFound {
-            call_id: call_id.to_string(),
-        })?;
+        // Extract the peer_connection Arc and drop DashMap ref before awaiting
+        let pc_holder = {
+            let call = self.calls.get(call_id).ok_or_else(|| Error::CallNotFound {
+                call_id: call_id.to_string(),
+            })?;
+            Arc::clone(&call.peer_connection)
+            // DashMap ref dropped here
+        };
 
-        let pc_guard = call.peer_connection.lock().await;
+        let pc_guard = pc_holder.lock().await;
         let peer_connection = pc_guard.as_ref().ok_or_else(|| Error::InvalidState {
             message: "No peer connection found for call".to_string(),
         })?;
@@ -426,11 +459,16 @@ impl CallManager {
         sdp_mid: Option<String>,
         sdp_mline_index: Option<u16>,
     ) -> Result<()> {
-        let call = self.calls.get(call_id).ok_or_else(|| Error::CallNotFound {
-            call_id: call_id.to_string(),
-        })?;
+        // Extract the peer_connection Arc and drop DashMap ref before awaiting
+        let pc_holder = {
+            let call = self.calls.get(call_id).ok_or_else(|| Error::CallNotFound {
+                call_id: call_id.to_string(),
+            })?;
+            Arc::clone(&call.peer_connection)
+            // DashMap ref dropped here
+        };
 
-        let pc_guard = call.peer_connection.lock().await;
+        let pc_guard = pc_holder.lock().await;
         let peer_connection = pc_guard.as_ref().ok_or_else(|| Error::InvalidState {
             message: "No peer connection found for call".to_string(),
         })?;
@@ -475,12 +513,21 @@ impl CallManager {
     }
 
     /// Register an incoming call
+    ///
+    /// Returns an error if a call with this ID already exists (prevents
+    /// a malicious peer from hijacking an in-progress call).
     pub fn register_incoming_call(
         &self,
         call_id: String,
         caller_did: String,
         call_type: CallType,
-    ) -> Call {
+    ) -> Result<Call> {
+        if self.calls.contains_key(&call_id) {
+            return Err(Error::InvalidState {
+                message: format!("Call {call_id} already exists"),
+            });
+        }
+
         let now = chrono::Utc::now().timestamp_millis();
 
         let call = Call {
@@ -494,7 +541,7 @@ impl CallManager {
         };
 
         self.calls.insert(call_id, call.clone());
-        call
+        Ok(call)
     }
 
     /// Convert Call to protobuf format
@@ -652,11 +699,13 @@ mod tests {
     fn test_accept_call() {
         let manager = create_test_manager("did:variance:bob");
 
-        let call = manager.register_incoming_call(
-            "call123".to_string(),
-            "did:variance:alice".to_string(),
-            CallType::Video,
-        );
+        let call = manager
+            .register_incoming_call(
+                "call123".to_string(),
+                "did:variance:alice".to_string(),
+                CallType::Video,
+            )
+            .unwrap();
 
         assert_eq!(call.status, CallStatus::Ringing);
 
@@ -668,11 +717,13 @@ mod tests {
     async fn test_reject_call() {
         let manager = create_test_manager("did:variance:bob");
 
-        let call = manager.register_incoming_call(
-            "call123".to_string(),
-            "did:variance:alice".to_string(),
-            CallType::Audio,
-        );
+        let call = manager
+            .register_incoming_call(
+                "call123".to_string(),
+                "did:variance:alice".to_string(),
+                CallType::Audio,
+            )
+            .unwrap();
 
         let rejected = manager.reject_call(&call.id).await.unwrap();
         assert_eq!(rejected.status, CallStatus::Ended);
@@ -823,11 +874,13 @@ mod tests {
         let manager = create_test_manager("did:variance:bob");
 
         // Register incoming call
-        let call = manager.register_incoming_call(
-            "call456".to_string(),
-            "did:variance:alice".to_string(),
-            CallType::Video,
-        );
+        let call = manager
+            .register_incoming_call(
+                "call456".to_string(),
+                "did:variance:alice".to_string(),
+                CallType::Video,
+            )
+            .unwrap();
 
         // Simulate receiving an offer (minimal valid SDP)
         let offer_sdp = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n\
@@ -841,5 +894,27 @@ mod tests {
         let answer_sdp = manager.handle_offer(&call.id, offer_sdp).await.unwrap();
         assert!(!answer_sdp.is_empty());
         assert!(answer_sdp.contains("v=0")); // SDP version
+    }
+
+    #[test]
+    fn test_duplicate_call_id_rejected() {
+        let manager = create_test_manager("did:variance:bob");
+
+        manager
+            .register_incoming_call(
+                "call123".to_string(),
+                "did:variance:alice".to_string(),
+                CallType::Audio,
+            )
+            .unwrap();
+
+        // Second registration with same ID must fail
+        let result = manager.register_incoming_call(
+            "call123".to_string(),
+            "did:variance:mallory".to_string(),
+            CallType::Video,
+        );
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::InvalidState { .. }));
     }
 }

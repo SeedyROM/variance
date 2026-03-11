@@ -388,11 +388,13 @@ mod tests {
         handler.set_call_manager(call_manager.clone()).await;
 
         // Register incoming call in call manager
-        call_manager.register_incoming_call(
-            "call123".to_string(),
-            sender_did.id.clone(),
-            variance_proto::media_proto::CallType::Audio,
-        );
+        call_manager
+            .register_incoming_call(
+                "call123".to_string(),
+                sender_did.id.clone(),
+                variance_proto::media_proto::CallType::Audio,
+            )
+            .unwrap();
 
         let signing_key = SigningKey::generate(&mut OsRng);
         let media_handler = MediaSignalingHandler::new("did:variance:bob".to_string(), signing_key);
