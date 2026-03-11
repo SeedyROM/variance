@@ -17,40 +17,43 @@ use variance_p2p::{
     EventChannels, IdentityEvent, NodeHandle, ReceiptEvent, RenameEvent, TypingEvent,
 };
 
+/// Dependencies for all social-related event listeners.
+pub(super) struct SocialDeps {
+    pub ws_manager: WebSocketManager,
+    pub typing: Arc<TypingHandler>,
+    pub receipts: Arc<ReceiptHandler>,
+    pub username_registry: Arc<UsernameRegistry>,
+    pub storage: Arc<LocalMessageStorage>,
+    pub identity_cache: Arc<MultiLayerCache>,
+    pub direct_messaging: Arc<DirectMessageHandler>,
+    pub mls_groups: Arc<MlsGroupHandler>,
+    pub node_handle: NodeHandle,
+    pub call_manager: Arc<CallManager>,
+    pub signaling: Arc<SignalingHandler>,
+}
+
 /// Spawn all social-related event listeners (typing, receipts, rename, identity/presence).
-#[allow(clippy::too_many_arguments)]
-pub(super) fn spawn_social_listeners(
-    ws_manager: WebSocketManager,
-    typing: Arc<TypingHandler>,
-    receipts: Arc<ReceiptHandler>,
-    username_registry: Arc<UsernameRegistry>,
-    storage: Arc<LocalMessageStorage>,
-    identity_cache: Arc<MultiLayerCache>,
-    direct_messaging: Arc<DirectMessageHandler>,
-    mls_groups: Arc<MlsGroupHandler>,
-    node_handle: NodeHandle,
-    call_manager: Arc<CallManager>,
-    signaling: Arc<SignalingHandler>,
-    events: EventChannels,
-) {
-    spawn_typing_listener(ws_manager.clone(), typing, events.clone());
-    spawn_receipt_listener(ws_manager.clone(), receipts, events.clone());
+pub(super) fn spawn_social_listeners(deps: SocialDeps, events: EventChannels) {
+    spawn_typing_listener(deps.ws_manager.clone(), deps.typing, events.clone());
+    spawn_receipt_listener(deps.ws_manager.clone(), deps.receipts, events.clone());
     spawn_rename_listener(
-        ws_manager.clone(),
-        username_registry.clone(),
-        storage.clone(),
+        deps.ws_manager.clone(),
+        deps.username_registry.clone(),
+        deps.storage.clone(),
         events.clone(),
     );
     spawn_identity_listener(
-        ws_manager,
-        username_registry,
-        storage,
-        identity_cache,
-        direct_messaging,
-        mls_groups,
-        node_handle,
-        call_manager,
-        signaling,
+        IdentityListenerDeps {
+            ws_manager: deps.ws_manager,
+            username_registry: deps.username_registry,
+            storage: deps.storage,
+            identity_cache: deps.identity_cache,
+            direct_messaging: deps.direct_messaging,
+            mls_groups: deps.mls_groups,
+            node_handle: deps.node_handle,
+            call_manager: deps.call_manager,
+            signaling: deps.signaling,
+        },
         events,
     );
 }
@@ -170,8 +173,8 @@ fn spawn_rename_listener(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
-fn spawn_identity_listener(
+/// Dependencies for the identity/presence listener, grouped to avoid too-many-arguments.
+struct IdentityListenerDeps {
     ws_manager: WebSocketManager,
     username_registry: Arc<UsernameRegistry>,
     storage: Arc<LocalMessageStorage>,
@@ -181,8 +184,9 @@ fn spawn_identity_listener(
     node_handle: NodeHandle,
     call_manager: Arc<CallManager>,
     signaling: Arc<SignalingHandler>,
-    events: EventChannels,
-) {
+}
+
+fn spawn_identity_listener(deps: IdentityListenerDeps, events: EventChannels) {
     tokio::spawn(async move {
         let mut rx = events.subscribe_identity();
         debug!("EventRouter: Started identity event listener");
@@ -217,8 +221,13 @@ fn spawn_identity_listener(
                                     "EventRouter: Caching username {}#{:04} for {}",
                                     name, disc, doc.id
                                 );
-                                username_registry.cache_mapping(name.clone(), disc, doc.id.clone());
-                                if let Err(e) = storage.store_peer_name(&doc.id, &name, disc).await
+                                deps.username_registry.cache_mapping(
+                                    name.clone(),
+                                    disc,
+                                    doc.id.clone(),
+                                );
+                                if let Err(e) =
+                                    deps.storage.store_peer_name(&doc.id, &name, disc).await
                                 {
                                     warn!("Failed to persist peer name for {}: {}", doc.id, e);
                                 }
@@ -229,129 +238,28 @@ fn spawn_identity_listener(
                 IdentityEvent::PeerOffline { did } => {
                     // Evict stale identity so a reconnecting peer with new
                     // keys (e.g. after reinstall) gets a fresh resolution.
-                    identity_cache.remove(&did);
+                    deps.identity_cache.remove(&did);
 
                     // Purge signaling nonces for any call involving this peer.
                     // Without this, nonce sets for abandoned calls (peer dropped
                     // connection without sending hangup) would leak indefinitely.
-                    for call in call_manager.list_active_calls() {
-                        if call_manager.get_remote_peer(&call.id).as_deref() == Some(did.as_str()) {
-                            signaling.purge_call_nonces(&call.id);
+                    for call in deps.call_manager.list_active_calls() {
+                        if deps.call_manager.get_remote_peer(&call.id).as_deref()
+                            == Some(did.as_str())
+                        {
+                            deps.signaling.purge_call_nonces(&call.id);
                         }
                     }
 
-                    let display_name = username_registry.get_display_name(&did);
-                    ws_manager.broadcast(WsMessage::PresenceUpdated {
+                    let display_name = deps.username_registry.get_display_name(&did);
+                    deps.ws_manager.broadcast(WsMessage::PresenceUpdated {
                         did,
                         online: false,
                         display_name,
                     });
                 }
                 IdentityEvent::DidCached { did } => {
-                    // Broadcast presence update (include cached display_name if available)
-                    let display_name = username_registry.get_display_name(&did);
-                    let msg = WsMessage::PresenceUpdated {
-                        did: did.clone(),
-                        online: true,
-                        display_name,
-                    };
-                    ws_manager.broadcast(msg);
-
-                    // Flush pending messages for this peer
-                    debug!(
-                        "Flushing pending messages for newly connected peer: {}",
-                        did
-                    );
-                    match direct_messaging.get_pending_messages(&did).await {
-                        Ok(messages) => {
-                            debug!("Found {} pending messages for {}", messages.len(), did);
-                            for message in messages {
-                                let message_id = message.id.clone();
-                                match node_handle.send_direct_message(did.clone(), message).await {
-                                    Ok(_) => {
-                                        debug!(
-                                            "Successfully sent pending message {} to {}",
-                                            message_id, did
-                                        );
-                                        if let Err(e) =
-                                            direct_messaging.mark_pending_sent(&message_id).await
-                                        {
-                                            warn!(
-                                                "Failed to mark message {} as sent: {}",
-                                                message_id, e
-                                            );
-                                        }
-                                    }
-                                    Err(e) => {
-                                        warn!(
-                                            "Failed to send pending message {} to {}: {}",
-                                            message_id, did, e
-                                        );
-                                        // Keep in queue for next connection attempt
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to fetch pending messages for {}: {}", did, e);
-                        }
-                    }
-
-                    // Flush pending receipts: receipts that couldn't be delivered
-                    // when the peer was offline are retried on reconnect.
-                    match storage.drain_pending_receipts(&did).await {
-                        Ok(pending) if !pending.is_empty() => {
-                            debug!("Flushing {} pending receipt(s) to {}", pending.len(), did);
-                            for receipt in pending {
-                                if let Err(e) = node_handle.send_receipt(did.clone(), receipt).await
-                                {
-                                    debug!("Failed to flush pending receipt to {}: {}", did, e);
-                                }
-                            }
-                        }
-                        Err(e) => warn!("Failed to drain pending receipts for {}: {}", did, e),
-                        _ => {}
-                    }
-
-                    // Trigger group sync: for every MLS group we share with
-                    // this peer, ask them for messages we may have missed.
-                    let shared_groups: Vec<String> = mls_groups
-                        .group_ids()
-                        .into_iter()
-                        .filter(|gid| {
-                            mls_groups
-                                .list_members(gid)
-                                .map(|members| members.contains(&did))
-                                .unwrap_or(false)
-                        })
-                        .collect();
-
-                    if !shared_groups.is_empty() {
-                        debug!(
-                            "Triggering group sync with {} for {} shared group(s)",
-                            did,
-                            shared_groups.len()
-                        );
-                    }
-
-                    for group_id in shared_groups {
-                        use variance_messaging::storage::MessageStorage;
-                        let since = storage
-                            .latest_group_timestamp(&group_id)
-                            .await
-                            .unwrap_or(None)
-                            .unwrap_or(0);
-
-                        if let Err(e) = node_handle
-                            .request_group_sync(did.clone(), group_id.clone(), since, 100)
-                            .await
-                        {
-                            debug!(
-                                "Failed to request group sync for {} from {}: {}",
-                                group_id, did, e
-                            );
-                        }
-                    }
+                    handle_peer_connected(&deps, &did).await;
                 }
                 _ => {}
             }
@@ -359,4 +267,117 @@ fn spawn_identity_listener(
 
         warn!("EventRouter: Identity event listener ended");
     });
+}
+
+/// Handle a newly-connected peer: broadcast presence, flush pending messages
+/// and receipts, then trigger group sync for shared MLS groups.
+async fn handle_peer_connected(deps: &IdentityListenerDeps, did: &str) {
+    // Broadcast presence update (include cached display_name if available)
+    let display_name = deps.username_registry.get_display_name(did);
+    let msg = WsMessage::PresenceUpdated {
+        did: did.to_string(),
+        online: true,
+        display_name,
+    };
+    deps.ws_manager.broadcast(msg);
+
+    // Flush pending messages for this peer
+    debug!(
+        "Flushing pending messages for newly connected peer: {}",
+        did
+    );
+    match deps.direct_messaging.get_pending_messages(did).await {
+        Ok(messages) => {
+            debug!("Found {} pending messages for {}", messages.len(), did);
+            for message in messages {
+                let message_id = message.id.clone();
+                match deps
+                    .node_handle
+                    .send_direct_message(did.to_string(), message)
+                    .await
+                {
+                    Ok(_) => {
+                        debug!(
+                            "Successfully sent pending message {} to {}",
+                            message_id, did
+                        );
+                        if let Err(e) = deps.direct_messaging.mark_pending_sent(&message_id).await {
+                            warn!("Failed to mark message {} as sent: {}", message_id, e);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to send pending message {} to {}: {}",
+                            message_id, did, e
+                        );
+                        // Keep in queue for next connection attempt
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Failed to fetch pending messages for {}: {}", did, e);
+        }
+    }
+
+    // Flush pending receipts: receipts that couldn't be delivered
+    // when the peer was offline are retried on reconnect.
+    match deps.storage.drain_pending_receipts(did).await {
+        Ok(pending) if !pending.is_empty() => {
+            debug!("Flushing {} pending receipt(s) to {}", pending.len(), did);
+            for receipt in pending {
+                if let Err(e) = deps
+                    .node_handle
+                    .send_receipt(did.to_string(), receipt)
+                    .await
+                {
+                    debug!("Failed to flush pending receipt to {}: {}", did, e);
+                }
+            }
+        }
+        Err(e) => warn!("Failed to drain pending receipts for {}: {}", did, e),
+        _ => {}
+    }
+
+    // Trigger group sync: for every MLS group we share with
+    // this peer, ask them for messages we may have missed.
+    let shared_groups: Vec<String> = deps
+        .mls_groups
+        .group_ids()
+        .into_iter()
+        .filter(|gid| {
+            deps.mls_groups
+                .list_members(gid)
+                .map(|members| members.contains(&did.to_string()))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    if !shared_groups.is_empty() {
+        debug!(
+            "Triggering group sync with {} for {} shared group(s)",
+            did,
+            shared_groups.len()
+        );
+    }
+
+    for group_id in shared_groups {
+        let since = deps
+            .storage
+            .latest_group_timestamp(&group_id)
+            .await
+            .unwrap_or(None)
+            .unwrap_or(0);
+
+        if let Err(e) = deps
+            .node_handle
+            .request_group_sync(did.to_string(), group_id.clone(), since, 100)
+            .await
+        {
+            debug!(
+                "Failed to request group sync for {} from {}: {}",
+                group_id, did, e
+            );
+        }
+    }
 }

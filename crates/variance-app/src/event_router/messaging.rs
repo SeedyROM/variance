@@ -12,41 +12,42 @@ use variance_messaging::{
 };
 use variance_p2p::{EventChannels, NodeHandle};
 
+/// Dependencies for all messaging-related event listeners.
+pub(super) struct MessagingDeps {
+    pub ws_manager: WebSocketManager,
+    pub direct_messaging: Arc<DirectMessageHandler>,
+    pub mls_groups: Arc<MlsGroupHandler>,
+    pub node_handle: NodeHandle,
+    pub storage: Arc<LocalMessageStorage>,
+    pub local_did: String,
+    pub receipts: Arc<ReceiptHandler>,
+}
+
 /// Spawn all messaging-related event listeners (DM, group, group sync).
-#[allow(clippy::too_many_arguments)]
-pub(super) fn spawn_messaging_listeners(
-    ws_manager: WebSocketManager,
-    direct_messaging: Arc<DirectMessageHandler>,
-    mls_groups: Arc<MlsGroupHandler>,
-    node_handle: NodeHandle,
-    storage: Arc<LocalMessageStorage>,
-    local_did: String,
-    receipts: Arc<ReceiptHandler>,
-    events: EventChannels,
-) {
+pub(super) fn spawn_messaging_listeners(deps: MessagingDeps, events: EventChannels) {
     spawn_direct_message_listener(
-        ws_manager.clone(),
-        direct_messaging,
-        mls_groups.clone(),
-        node_handle.clone(),
-        storage.clone(),
-        local_did.clone(),
-        receipts,
+        deps.ws_manager.clone(),
+        deps.direct_messaging,
+        deps.mls_groups.clone(),
+        deps.node_handle.clone(),
+        deps.storage.clone(),
+        deps.local_did.clone(),
+        deps.receipts,
         events.clone(),
     );
     spawn_group_message_listener(
-        ws_manager.clone(),
-        mls_groups.clone(),
-        storage.clone(),
-        local_did.clone(),
+        deps.ws_manager.clone(),
+        deps.mls_groups.clone(),
+        deps.storage.clone(),
+        deps.local_did.clone(),
         events.clone(),
     );
     spawn_group_sync_listener(
-        ws_manager,
-        mls_groups,
-        storage,
-        local_did,
-        node_handle,
+        deps.ws_manager,
+        deps.mls_groups,
+        deps.storage,
+        deps.local_did,
+        deps.node_handle,
         events,
     );
 }
@@ -241,7 +242,6 @@ fn spawn_direct_message_listener(
 
                                 // Acknowledge delivery to the sender (best-effort).
                                 // Store as pending in case the sender is currently offline.
-                                use variance_messaging::storage::MessageStorage;
                                 match receipts.send_delivered(message_id.clone()).await {
                                     Ok(receipt) => {
                                         if let Err(e) =
@@ -377,7 +377,6 @@ fn spawn_group_message_listener(
                         Ok(mls_msg) => match mls_groups.process_message(&group_id, mls_msg) {
                             Ok(Some(decrypted)) => {
                                 // Store the raw message so history fetches include it.
-                                use variance_messaging::storage::MessageStorage;
                                 if let Err(e) = storage.store_group(&message).await {
                                     warn!(
                                         "EventRouter: Failed to store group message {}: {}",
@@ -464,7 +463,6 @@ fn spawn_group_sync_listener(
                     ..
                 } => {
                     // Serve the requesting peer from our local storage
-                    use variance_messaging::storage::MessageStorage;
                     let effective_limit = if limit == 0 { 100 } else { limit.min(500) };
 
                     match storage
@@ -522,7 +520,6 @@ fn spawn_group_sync_listener(
                         let timestamp = message.timestamp;
 
                         // Skip if we already have this message
-                        use variance_messaging::storage::MessageStorage;
                         if storage.has_group_message(&group_id, &message_id).await {
                             continue;
                         }

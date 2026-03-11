@@ -106,28 +106,32 @@ impl EventRouter {
         );
 
         messaging::spawn_messaging_listeners(
-            self.ws_manager.clone(),
-            self.direct_messaging.clone(),
-            self.mls_groups.clone(),
-            self.node_handle.clone(),
-            self.storage.clone(),
-            self.local_did.clone(),
-            self.receipts.clone(),
+            messaging::MessagingDeps {
+                ws_manager: self.ws_manager.clone(),
+                direct_messaging: self.direct_messaging.clone(),
+                mls_groups: self.mls_groups.clone(),
+                node_handle: self.node_handle.clone(),
+                storage: self.storage.clone(),
+                local_did: self.local_did.clone(),
+                receipts: self.receipts.clone(),
+            },
             events.clone(),
         );
 
         social::spawn_social_listeners(
-            self.ws_manager,
-            self.typing,
-            self.receipts,
-            self.username_registry,
-            self.storage,
-            self.identity_cache,
-            self.direct_messaging,
-            self.mls_groups,
-            self.node_handle,
-            self.call_manager,
-            self.signaling,
+            social::SocialDeps {
+                ws_manager: self.ws_manager,
+                typing: self.typing,
+                receipts: self.receipts,
+                username_registry: self.username_registry,
+                storage: self.storage,
+                identity_cache: self.identity_cache,
+                direct_messaging: self.direct_messaging,
+                mls_groups: self.mls_groups,
+                node_handle: self.node_handle,
+                call_manager: self.call_manager,
+                signaling: self.signaling,
+            },
             events,
         );
 
