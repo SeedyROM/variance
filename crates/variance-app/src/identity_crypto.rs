@@ -22,6 +22,12 @@ use zeroize::Zeroize;
 const MAGIC: &[u8; 4] = b"VEID";
 const VERSION: u8 = 1;
 
+// Argon2id KDF parameters — 64 MiB memory, 3 iterations, 4-way parallelism.
+// These values follow OWASP recommendations for interactive login use cases.
+const ARGON2_M_COST: u32 = 65536;
+const ARGON2_T_COST: u32 = 3;
+const ARGON2_P_COST: u32 = 4;
+
 /// Returns `true` if `data` starts with the encrypted-identity magic header.
 pub fn is_encrypted(data: &[u8]) -> bool {
     data.starts_with(MAGIC)
@@ -36,7 +42,8 @@ pub fn encrypt(plaintext: &str, passphrase: &str) -> anyhow::Result<Vec<u8>> {
     let argon2 = Argon2::new(
         Algorithm::Argon2id,
         Version::V0x13,
-        Params::new(65536, 3, 4, None).expect("hardcoded Argon2 params are valid"),
+        Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, None)
+            .expect("hardcoded Argon2 params are valid"),
     );
     let mut key_bytes = [0u8; 32];
     argon2
@@ -117,7 +124,8 @@ pub fn decrypt(data: &[u8], passphrase: &str) -> anyhow::Result<String> {
     let argon2 = Argon2::new(
         Algorithm::Argon2id,
         Version::V0x13,
-        Params::new(65536, 3, 4, None).expect("hardcoded Argon2 params are valid"),
+        Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, None)
+            .expect("hardcoded Argon2 params are valid"),
     );
     let mut key_bytes = [0u8; 32];
     argon2

@@ -46,6 +46,8 @@ function clearConversationNotification(conversationKey: string) {
   const id = NOTIFY_IDS.get(conversationKey);
   if (id !== undefined) {
     void removeActive([{ id }]);
+    NOTIFY_ACTION_TARGETS.delete(id);
+    NOTIFY_IDS.delete(conversationKey);
   }
   const timer = NOTIFY_CLEAR_TIMERS.get(conversationKey);
   if (timer) {
@@ -194,144 +196,149 @@ export function useWebSocket() {
     const off = variantWs.on((event: WsEvent) => {
       console.log("[WebSocket] Received event:", event.type, event);
 
-      switch (event.type) {
-        case "DirectMessageReceived": {
-          console.log("[WebSocket] Processing DirectMessageReceived:", event.message_id);
-          // They sent a message, so they're no longer typing.
-          setTyping(event.from, event.from, false);
-          // Invalidate this conversation's messages — MessageView will refetch.
-          void queryClient.invalidateQueries({ queryKey: ["messages", event.from] });
-          // Update the conversation list (timestamp, ordering).
-          void queryClient.invalidateQueries({ queryKey: ["conversations"] });
-          // Mark conversation as unread + notify if it's not the active one
-          const currentDid = localDidRef.current;
-          if (currentDid) {
-            const dids = [currentDid, event.from].sort();
-            const conversationId = `${dids[0]}:${dids[1]}`;
-            const isActive =
-              activeConversation?.type === "dm" && activeConversation.peerId === event.from;
-            if (!isActive) {
-              markUnread(conversationId);
+      try {
+        switch (event.type) {
+          case "DirectMessageReceived": {
+            console.log("[WebSocket] Processing DirectMessageReceived:", event.message_id);
+            // They sent a message, so they're no longer typing.
+            setTyping(event.from, event.from, false);
+            // Invalidate this conversation's messages — MessageView will refetch.
+            void queryClient.invalidateQueries({ queryKey: ["messages", event.from] });
+            // Update the conversation list (timestamp, ordering).
+            void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+            // Mark conversation as unread + notify if it's not the active one
+            const currentDid = localDidRef.current;
+            if (currentDid) {
+              const dids = [currentDid, event.from].sort();
+              const conversationId = `${dids[0]}:${dids[1]}`;
+              const isActive =
+                activeConversation?.type === "dm" && activeConversation.peerId === event.from;
+              if (!isActive) {
+                markUnread(conversationId);
+                const senderName =
+                  useMessagingStore.getState().peerNames.get(event.from) ?? "Someone";
+                void notify(conversationId, `New message from ${senderName}`, {
+                  type: "dm",
+                  peerId: event.from,
+                });
+              }
+            }
+            break;
+          }
+
+          case "DirectMessageSent": {
+            console.log("[WebSocket] Processing DirectMessageSent:", event.message_id);
+            // onSettled in MessageInput already invalidates ["messages", peerDid].
+            // We only need to refresh the conversation list here.
+            void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+            break;
+          }
+
+          case "GroupMessageReceived": {
+            // Sender sent a message — clear their typing indicator.
+            setTyping(event.from, `group:${event.group_id}`, false);
+            void queryClient.invalidateQueries({ queryKey: ["messages", "group", event.group_id] });
+            void queryClient.invalidateQueries({ queryKey: ["groups"] });
+            const isActiveGroup =
+              activeConversation?.type === "group" && activeConversation.groupId === event.group_id;
+            if (!isActiveGroup) {
+              markUnread(event.group_id);
               const senderName =
                 useMessagingStore.getState().peerNames.get(event.from) ?? "Someone";
-              void notify(conversationId, `New message from ${senderName}`, {
-                type: "dm",
-                peerId: event.from,
+              void notify(event.group_id, `New group message from ${senderName}`, {
+                type: "group",
+                groupId: event.group_id,
               });
             }
+            break;
           }
-          break;
-        }
 
-        case "DirectMessageSent": {
-          console.log("[WebSocket] Processing DirectMessageSent:", event.message_id);
-          // onSettled in MessageInput already invalidates ["messages", peerDid].
-          // We only need to refresh the conversation list here.
-          void queryClient.invalidateQueries({ queryKey: ["conversations"] });
-          break;
-        }
-
-        case "GroupMessageReceived": {
-          // Sender sent a message — clear their typing indicator.
-          setTyping(event.from, `group:${event.group_id}`, false);
-          void queryClient.invalidateQueries({ queryKey: ["messages", "group", event.group_id] });
-          void queryClient.invalidateQueries({ queryKey: ["groups"] });
-          const isActiveGroup =
-            activeConversation?.type === "group" && activeConversation.groupId === event.group_id;
-          if (!isActiveGroup) {
-            markUnread(event.group_id);
-            const senderName = useMessagingStore.getState().peerNames.get(event.from) ?? "Someone";
-            void notify(event.group_id, `New group message from ${senderName}`, {
-              type: "group",
-              groupId: event.group_id,
-            });
+          case "MlsGroupJoined": {
+            console.log(
+              "[WebSocket] Auto-joined MLS group",
+              event.group_id,
+              "via invite from",
+              event.inviter
+            );
+            void queryClient.invalidateQueries({ queryKey: ["groups"] });
+            break;
           }
-          break;
-        }
 
-        case "MlsGroupJoined": {
-          console.log(
-            "[WebSocket] Auto-joined MLS group",
-            event.group_id,
-            "via invite from",
-            event.inviter
-          );
-          void queryClient.invalidateQueries({ queryKey: ["groups"] });
-          break;
-        }
+          case "ReceiptDelivered":
+          case "ReceiptRead":
+            void queryClient.invalidateQueries({ queryKey: ["receipts"] });
+            // Refresh messages so the status icon (✓ → ✓✓ → blue ✓✓) updates.
+            void queryClient.invalidateQueries({ queryKey: ["messages"] });
+            break;
 
-        case "ReceiptDelivered":
-        case "ReceiptRead":
-          void queryClient.invalidateQueries({ queryKey: ["receipts"] });
-          // Refresh messages so the status icon (✓ → ✓✓ → blue ✓✓) updates.
-          void queryClient.invalidateQueries({ queryKey: ["messages"] });
-          break;
+          case "TypingStarted":
+            // DM: key by sender DID (the UI looks up typingUsers.get(peerDid))
+            // Group: key by the group recipient ("group:{id}") so GroupView
+            //        can look up typingUsers.get(`group:${groupId}`)
+            if (event.recipient.startsWith("group:")) {
+              setTyping(event.from, event.recipient, true);
+            } else {
+              setTyping(event.from, event.from, true);
+            }
+            break;
 
-        case "TypingStarted":
-          // DM: key by sender DID (the UI looks up typingUsers.get(peerDid))
-          // Group: key by the group recipient ("group:{id}") so GroupView
-          //        can look up typingUsers.get(`group:${groupId}`)
-          if (event.recipient.startsWith("group:")) {
-            setTyping(event.from, event.recipient, true);
-          } else {
-            setTyping(event.from, event.from, true);
-          }
-          break;
+          case "TypingStopped":
+            if (event.recipient.startsWith("group:")) {
+              setTyping(event.from, event.recipient, false);
+            } else {
+              setTyping(event.from, event.from, false);
+            }
+            break;
 
-        case "TypingStopped":
-          if (event.recipient.startsWith("group:")) {
-            setTyping(event.from, event.recipient, false);
-          } else {
-            setTyping(event.from, event.from, false);
-          }
-          break;
+          case "PresenceUpdated":
+            console.log(
+              `[WebSocket] Presence update: ${event.did} is ${event.online ? "online" : "offline"}`,
+              event.display_name ? `(${event.display_name})` : "(no username)"
+            );
+            setPresence(event.did, event.online);
+            if (event.display_name) {
+              setPeerName(event.did, event.display_name);
+            }
+            // Refresh conversation list so peer_username from backend is up to date
+            void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+            break;
 
-        case "PresenceUpdated":
-          console.log(
-            `[WebSocket] Presence update: ${event.did} is ${event.online ? "online" : "offline"}`,
-            event.display_name ? `(${event.display_name})` : "(no username)"
-          );
-          setPresence(event.did, event.online);
-          if (event.display_name) {
+          case "OfflineMessagesReceived":
+            // Relay delivered offline messages — refetch all message queries so the
+            // user sees them immediately if they have a chat open.
+            void queryClient.invalidateQueries({ queryKey: ["messages"] });
+            void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+            void notify("offline-relay", "You have new messages while you were away", null);
+            break;
+
+          case "PeerRenamed":
+            // A connected peer changed their username — update display name and
+            // refresh conversations so the new name appears immediately.
             setPeerName(event.did, event.display_name);
-          }
-          // Refresh conversation list so peer_username from backend is up to date
-          void queryClient.invalidateQueries({ queryKey: ["conversations"] });
-          break;
+            void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+            break;
 
-        case "OfflineMessagesReceived":
-          // Relay delivered offline messages — refetch all message queries so the
-          // user sees them immediately if they have a chat open.
-          void queryClient.invalidateQueries({ queryKey: ["messages"] });
-          void queryClient.invalidateQueries({ queryKey: ["conversations"] });
-          void notify("offline-relay", "You have new messages while you were away", null);
-          break;
+          case "WsConnected":
+            setWsConnected(true);
+            break;
 
-        case "PeerRenamed":
-          // A connected peer changed their username — update display name and
-          // refresh conversations so the new name appears immediately.
-          setPeerName(event.did, event.display_name);
-          void queryClient.invalidateQueries({ queryKey: ["conversations"] });
-          break;
+          case "WsDisconnected":
+            setWsConnected(false);
+            break;
 
-        case "WsConnected":
-          setWsConnected(true);
-          break;
+          case "DirectMessageStatusChanged":
+            // A message's delivery status changed (e.g. OutboundFailure after send)
+            // Refetch messages so the UI updates the status icon (✓✓ → ⏰).
+            // We don't know the peer DID from this event, so invalidate all message queries.
+            void queryClient.invalidateQueries({ queryKey: ["messages"] });
+            void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+            break;
 
-        case "WsDisconnected":
-          setWsConnected(false);
-          break;
-
-        case "DirectMessageStatusChanged":
-          // A message's delivery status changed (e.g. OutboundFailure after send)
-          // Refetch messages so the UI updates the status icon (✓✓ → ⏰).
-          // We don't know the peer DID from this event, so invalidate all message queries.
-          void queryClient.invalidateQueries({ queryKey: ["messages"] });
-          void queryClient.invalidateQueries({ queryKey: ["conversations"] });
-          break;
-
-        default:
-          break;
+          default:
+            break;
+        }
+      } catch (err) {
+        console.error("[WebSocket] Error handling event:", event.type, err);
       }
     });
 

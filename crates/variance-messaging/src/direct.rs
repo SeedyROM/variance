@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use ulid::Ulid;
 use variance_proto::messaging_proto::{DirectMessage, MessageContent, MessageType};
-use vodozemac::olm::{Account, OlmMessage, Session, SessionConfig};
+use vodozemac::olm::{Account, OlmMessage, Session, SessionConfig, SessionCreationError};
 use vodozemac::Curve25519PublicKey;
 
 /// Special olm_message_type value indicating unencrypted self-message
@@ -283,14 +283,6 @@ impl DirectMessageHandler {
             recipient_one_time_key,
         )
         .await
-        .map_err(|e| {
-            let msg = e.to_string();
-            if msg.contains("unknown one-time key") || msg.contains("BAD_MESSAGE_KEY_ID") {
-                Error::StaleOneTimeKey { message: msg }
-            } else {
-                e
-            }
-        })
     }
 
     /// Queue a message for later delivery when the peer comes online.
@@ -525,8 +517,13 @@ impl DirectMessageHandler {
                         .write()
                         .await
                         .create_inbound_session(identity_key, pre_key_msg)
-                        .map_err(|e| Error::Crypto {
-                            message: format!("Failed to create inbound Olm session: {}", e),
+                        .map_err(|e| match e {
+                            SessionCreationError::MissingOneTimeKey(_) => Error::StaleOneTimeKey {
+                                message: format!("Failed to create inbound Olm session: {}", e),
+                            },
+                            _ => Error::Crypto {
+                                message: format!("Failed to create inbound Olm session: {}", e),
+                            },
                         })?;
 
                     self.sessions

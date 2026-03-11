@@ -481,8 +481,14 @@ impl MessageStorage for LocalMessageStorage {
             let (key, value) = entry.map_err(|e| Error::Storage { source: e })?;
 
             if let Some(ref before_ts) = before {
-                let key_str = String::from_utf8_lossy(&key);
-                if key_str.as_ref() >= before_ts.as_str() {
+                let key_str = match std::str::from_utf8(&key) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        warn!("Skipping group message with non-UTF-8 key");
+                        continue;
+                    }
+                };
+                if key_str >= before_ts.as_str() {
                     continue;
                 }
             }
@@ -528,7 +534,7 @@ impl MessageStorage for LocalMessageStorage {
         let tree = self.group_tree()?;
         // Keys are "{group_id}:{timestamp:020}:{id}" — lexicographic scan
         // starting just after the given timestamp.
-        let start = format!("{}:{:020}:", group_id, since_timestamp + 1);
+        let start = format!("{}:{:020}:", group_id, since_timestamp.saturating_add(1));
         let prefix = format!("{}:", group_id);
 
         let mut messages = Vec::new();
@@ -536,7 +542,13 @@ impl MessageStorage for LocalMessageStorage {
             let (key, value) = entry.map_err(|e| Error::Storage { source: e })?;
 
             // Stop once we leave this group's prefix.
-            let key_str = String::from_utf8_lossy(&key);
+            let key_str = match std::str::from_utf8(&key) {
+                Ok(s) => s,
+                Err(_) => {
+                    warn!("Skipping group message with non-UTF-8 key");
+                    continue;
+                }
+            };
             if !key_str.starts_with(&prefix) {
                 break;
             }

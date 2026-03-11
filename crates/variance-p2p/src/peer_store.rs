@@ -74,7 +74,6 @@ impl PeerStore {
     }
 
     /// Remove a persisted mapping by DID.
-    #[allow(dead_code)]
     pub fn remove(&self, did: &str) {
         if let Err(e) = self.tree.remove(did.as_bytes()) {
             warn!("Failed to remove DID→PeerId mapping for {}: {}", did, e);
@@ -82,13 +81,11 @@ impl PeerStore {
     }
 
     /// Number of persisted mappings.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.tree.len()
     }
 
     /// Whether the store is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.tree.is_empty()
     }

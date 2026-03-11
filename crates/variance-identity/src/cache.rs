@@ -40,7 +40,7 @@ impl<K: std::hash::Hash + Eq, V: Clone> L1Cache<K, V> {
     }
 
     fn get(&self, key: &K) -> Option<V> {
-        let data = self.data.read().unwrap();
+        let data = self.data.read().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = data.get(key) {
             if !entry.is_expired() {
                 return Some(entry.value.clone());
@@ -50,12 +50,12 @@ impl<K: std::hash::Hash + Eq, V: Clone> L1Cache<K, V> {
     }
 
     fn insert(&self, key: K, value: V) {
-        let mut data = self.data.write().unwrap();
+        let mut data = self.data.write().unwrap_or_else(|e| e.into_inner());
         data.insert(key, CacheEntry::new(value, self.ttl));
     }
 
     fn evict_expired(&self) {
-        let mut data = self.data.write().unwrap();
+        let mut data = self.data.write().unwrap_or_else(|e| e.into_inner());
         data.retain(|_, entry| !entry.is_expired());
     }
 }
@@ -75,7 +75,7 @@ impl<K: std::hash::Hash + Eq, V: Clone> L2Cache<K, V> {
     }
 
     fn get(&self, key: &K) -> Option<V> {
-        let data = self.data.read().unwrap();
+        let data = self.data.read().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = data.get(key) {
             if !entry.is_expired() {
                 return Some(entry.value.clone());
@@ -85,12 +85,12 @@ impl<K: std::hash::Hash + Eq, V: Clone> L2Cache<K, V> {
     }
 
     fn insert(&self, key: K, value: V) {
-        let mut data = self.data.write().unwrap();
+        let mut data = self.data.write().unwrap_or_else(|e| e.into_inner());
         data.insert(key, CacheEntry::new(value, self.ttl));
     }
 
     fn evict_expired(&self) {
-        let mut data = self.data.write().unwrap();
+        let mut data = self.data.write().unwrap_or_else(|e| e.into_inner());
         data.retain(|_, entry| !entry.is_expired());
     }
 }
@@ -149,7 +149,7 @@ impl L3Cache {
     fn insert(&self, key: &str, value: &Did) -> Result<()> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or(Duration::ZERO)
             .as_secs();
 
         let entry = DiskEntry {
@@ -217,9 +217,9 @@ impl MultiLayerCache {
 
     /// Remove a single entry from all cache layers (e.g. when a peer reconnects with new keys).
     pub fn remove(&self, key: &str) {
-        let mut l1 = self.l1.data.write().unwrap();
+        let mut l1 = self.l1.data.write().unwrap_or_else(|e| e.into_inner());
         l1.remove(key);
-        let mut l2 = self.l2.data.write().unwrap();
+        let mut l2 = self.l2.data.write().unwrap_or_else(|e| e.into_inner());
         l2.remove(key);
         let _ = self.l3.db.remove(key.as_bytes());
     }
@@ -235,7 +235,7 @@ impl MultiLayerCache {
     fn evict_expired_l3(&self) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or(Duration::ZERO)
             .as_secs();
 
         let mut to_delete = Vec::new();
