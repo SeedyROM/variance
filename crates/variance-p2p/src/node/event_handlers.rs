@@ -1089,7 +1089,7 @@ impl Node {
                     },
                 ..
             } => {
-                if !self.rate_limiter.check(&peer, rl::RENAME).is_allowed() {
+                if !self.rate_limiter.check(&peer, rl::GROUP_SYNC).is_allowed() {
                     debug!("Rate-limited group sync request from {}", peer);
                     let _ = self.swarm.behaviour_mut().group_sync.send_response(
                         channel,

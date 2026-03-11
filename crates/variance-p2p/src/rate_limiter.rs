@@ -77,6 +77,8 @@ pub mod protocol {
     pub const SIGNALING: &str = "signaling";
     /// Username rename notifications — tight limit since renames are rare.
     pub const RENAME: &str = "rename";
+    /// Group sync requests (catch-up after offline / joining a group).
+    pub const GROUP_SYNC: &str = "group_sync";
     pub const GLOBAL: &str = "__global__";
 }
 
@@ -170,6 +172,10 @@ impl PeerRateLimiter {
         limiter
             .configs
             .insert(protocol::RENAME, BucketConfig::from_window(2, 60));
+        // Group sync: peers catching up after being offline or joining a group
+        limiter
+            .configs
+            .insert(protocol::GROUP_SYNC, BucketConfig::from_window(10, 60));
 
         limiter
     }

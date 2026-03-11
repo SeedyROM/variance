@@ -8,6 +8,10 @@ use variance_proto::messaging_proto::{OfflineMessageRequest, OfflineMessageRespo
 /// Protocol name for offline message relay
 pub const OFFLINE_MESSAGE_PROTOCOL: &str = "/variance/offline-messages/1.0.0";
 
+/// Maximum size for a single offline message protocol read (1 MiB).
+/// Consistent with other messaging codecs — prevents OOM from malicious peers.
+const MAX_MESSAGE_SIZE: u64 = 1024 * 1024;
+
 /// Offline message codec using protobuf
 #[derive(Debug, Clone, Default)]
 pub struct OfflineMessageCodec;
@@ -27,7 +31,7 @@ impl request_response::Codec for OfflineMessageCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
@@ -40,7 +44,7 @@ impl request_response::Codec for OfflineMessageCodec {
         T: AsyncRead + Unpin + Send,
     {
         let mut buf = Vec::new();
-        io.read_to_end(&mut buf).await?;
+        io.take(MAX_MESSAGE_SIZE).read_to_end(&mut buf).await?;
         prost::Message::decode(&buf[..]).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
