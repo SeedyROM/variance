@@ -8,6 +8,7 @@ import type {
   IdentityStatus,
   MessageResponse,
   MlsGroupInfo,
+  PendingInvitation,
   RegisterUsernameResponse,
   RelayPeer,
   RetentionConfig,
@@ -174,6 +175,24 @@ export const groupsApi = {
     request<{ success: boolean }>(
       `/mls/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(memberDid)}`,
       { method: "DELETE" }
+    ),
+};
+
+// ===== Invitations =====
+
+export const invitationsApi = {
+  list: () => request<PendingInvitation[]>("/invitations"),
+
+  accept: (groupId: string) =>
+    request<{ success: boolean; group_id: string }>(
+      `/invitations/${encodeURIComponent(groupId)}/accept`,
+      { method: "POST" }
+    ),
+
+  decline: (groupId: string) =>
+    request<{ success: boolean; group_id: string }>(
+      `/invitations/${encodeURIComponent(groupId)}/decline`,
+      { method: "POST" }
     ),
 };
 

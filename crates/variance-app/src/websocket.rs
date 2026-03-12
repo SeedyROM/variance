@@ -137,6 +137,29 @@ pub enum WsMessage {
         group_name: Option<String>,
         inviter: String,
     },
+    /// A new group invitation was received (pending user accept/decline).
+    GroupInvitationReceived {
+        group_id: String,
+        group_name: String,
+        inviter_did: String,
+        inviter_display_name: Option<String>,
+    },
+    /// An outbound invite was accepted — the invitee joined the group.
+    GroupInvitationAccepted {
+        group_id: String,
+        invitee_did: String,
+        invitee_display_name: Option<String>,
+    },
+    /// An outbound invite was declined — the pending commit was rolled back.
+    GroupInvitationDeclined {
+        group_id: String,
+        invitee_did: String,
+    },
+    /// An outbound invite expired (5-minute timeout) — the pending commit was rolled back.
+    GroupInvitationExpired {
+        group_id: String,
+        invitee_did: String,
+    },
     OfflineMessagesReceived {
         count: usize,
     },
@@ -199,6 +222,10 @@ impl WsMessage {
             | Self::DirectMessageStatusChanged { .. }
             | Self::GroupMessageReceived { .. }
             | Self::MlsGroupJoined { .. }
+            | Self::GroupInvitationReceived { .. }
+            | Self::GroupInvitationAccepted { .. }
+            | Self::GroupInvitationDeclined { .. }
+            | Self::GroupInvitationExpired { .. }
             | Self::OfflineMessagesReceived { .. }
             | Self::TypingStarted { .. }
             | Self::TypingStopped { .. }

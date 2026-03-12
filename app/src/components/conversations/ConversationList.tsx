@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Settings, Users } from "lucide-react";
 import { ConversationItem } from "./ConversationItem";
 import { GroupConversationItem } from "./GroupConversationItem";
+import { InvitationsSection } from "./InvitationsSection";
 import { NewConversationModal } from "./NewConversationModal";
 import { CreateGroupModal } from "./CreateGroupModal";
 import { SettingsModal } from "./SettingsModal";
@@ -107,6 +108,7 @@ export function ConversationList() {
 
       {/* Unified conversation + group list */}
       <ScrollArea className="flex-1 px-2 py-1">
+        <InvitationsSection />
         {allItems.length === 0 ? (
           <div className="flex h-40 flex-col items-center justify-center gap-2 text-center cursor-default">
             <p className="text-sm text-surface-500">No conversations yet</p>

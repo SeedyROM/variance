@@ -189,6 +189,14 @@ impl LocalMessageStorage {
         Ok(())
     }
 
+    pub(crate) async fn impl_fetch_group_metadata(&self, group_id: &str) -> Result<Option<Group>> {
+        let tree = self.group_metadata_tree()?;
+        Ok(tree
+            .get(group_id.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?
+            .and_then(|v| Group::decode(v.as_ref()).ok()))
+    }
+
     pub(crate) async fn impl_fetch_all_group_metadata(&self) -> Result<Vec<Group>> {
         let tree = self.group_metadata_tree()?;
         let mut groups = Vec::new();

@@ -12,6 +12,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../stores/appStore";
 import { useIdentityStore } from "../stores/identityStore";
 import { useMessagingStore } from "../stores/messagingStore";
+import { useToastStore } from "../stores/toastStore";
 import type { ActiveConversation } from "../stores/messagingStore";
 import { variantWs } from "../api/websocket";
 import type { WsEvent } from "../api/types";
@@ -140,6 +141,7 @@ export function useWebSocket() {
   }, [activeConversation]);
 
   const setTyping = useMessagingStore((s) => s.setTyping);
+  const incrementPendingInvitations = useMessagingStore((s) => s.incrementPendingInvitations);
   const setWsConnected = useAppStore((s) => s.setWsConnected);
 
   // Clear the conversation's OS notification when the user opens it.
@@ -343,6 +345,55 @@ export function useWebSocket() {
             void queryClient.invalidateQueries({ queryKey: ["conversations"] });
             break;
 
+          case "GroupInvitationReceived": {
+            incrementPendingInvitations();
+            void queryClient.invalidateQueries({ queryKey: ["invitations"] });
+            const inviterName = event.inviter_display_name ?? "Someone";
+            useToastStore
+              .getState()
+              .addToast(`${inviterName} invited you to "${event.group_name}"`, "info");
+            void notify(
+              `invite:${event.group_id}`,
+              `${inviterName} invited you to "${event.group_name}"`,
+              null
+            );
+            break;
+          }
+
+          case "GroupInvitationAccepted": {
+            // The invitee accepted — MLS commit has been broadcast, group is live.
+            void queryClient.invalidateQueries({ queryKey: ["groups"] });
+            void queryClient.invalidateQueries({ queryKey: ["group-members"] });
+            const accepteeName =
+              event.invitee_display_name ??
+              useMessagingStore.getState().peerNames.get(event.invitee_did) ??
+              "A user";
+            useToastStore
+              .getState()
+              .addToast(`${accepteeName} accepted the group invitation`, "success");
+            break;
+          }
+
+          case "GroupInvitationDeclined": {
+            void queryClient.invalidateQueries({ queryKey: ["groups"] });
+            const declineeName =
+              useMessagingStore.getState().peerNames.get(event.invitee_did) ?? "A user";
+            useToastStore
+              .getState()
+              .addToast(`${declineeName} declined the group invitation`, "info");
+            break;
+          }
+
+          case "GroupInvitationExpired": {
+            void queryClient.invalidateQueries({ queryKey: ["groups"] });
+            const expiredName =
+              useMessagingStore.getState().peerNames.get(event.invitee_did) ?? "A user";
+            useToastStore
+              .getState()
+              .addToast(`Group invitation to ${expiredName} expired (timed out)`, "info");
+            break;
+          }
+
           default:
             break;
         }
@@ -366,6 +417,7 @@ export function useWebSocket() {
     markRead,
     setActiveConversation,
     setTyping,
+    incrementPendingInvitations,
     setWsConnected,
   ]);
 }

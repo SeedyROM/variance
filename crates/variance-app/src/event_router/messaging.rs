@@ -21,9 +21,10 @@ pub(super) struct MessagingDeps {
     pub storage: Arc<LocalMessageStorage>,
     pub local_did: String,
     pub receipts: Arc<ReceiptHandler>,
+    pub username_registry: Arc<variance_identity::username::UsernameRegistry>,
 }
 
-/// Spawn all messaging-related event listeners (DM, group, group sync).
+/// Spawn all messaging-related event listeners (DM, group, group sync, invite timeout).
 pub(super) fn spawn_messaging_listeners(deps: MessagingDeps, events: EventChannels) {
     spawn_direct_message_listener(
         deps.ws_manager.clone(),
@@ -33,6 +34,7 @@ pub(super) fn spawn_messaging_listeners(deps: MessagingDeps, events: EventChanne
         deps.storage.clone(),
         deps.local_did.clone(),
         deps.receipts,
+        deps.username_registry,
         events.clone(),
     );
     spawn_group_message_listener(
@@ -43,78 +45,177 @@ pub(super) fn spawn_messaging_listeners(deps: MessagingDeps, events: EventChanne
         events.clone(),
     );
     spawn_group_sync_listener(
+        deps.ws_manager.clone(),
+        deps.mls_groups.clone(),
+        deps.storage.clone(),
+        deps.local_did.clone(),
+        deps.node_handle,
+        events,
+    );
+    spawn_invite_timeout_sweep(
         deps.ws_manager,
         deps.mls_groups,
         deps.storage,
         deps.local_did,
-        deps.node_handle,
-        events,
     );
 }
 
-/// Process an incoming MLS Welcome that was delivered via encrypted DM.
-///
-/// Deserializes the Welcome, calls `join_group_from_welcome`, persists
-/// MLS state, and subscribes to the group's GossipSub topic.
-/// Returns the group ID on success.
-async fn handle_mls_welcome_dm(
+/// Process an incoming `mls_group_invitation` DM: store as pending invitation
+/// and notify the frontend. The user must explicitly accept or decline.
+async fn handle_group_invitation_dm(
+    storage: &LocalMessageStorage,
+    ws_manager: &WebSocketManager,
+    invitation_hex: &str,
+    from: &str,
+    username_registry: &variance_identity::username::UsernameRegistry,
+) -> std::result::Result<(), String> {
+    let invitation_bytes =
+        hex::decode(invitation_hex).map_err(|e| format!("Invalid invitation hex: {}", e))?;
+
+    let invitation = <variance_proto::messaging_proto::GroupInvitation as prost::Message>::decode(
+        invitation_bytes.as_slice(),
+    )
+    .map_err(|e| format!("Failed to decode GroupInvitation proto: {}", e))?;
+
+    let group_id = invitation.group_id.clone();
+    let group_name = invitation.group_name.clone();
+
+    // Store as pending invitation (invitee side).
+    storage
+        .store_pending_invitation(&invitation)
+        .await
+        .map_err(|e| format!("Failed to store pending invitation: {}", e))?;
+
+    // Notify frontend so the Invitations tab updates.
+    let inviter_display_name = username_registry.get_display_name(from);
+    ws_manager.broadcast(WsMessage::GroupInvitationReceived {
+        group_id,
+        group_name,
+        inviter_did: from.to_string(),
+        inviter_display_name,
+    });
+
+    Ok(())
+}
+
+/// Process an `mls_invite_accepted` DM (sender/admin side):
+/// merge the pending commit, broadcast it to the group, update metadata.
+#[allow(clippy::too_many_arguments)]
+async fn handle_invite_accepted_dm(
     mls_groups: &MlsGroupHandler,
     storage: &LocalMessageStorage,
     local_did: &str,
     node_handle: &NodeHandle,
-    welcome_hex: &str,
-    group_id_hint: Option<&String>,
-    group_name: Option<&str>,
-) -> std::result::Result<String, String> {
-    use variance_messaging::mls::MlsGroupHandler;
-
-    let welcome_bytes =
-        hex::decode(welcome_hex).map_err(|e| format!("Invalid Welcome hex: {}", e))?;
-
-    let welcome_msg = MlsGroupHandler::deserialize_message(&welcome_bytes)
-        .map_err(|e| format!("Failed to deserialize MLS Welcome: {}", e))?;
-
-    let group_id = mls_groups
-        .join_group_from_welcome(welcome_msg)
-        .map_err(|e| format!("Failed to join group from Welcome: {}", e))?;
+    ws_manager: &WebSocketManager,
+    group_id: &str,
+    invitee_did: &str,
+    username_registry: &variance_identity::username::UsernameRegistry,
+) {
+    // Confirm the pending MLS commit (merge it).
+    if let Err(e) = mls_groups.confirm_add_member(group_id) {
+        warn!(
+            "EventRouter: Failed to confirm MLS add for group {}: {}",
+            group_id, e
+        );
+        return;
+    }
 
     persist_mls_state_async(mls_groups, storage, local_did).await;
 
-    // Persist group name metadata so the invitee sees the human-readable name.
-    if let Some(name) = group_name {
-        let group_meta = variance_proto::messaging_proto::Group {
-            id: group_id.clone(),
-            name: name.to_string(),
-            ..Default::default()
-        };
-        if let Err(e) = storage.store_group_metadata(&group_meta).await {
-            warn!(
-                "EventRouter: Failed to persist group metadata for joined group: {}",
-                e
-            );
+    // Broadcast the stored commit to existing group members via GossipSub.
+    // The commit bytes are stored in the outbound invite.
+    if let Ok(Some((invitation, _))) = storage.fetch_outbound_invite(group_id, invitee_did).await {
+        if !invitation.mls_commit.is_empty() {
+            let topic = format!("/variance/group/{}", group_id);
+            let commit_proto = variance_proto::messaging_proto::GroupMessage {
+                id: ulid::Ulid::new().to_string(),
+                sender_did: local_did.to_string(),
+                group_id: group_id.to_string(),
+                timestamp: chrono::Utc::now().timestamp_millis(),
+                r#type: 0,
+                reply_to: None,
+                mls_ciphertext: invitation.mls_commit,
+            };
+            if let Err(e) = node_handle.publish_group_message(topic, commit_proto).await {
+                warn!(
+                    "EventRouter: Failed to broadcast add-member commit for group {}: {}",
+                    group_id, e
+                );
+            }
         }
     }
 
-    // Subscribe to the group's GossipSub topic
-    let topic = format!("/variance/group/{}", group_id);
-    if let Err(e) = node_handle.subscribe_to_topic(topic).await {
+    // Update group metadata: add the new member.
+    if let Ok(Some(mut group_meta)) = storage.fetch_group_metadata(group_id).await {
+        if !group_meta.members.iter().any(|m| m.did == invitee_did) {
+            group_meta
+                .members
+                .push(variance_proto::messaging_proto::GroupMember {
+                    did: invitee_did.to_string(),
+                    role: variance_proto::messaging_proto::GroupRole::Member.into(),
+                    joined_at: chrono::Utc::now().timestamp_millis(),
+                    nickname: None,
+                });
+            if let Err(e) = storage.store_group_metadata(&group_meta).await {
+                warn!(
+                    "EventRouter: Failed to update group metadata with new member: {}",
+                    e
+                );
+            }
+        }
+    }
+
+    // Clean up the outbound invite.
+    let _ = storage.delete_outbound_invite(group_id, invitee_did).await;
+
+    // Notify frontend.
+    let invitee_display_name = username_registry.get_display_name(invitee_did);
+    ws_manager.broadcast(WsMessage::GroupInvitationAccepted {
+        group_id: group_id.to_string(),
+        invitee_did: invitee_did.to_string(),
+        invitee_display_name,
+    });
+
+    debug!(
+        "EventRouter: Invite accepted — {} joined group {}",
+        invitee_did, group_id
+    );
+}
+
+/// Process an `mls_invite_declined` DM (sender/admin side):
+/// roll back the pending commit and clean up.
+async fn handle_invite_declined_dm(
+    mls_groups: &MlsGroupHandler,
+    storage: &LocalMessageStorage,
+    local_did: &str,
+    ws_manager: &WebSocketManager,
+    group_id: &str,
+    invitee_did: &str,
+) {
+    // Roll back the pending MLS commit.
+    if let Err(e) = mls_groups.cancel_add_member(group_id) {
         warn!(
-            "EventRouter: Failed to subscribe to group topic after Welcome join: {}",
-            e
+            "EventRouter: Failed to cancel MLS add for group {}: {}",
+            group_id, e
         );
+        // Even if cancel fails, still clean up the outbound invite.
     }
 
-    // Log if the group_id from the metadata hint differs (shouldn't happen)
-    if let Some(hint) = group_id_hint {
-        if *hint != group_id {
-            warn!(
-                "EventRouter: Welcome produced group_id {} but metadata hinted {}",
-                group_id, hint
-            );
-        }
-    }
+    persist_mls_state_async(mls_groups, storage, local_did).await;
 
-    Ok(group_id)
+    // Clean up the outbound invite.
+    let _ = storage.delete_outbound_invite(group_id, invitee_did).await;
+
+    // Notify frontend.
+    ws_manager.broadcast(WsMessage::GroupInvitationDeclined {
+        group_id: group_id.to_string(),
+        invitee_did: invitee_did.to_string(),
+    });
+
+    debug!(
+        "EventRouter: Invite declined — {} declined group {}",
+        invitee_did, group_id
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -126,6 +227,7 @@ fn spawn_direct_message_listener(
     storage: Arc<LocalMessageStorage>,
     local_did: String,
     receipts: Arc<ReceiptHandler>,
+    username_registry: Arc<variance_identity::username::UsernameRegistry>,
     events: EventChannels,
 ) {
     tokio::spawn(async move {
@@ -146,136 +248,148 @@ fn spawn_direct_message_listener(
 
                     match direct_messaging.receive_message(message).await {
                         Ok(content) => {
-                            // Check for MLS Welcome delivered via DM
-                            if content.metadata.get("type").map(|s| s.as_str())
-                                == Some("mls_welcome")
-                            {
-                                if let Some(welcome_hex) = content.metadata.get("mls_welcome") {
-                                    let group_name = content.metadata.get("group_name").cloned();
-                                    match handle_mls_welcome_dm(
-                                        &mls_groups,
-                                        &storage,
-                                        &local_did,
-                                        &node_handle,
-                                        welcome_hex,
-                                        content.metadata.get("group_id"),
-                                        group_name.as_deref(),
-                                    )
-                                    .await
-                                    {
-                                        Ok(group_id) => {
-                                            debug!(
-                                                "EventRouter: Auto-joined MLS group {} \
-                                                 from Welcome sent by {}",
-                                                group_id, from
-                                            );
-                                            ws_manager.broadcast(WsMessage::MlsGroupJoined {
-                                                group_id,
-                                                group_name,
-                                                inviter: from.clone(),
-                                            });
+                            let dm_type = content.metadata.get("type").map(|s| s.as_str());
 
-                                            // The Welcome consumed our advertised KeyPackage.
-                                            // Generate a fresh one so future invites work.
-                                            use variance_messaging::mls::MlsGroupHandler;
-                                            match mls_groups.generate_key_package() {
-                                                Ok(kp) => {
-                                                    match MlsGroupHandler::serialize_message_bytes(
-                                                        &kp,
-                                                    ) {
-                                                        Ok(kp_bytes) => {
-                                                            if let Err(e) = node_handle
-                                                                .update_mls_key_package(kp_bytes)
-                                                                .await
-                                                            {
-                                                                warn!(
-                                                                    "Failed to republish MLS \
-                                                                 KeyPackage after join: {}",
-                                                                    e
-                                                                );
-                                                            }
-                                                        }
-                                                        Err(e) => warn!(
-                                                            "Failed to serialize refreshed \
-                                                         KeyPackage: {}",
-                                                            e
-                                                        ),
-                                                    }
-                                                }
-                                                Err(e) => warn!(
-                                                    "Failed to generate refreshed \
-                                                     KeyPackage: {}",
+                            match dm_type {
+                                // ── Group invitation (new deferred flow) ─────
+                                Some("mls_group_invitation") => {
+                                    if let Some(invitation_hex) = content.metadata.get("invitation")
+                                    {
+                                        match handle_group_invitation_dm(
+                                            &storage,
+                                            &ws_manager,
+                                            invitation_hex,
+                                            &from,
+                                            &username_registry,
+                                        )
+                                        .await
+                                        {
+                                            Ok(()) => {
+                                                debug!(
+                                                    "EventRouter: Stored pending invitation \
+                                                     from {} for group {}",
+                                                    from,
+                                                    content
+                                                        .metadata
+                                                        .get("group_id")
+                                                        .unwrap_or(&String::new()),
+                                                );
+                                            }
+                                            Err(e) => {
+                                                warn!(
+                                                    "EventRouter: Failed to handle group \
+                                                     invitation DM: {}",
                                                     e
-                                                ),
+                                                );
                                             }
                                         }
-                                        Err(e) => {
-                                            warn!(
-                                                "EventRouter: Failed to auto-join MLS \
-                                                 group from Welcome DM: {}",
-                                                e
-                                            );
-                                        }
                                     }
+                                    // Delete control message from local DM history.
+                                    let _ = storage
+                                        .delete_direct_by_id(
+                                            &from,
+                                            &local_did,
+                                            timestamp,
+                                            &message_id,
+                                        )
+                                        .await;
                                 }
-                                // Don't broadcast mls_welcome as a normal DM.
-                                // Remove the stored message from the direct messages tree
-                                // so it doesn't appear as an empty bubble in the conversation.
-                                if let Err(e) = storage
-                                    .delete_direct_by_id(&from, &local_did, timestamp, &message_id)
-                                    .await
-                                {
-                                    warn!(
-                                        "Failed to delete MLS Welcome DM {} from storage: {}",
-                                        message_id, e
-                                    );
-                                }
-                            } else {
-                                let msg = WsMessage::DirectMessageReceived {
-                                    from: from.clone(),
-                                    message_id: message_id.clone(),
-                                    text: content.text,
-                                    timestamp,
-                                    reply_to,
-                                };
-                                ws_manager.broadcast(msg);
 
-                                // Acknowledge delivery to the sender (best-effort).
-                                // Store as pending in case the sender is currently offline.
-                                match receipts.send_delivered(message_id.clone()).await {
-                                    Ok(receipt) => {
-                                        if let Err(e) =
-                                            storage.store_pending_receipt(&from, &receipt).await
-                                        {
-                                            warn!(
-                                                "Failed to store pending delivered receipt \
-                                                 for {}: {}",
-                                                message_id, e
-                                            );
-                                        }
-                                        if let Err(e) =
-                                            node_handle.send_receipt(from, receipt).await
-                                        {
-                                            debug!(
-                                                "Failed to send delivered receipt for \
-                                                 {} (best-effort): {}",
-                                                message_id, e
-                                            );
-                                        }
+                                // ── Invite accepted (sender/admin side) ──────
+                                Some("mls_invite_accepted") => {
+                                    if let Some(group_id) = content.metadata.get("group_id") {
+                                        handle_invite_accepted_dm(
+                                            &mls_groups,
+                                            &storage,
+                                            &local_did,
+                                            &node_handle,
+                                            &ws_manager,
+                                            group_id,
+                                            &from,
+                                            &username_registry,
+                                        )
+                                        .await;
                                     }
-                                    Err(e) => warn!(
-                                        "Failed to create delivered receipt for {}: {}",
-                                        message_id, e
-                                    ),
+                                    // Delete control message.
+                                    let _ = storage
+                                        .delete_direct_by_id(
+                                            &from,
+                                            &local_did,
+                                            timestamp,
+                                            &message_id,
+                                        )
+                                        .await;
+                                }
+
+                                // ── Invite declined (sender/admin side) ──────
+                                Some("mls_invite_declined") => {
+                                    if let Some(group_id) = content.metadata.get("group_id") {
+                                        handle_invite_declined_dm(
+                                            &mls_groups,
+                                            &storage,
+                                            &local_did,
+                                            &ws_manager,
+                                            group_id,
+                                            &from,
+                                        )
+                                        .await;
+                                    }
+                                    // Delete control message.
+                                    let _ = storage
+                                        .delete_direct_by_id(
+                                            &from,
+                                            &local_did,
+                                            timestamp,
+                                            &message_id,
+                                        )
+                                        .await;
+                                }
+
+                                // ── Normal DM ────────────────────────────────
+                                _ => {
+                                    let msg = WsMessage::DirectMessageReceived {
+                                        from: from.clone(),
+                                        message_id: message_id.clone(),
+                                        text: content.text,
+                                        timestamp,
+                                        reply_to,
+                                    };
+                                    ws_manager.broadcast(msg);
+
+                                    // Acknowledge delivery to the sender (best-effort).
+                                    match receipts.send_delivered(message_id.clone()).await {
+                                        Ok(receipt) => {
+                                            if let Err(e) =
+                                                storage.store_pending_receipt(&from, &receipt).await
+                                            {
+                                                warn!(
+                                                    "Failed to store pending delivered receipt \
+                                                     for {}: {}",
+                                                    message_id, e
+                                                );
+                                            }
+                                            if let Err(e) = node_handle
+                                                .send_receipt(from.clone(), receipt)
+                                                .await
+                                            {
+                                                debug!(
+                                                    "Failed to send delivered receipt for \
+                                                     {} (best-effort): {}",
+                                                    message_id, e
+                                                );
+                                            }
+                                        }
+                                        Err(e) => warn!(
+                                            "Failed to create delivered receipt for {}: {}",
+                                            message_id, e
+                                        ),
+                                    }
                                 }
                             }
 
                             // If this was a PreKey message, it consumed an OTK from the
                             // published pool. Generate a fresh replacement batch, mark it
                             // published, then update what we advertise to peers.
-                            // NOTE: one_time_keys() only returns *unpublished* keys — calling
-                            // it before generate_one_time_keys would yield an empty set
-                            // (all were marked published at startup). Always generate first.
                             if was_prekey {
                                 debug!("PreKey message consumed an OTK, replenishing pool");
                                 direct_messaging.generate_one_time_keys(10).await;
@@ -328,10 +442,6 @@ fn spawn_direct_message_listener(
                          notifying frontend",
                         message_id, recipient
                     );
-                    // The is_connected check in the P2P node prevents most false
-                    // positives. This path fires only in the rare race where the peer
-                    // disconnects between the check and send_request. Notify the
-                    // frontend so the UI can update the status indicator.
                     ws_manager.broadcast(WsMessage::DirectMessageStatusChanged {
                         message_id,
                         status: "pending".to_string(),
@@ -341,6 +451,76 @@ fn spawn_direct_message_listener(
         }
 
         warn!("EventRouter: Direct message event listener ended");
+    });
+}
+
+/// 5-minute timeout for outbound invites.
+const INVITE_TIMEOUT_MS: i64 = 5 * 60 * 1000;
+/// How often to sweep for expired invites (60 seconds).
+const INVITE_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Background task that periodically cancels expired outbound invites.
+///
+/// While an MLS invite is pending, the group is blocked from other MLS operations.
+/// This sweep ensures stale invites don't block the group indefinitely.
+fn spawn_invite_timeout_sweep(
+    ws_manager: WebSocketManager,
+    mls_groups: Arc<MlsGroupHandler>,
+    storage: Arc<LocalMessageStorage>,
+    local_did: String,
+) {
+    tokio::spawn(async move {
+        debug!("EventRouter: Started invite timeout sweep (interval={INVITE_SWEEP_INTERVAL:?})");
+
+        loop {
+            tokio::time::sleep(INVITE_SWEEP_INTERVAL).await;
+
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let expired = match storage
+                .fetch_expired_outbound_invites(INVITE_TIMEOUT_MS, now_ms)
+                .await
+            {
+                Ok(list) => list,
+                Err(e) => {
+                    warn!(
+                        "EventRouter: Failed to fetch expired outbound invites: {}",
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            for (group_id, invitee_did, _invitation) in &expired {
+                // Roll back the pending MLS commit so the group is unblocked.
+                if let Err(e) = mls_groups.cancel_add_member(group_id) {
+                    warn!(
+                        "EventRouter: Failed to cancel expired MLS add for group {}: {}",
+                        group_id, e
+                    );
+                    // Continue cleanup even if cancel fails — the commit may have
+                    // already been resolved (accepted/declined race).
+                }
+
+                // Delete the outbound invite record.
+                let _ = storage.delete_outbound_invite(group_id, invitee_did).await;
+
+                // Notify the frontend.
+                ws_manager.broadcast(WsMessage::GroupInvitationExpired {
+                    group_id: group_id.clone(),
+                    invitee_did: invitee_did.clone(),
+                });
+
+                debug!(
+                    "EventRouter: Expired invite — cancelled pending add of {} to group {}",
+                    invitee_did, group_id
+                );
+            }
+
+            // Persist MLS state once if any invites were cancelled.
+            if !expired.is_empty() {
+                persist_mls_state_async(&mls_groups, &storage, &local_did).await;
+            }
+        }
     });
 }
 

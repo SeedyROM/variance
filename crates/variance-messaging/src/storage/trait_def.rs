@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use variance_proto::messaging_proto::{
-    DirectMessage, Group, GroupMessage, OfflineMessageEnvelope, ReadReceipt,
+    DirectMessage, Group, GroupInvitation, GroupMessage, OfflineMessageEnvelope, ReadReceipt,
 };
 
 use crate::error::Result;
@@ -190,6 +190,9 @@ pub trait MessageStorage: Send + Sync {
     /// Persist group membership/metadata (without the raw key — that goes in store_group_key_encrypted).
     async fn store_group_metadata(&self, group: &Group) -> Result<()>;
 
+    /// Fetch metadata for a single group by ID.
+    async fn fetch_group_metadata(&self, group_id: &str) -> Result<Option<Group>>;
+
     /// Fetch all stored group metadata records (used at startup to restore in-memory state).
     async fn fetch_all_group_metadata(&self) -> Result<Vec<Group>>;
 
@@ -238,4 +241,54 @@ pub trait MessageStorage: Send + Sync {
     ///
     /// Called when the peer reconnects so we can attempt delivery immediately.
     async fn drain_pending_receipts(&self, target_did: &str) -> Result<Vec<ReadReceipt>>;
+
+    // ===== Group invitation persistence =====
+
+    /// Store a pending group invitation (invitee side).
+    ///
+    /// Keyed by group_id — only one pending invite per group. A newer invite
+    /// for the same group overwrites the previous one.
+    async fn store_pending_invitation(&self, invitation: &GroupInvitation) -> Result<()>;
+
+    /// Fetch all pending invitations.
+    async fn fetch_pending_invitations(&self) -> Result<Vec<GroupInvitation>>;
+
+    /// Fetch a single pending invitation by group ID.
+    async fn fetch_pending_invitation(&self, group_id: &str) -> Result<Option<GroupInvitation>>;
+
+    /// Delete a pending invitation (after accepting or declining).
+    async fn delete_pending_invitation(&self, group_id: &str) -> Result<()>;
+
+    /// Store an outbound invite (sender/admin side).
+    ///
+    /// `created_at_ms` is used for the 5-minute timeout.
+    async fn store_outbound_invite(
+        &self,
+        group_id: &str,
+        invitee_did: &str,
+        invitation: &GroupInvitation,
+        created_at_ms: i64,
+    ) -> Result<()>;
+
+    /// Fetch an outbound invite by (group_id, invitee_did).
+    ///
+    /// Returns `(invitation, created_at_ms)` if found.
+    async fn fetch_outbound_invite(
+        &self,
+        group_id: &str,
+        invitee_did: &str,
+    ) -> Result<Option<(GroupInvitation, i64)>>;
+
+    /// Delete an outbound invite (after accept/decline/timeout).
+    async fn delete_outbound_invite(&self, group_id: &str, invitee_did: &str) -> Result<()>;
+
+    /// Fetch all outbound invites that have expired.
+    ///
+    /// An invite is expired when `created_at_ms + timeout_ms < now_ms`.
+    /// Returns `(group_id, invitee_did, GroupInvitation)` triples.
+    async fn fetch_expired_outbound_invites(
+        &self,
+        timeout_ms: i64,
+        now_ms: i64,
+    ) -> Result<Vec<(String, String, GroupInvitation)>>;
 }

@@ -1,5 +1,6 @@
 mod direct;
 mod group;
+mod invitations;
 mod offline;
 mod peer;
 mod receipts;
@@ -11,7 +12,7 @@ use crate::error::*;
 use async_trait::async_trait;
 use std::path::Path;
 use variance_proto::messaging_proto::{
-    DirectMessage, Group, GroupMessage, OfflineMessageEnvelope, ReadReceipt,
+    DirectMessage, Group, GroupInvitation, GroupMessage, OfflineMessageEnvelope, ReadReceipt,
 };
 
 /// Local storage implementation using sled
@@ -388,6 +389,10 @@ impl MessageStorage for LocalMessageStorage {
         self.impl_store_group_metadata(group).await
     }
 
+    async fn fetch_group_metadata(&self, group_id: &str) -> Result<Option<Group>> {
+        self.impl_fetch_group_metadata(group_id).await
+    }
+
     async fn fetch_all_group_metadata(&self) -> Result<Vec<Group>> {
         self.impl_fetch_all_group_metadata().await
     }
@@ -423,5 +428,54 @@ impl MessageStorage for LocalMessageStorage {
 
     async fn drain_pending_receipts(&self, target_did: &str) -> Result<Vec<ReadReceipt>> {
         self.impl_drain_pending_receipts(target_did).await
+    }
+
+    async fn store_pending_invitation(&self, invitation: &GroupInvitation) -> Result<()> {
+        self.impl_store_pending_invitation(invitation).await
+    }
+
+    async fn fetch_pending_invitations(&self) -> Result<Vec<GroupInvitation>> {
+        self.impl_fetch_pending_invitations().await
+    }
+
+    async fn fetch_pending_invitation(&self, group_id: &str) -> Result<Option<GroupInvitation>> {
+        self.impl_fetch_pending_invitation(group_id).await
+    }
+
+    async fn delete_pending_invitation(&self, group_id: &str) -> Result<()> {
+        self.impl_delete_pending_invitation(group_id).await
+    }
+
+    async fn store_outbound_invite(
+        &self,
+        group_id: &str,
+        invitee_did: &str,
+        invitation: &GroupInvitation,
+        created_at_ms: i64,
+    ) -> Result<()> {
+        self.impl_store_outbound_invite(group_id, invitee_did, invitation, created_at_ms)
+            .await
+    }
+
+    async fn fetch_outbound_invite(
+        &self,
+        group_id: &str,
+        invitee_did: &str,
+    ) -> Result<Option<(GroupInvitation, i64)>> {
+        self.impl_fetch_outbound_invite(group_id, invitee_did).await
+    }
+
+    async fn delete_outbound_invite(&self, group_id: &str, invitee_did: &str) -> Result<()> {
+        self.impl_delete_outbound_invite(group_id, invitee_did)
+            .await
+    }
+
+    async fn fetch_expired_outbound_invites(
+        &self,
+        timeout_ms: i64,
+        now_ms: i64,
+    ) -> Result<Vec<(String, String, GroupInvitation)>> {
+        self.impl_fetch_expired_outbound_invites(timeout_ms, now_ms)
+            .await
     }
 }

@@ -14,6 +14,9 @@ pub enum Error {
     #[snafu(display("Unauthorized: {message}"))]
     Unauthorized { message: String },
 
+    #[snafu(display("Forbidden: {message}"))]
+    Forbidden { message: String },
+
     /// Returned when a Double Ratchet session must be initialized before sending.
     /// Callers should provide `recipient_x25519_key` to bootstrap the session.
     #[snafu(display("Session required: {message}"))]

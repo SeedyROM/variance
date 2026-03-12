@@ -72,6 +72,8 @@ pub struct RemoveGroupReactionRequest {
 pub struct GroupMemberInfo {
     pub did: String,
     pub display_name: Option<String>,
+    /// `"admin"`, `"moderator"`, or `"member"`.
+    pub role: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,8 +89,63 @@ pub struct MlsAcceptWelcomeRequest {
 /// protocol and implementation mature.
 const MAX_GROUP_MEMBERS: usize = 100;
 
+/// Convert a protobuf `GroupRole` integer to a human-readable label.
+fn role_label(role_i32: i32) -> &'static str {
+    match role_i32 {
+        3 => "admin",
+        2 => "moderator",
+        _ => "member", // 0 (unspecified) and 1 (member) both map to "member"
+    }
+}
+
+/// Look up a member's role from stored `Group` metadata.
+///
+/// Falls back to `"member"` when the metadata doesn't include the DID.
+fn member_role_from_metadata(
+    group_meta: Option<&variance_proto::messaging_proto::Group>,
+    did: &str,
+) -> &'static str {
+    group_meta
+        .and_then(|g| g.members.iter().find(|m| m.did == did))
+        .map(|m| role_label(m.role))
+        .unwrap_or("member")
+}
+
+/// Numeric rank for role comparisons. Higher = more privileged.
+fn role_rank(role: &str) -> u8 {
+    match role {
+        "admin" => 3,
+        "moderator" => 2,
+        _ => 1,
+    }
+}
+
+/// Require the local user to have at least `min_role` in the given group.
+///
+/// Returns `Err(Forbidden)` if the user's role is below `min_role`.
+async fn require_role(state: &AppState, group_id: &str, min_role: &str) -> crate::Result<()> {
+    let meta = state
+        .storage
+        .fetch_group_metadata(group_id)
+        .await
+        .ok()
+        .flatten();
+    let actual = member_role_from_metadata(meta.as_ref(), &state.local_did);
+    if role_rank(actual) < role_rank(min_role) {
+        return Err(crate::Error::Forbidden {
+            message: format!("Requires {} role, but you are {}", min_role, actual),
+        });
+    }
+    Ok(())
+}
+
+/// Check that `actor_role` outranks `target_role` (strictly higher).
+fn outranks(actor_role: &str, target_role: &str) -> bool {
+    role_rank(actor_role) > role_rank(target_role)
+}
+
 /// Persist the current MLS group state to storage after a mutation.
-async fn persist_mls_state(state: &AppState) {
+pub(super) async fn persist_mls_state(state: &AppState) {
     match state.mls_groups.export_state() {
         Ok(bytes) => {
             if let Err(e) = state
@@ -198,6 +255,13 @@ pub(super) async fn mls_list_groups(
             .map(|g| g.name.clone())
             .unwrap_or_else(|| group_id.clone());
 
+        let admin_did = metadata_by_id
+            .get(&group_id)
+            .map(|g| g.admin_did.clone())
+            .filter(|s| !s.is_empty());
+
+        let your_role = member_role_from_metadata(metadata_by_id.get(&group_id), &state.local_did);
+
         let last_message = state
             .storage
             .fetch_group_latest(&group_id)
@@ -220,6 +284,8 @@ pub(super) async fn mls_list_groups(
             member_count,
             last_message_timestamp,
             has_unread,
+            admin_did,
+            your_role: your_role.to_string(),
         });
     }
 
@@ -237,11 +303,19 @@ pub(super) async fn mls_list_members(
         message: format!("Failed to list group members: {}", e),
     })?;
 
+    // Load stored metadata for role info.
+    let group_meta = state.storage.fetch_group_metadata(&id).await.ok().flatten();
+
     let members: Vec<GroupMemberInfo> = dids
         .into_iter()
         .map(|did| {
             let display_name = state.username_registry.get_display_name(&did);
-            GroupMemberInfo { did, display_name }
+            let role = member_role_from_metadata(group_meta.as_ref(), &did).to_string();
+            GroupMemberInfo {
+                did,
+                display_name,
+                role,
+            }
         })
         .collect();
 
@@ -274,6 +348,14 @@ pub(super) async fn mls_create_group(
     let group_meta = variance_proto::messaging_proto::Group {
         id: group_id.clone(),
         name: req.name.clone(),
+        admin_did: state.local_did.clone(),
+        members: vec![variance_proto::messaging_proto::GroupMember {
+            did: state.local_did.clone(),
+            role: variance_proto::messaging_proto::GroupRole::Admin.into(),
+            joined_at: chrono::Utc::now().timestamp_millis(),
+            nickname: None,
+        }],
+        created_at: chrono::Utc::now().timestamp_millis(),
         ..Default::default()
     };
     if let Err(e) = state.storage.store_group_metadata(&group_meta).await {
@@ -293,18 +375,21 @@ pub(super) async fn mls_create_group(
     })))
 }
 
-/// Invite a member to an MLS group.
+/// Invite a member to an MLS group (deferred two-phase commit flow).
 ///
 /// The `invitee` field accepts either a DID (`did:...`) or a username
 /// (e.g. `alice` or `alice#0042`). The handler:
 /// 1. Resolves the invitee to a DID (if a username was given).
 /// 2. Resolves the peer's identity via P2P to obtain their MLS KeyPackage.
-/// 3. Performs the MLS `add_member` operation.
-/// 4. Broadcasts the commit to existing group members via GossipSub.
-/// 5. Sends the Welcome to the invitee as an Olm-encrypted DM.
+/// 3. Performs a *deferred* MLS `add_member` (commit is NOT merged yet).
+/// 4. Builds a `GroupInvitation` proto with Welcome + commit bytes.
+/// 5. Stores the invite as an outbound invite (for confirm/cancel later).
+/// 6. Sends the `GroupInvitation` to the invitee via Olm-encrypted DM.
 ///
-/// The invitee's event_router detects the `mls_welcome` metadata on the
-/// incoming DM and calls `join_group_from_welcome` automatically.
+/// The commit is **not** broadcast to existing members yet. The group stays
+/// in `PendingCommit` state (blocking other MLS operations) until the
+/// invitee accepts (triggers `confirm_add_member` + commit broadcast) or
+/// declines / times out (triggers `cancel_add_member` rollback).
 pub(super) async fn mls_invite_to_group(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -318,6 +403,9 @@ pub(super) async fn mls_invite_to_group(
             message: "invitee must not be empty".to_string(),
         });
     }
+
+    // Only admins can invite new members.
+    require_role(&state, &id, "admin").await?;
 
     // Enforce group size cap to avoid quadratic MLS commit overhead.
     let current_count = state
@@ -367,14 +455,17 @@ pub(super) async fn mls_invite_to_group(
             message: format!("Invalid KeyPackage: {}", e),
         })?;
 
+    // ── Deferred add: leave group in PendingCommit state ────────────
     let result = state
         .mls_groups
-        .add_member(&id, key_package)
+        .add_member_deferred(&id, key_package)
         .map_err(|e| Error::App {
             message: format!("Failed to add member to MLS group: {}", e),
         })?;
 
     persist_mls_state(&state).await;
+
+    // Do NOT update group metadata yet — member is added only after accept.
 
     let welcome_bytes =
         MlsGroupHandler::serialize_message(&result.welcome).map_err(|e| Error::App {
@@ -386,48 +477,54 @@ pub(super) async fn mls_invite_to_group(
             message: format!("Failed to serialize commit: {}", e),
         })?;
 
-    // ── Broadcast commit to existing group members via GossipSub ────
-    let topic = format!("/variance/group/{}", id);
-    let commit_proto = variance_proto::messaging_proto::GroupMessage {
-        id: ulid::Ulid::new().to_string(),
-        sender_did: state.local_did.clone(),
+    // ── Build GroupInvitation proto ──────────────────────────────────
+    let group_meta = state.storage.fetch_group_metadata(&id).await.ok().flatten();
+    let group_name = group_meta
+        .as_ref()
+        .map(|g| g.name.clone())
+        .unwrap_or_default();
+    let members = group_meta
+        .as_ref()
+        .map(|g| g.members.clone())
+        .unwrap_or_default();
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let invitation = variance_proto::messaging_proto::GroupInvitation {
         group_id: id.clone(),
-        timestamp: chrono::Utc::now().timestamp_millis(),
-        r#type: 0,
-        reply_to: None,
-        mls_ciphertext: commit_bytes.clone(),
+        group_name: group_name.clone(),
+        inviter_did: state.local_did.clone(),
+        invitee_did: invitee_did.clone(),
+        timestamp: now,
+        members,
+        mls_welcome: welcome_bytes,
+        mls_commit: commit_bytes,
     };
+
+    // ── Store as outbound invite (for confirm/cancel on response) ───
     if let Err(e) = state
-        .node_handle
-        .publish_group_message(topic, commit_proto)
+        .storage
+        .store_outbound_invite(&id, &invitee_did, &invitation, now)
         .await
     {
-        tracing::warn!("Failed to publish MLS add-member commit: {}", e);
+        tracing::warn!("Failed to store outbound invite: {}", e);
     }
 
-    // ── Send Welcome to the invitee via encrypted DM ────────────────
-    let welcome_hex = hex::encode(&welcome_bytes);
+    // ── Send GroupInvitation to invitee via Olm-encrypted DM ────────
+    // Encode the proto as hex in a DM with type=mls_group_invitation.
+    let invitation_hex = hex::encode(prost::Message::encode_to_vec(&invitation));
+
     if let Err(e) = ensure_olm_session(&state, &invitee_did).await {
         tracing::warn!(
             "Could not establish Olm session with invitee {} — \
-             Welcome must be delivered manually: {}",
+             invitation must be delivered manually: {}",
             invitee_did,
             e
         );
     } else {
         let mut metadata = HashMap::new();
-        metadata.insert("type".to_string(), "mls_welcome".to_string());
+        metadata.insert("type".to_string(), "mls_group_invitation".to_string());
         metadata.insert("group_id".to_string(), id.clone());
-        metadata.insert("mls_welcome".to_string(), welcome_hex.clone());
-
-        // Include the group name so the invitee can display it immediately.
-        if let Ok(all_meta) = state.storage.fetch_all_group_metadata().await {
-            if let Some(group_meta) = all_meta.into_iter().find(|g| g.id == id) {
-                if !group_meta.name.is_empty() {
-                    metadata.insert("group_name".to_string(), group_meta.name);
-                }
-            }
-        }
+        metadata.insert("invitation".to_string(), invitation_hex);
 
         let content = MessageContent {
             text: String::new(),
@@ -444,9 +541,7 @@ pub(super) async fn mls_invite_to_group(
         {
             Ok(message) => {
                 send_dm_to_peer(&state, &invitee_did, &message).await;
-                // The mls_welcome DM is a control message: it must not appear in
-                // the sender's conversation history. Delete our local copy now
-                // (the recipient's copy is deleted by their event_router).
+                // Control message: must not appear in conversation history.
                 if let Err(e) = state
                     .storage
                     .delete_direct_by_id(
@@ -458,13 +553,13 @@ pub(super) async fn mls_invite_to_group(
                     .await
                 {
                     tracing::warn!(
-                        "Failed to delete sent mls_welcome DM from local storage: {}",
+                        "Failed to delete sent invitation DM from local storage: {}",
                         e
                     );
                 }
             }
             Err(e) => {
-                tracing::warn!("Failed to send Welcome DM to {}: {}", invitee_did, e);
+                tracing::warn!("Failed to send invitation DM to {}: {}", invitee_did, e);
             }
         }
     }
@@ -473,6 +568,7 @@ pub(super) async fn mls_invite_to_group(
         "success": true,
         "group_id": id,
         "invitee_did": invitee_did,
+        "pending": true,
     })))
 }
 
@@ -531,6 +627,9 @@ pub(super) async fn mls_delete_group(
     use variance_messaging::mls::MlsGroupHandler;
     use variance_messaging::storage::MessageStorage;
 
+    // Only the admin (creator) can delete a group.
+    require_role(&state, &id, "admin").await?;
+
     // Best-effort: send leave proposal so remaining members know we departed.
     if let Ok(leave_msg) = state.mls_groups.leave_group(&id) {
         if let Ok(leave_bytes) = MlsGroupHandler::serialize_message(&leave_msg) {
@@ -582,6 +681,22 @@ pub(super) async fn mls_remove_member(
 ) -> Result<Json<serde_json::Value>> {
     use variance_messaging::mls::MlsGroupHandler;
 
+    // Only admins can kick members.
+    require_role(&state, &id, "admin").await?;
+
+    // Can't remove someone of equal or higher role.
+    let meta = state.storage.fetch_group_metadata(&id).await.ok().flatten();
+    let my_role = member_role_from_metadata(meta.as_ref(), &state.local_did);
+    let target_role = member_role_from_metadata(meta.as_ref(), &member_did);
+    if !outranks(my_role, target_role) {
+        return Err(Error::Forbidden {
+            message: format!(
+                "Cannot remove {} (role: {}) — your role ({}) does not outrank theirs",
+                member_did, target_role, my_role
+            ),
+        });
+    }
+
     let member_index = state
         .mls_groups
         .find_member_index(&id, &member_did)
@@ -600,6 +715,17 @@ pub(super) async fn mls_remove_member(
         })?;
 
     persist_mls_state(&state).await;
+
+    // Remove the member from stored metadata.
+    if let Ok(Some(mut group_meta)) = state.storage.fetch_group_metadata(&id).await {
+        group_meta.members.retain(|m| m.did != member_did);
+        if let Err(e) = state.storage.store_group_metadata(&group_meta).await {
+            tracing::warn!(
+                "Failed to update group metadata after member removal: {}",
+                e
+            );
+        }
+    }
 
     let commit_bytes =
         MlsGroupHandler::serialize_message(&result.commit).map_err(|e| Error::App {
@@ -683,6 +809,25 @@ pub(super) async fn mls_accept_welcome(
         })?;
 
     persist_mls_state(&state).await;
+
+    // Store metadata with self as MEMBER. We don't know admin_did here
+    // (the inviter may fill it later via the GroupInvitation proto).
+    // Only store if no metadata exists yet (to avoid overwriting richer data).
+    if let Ok(None) = state.storage.fetch_group_metadata(&group_id).await {
+        let group_meta = variance_proto::messaging_proto::Group {
+            id: group_id.clone(),
+            members: vec![variance_proto::messaging_proto::GroupMember {
+                did: state.local_did.clone(),
+                role: variance_proto::messaging_proto::GroupRole::Member.into(),
+                joined_at: chrono::Utc::now().timestamp_millis(),
+                nickname: None,
+            }],
+            ..Default::default()
+        };
+        if let Err(e) = state.storage.store_group_metadata(&group_meta).await {
+            tracing::warn!("Failed to persist group metadata on Welcome accept: {}", e);
+        }
+    }
 
     let topic = format!("/variance/group/{}", group_id);
     if let Err(e) = state.node_handle.subscribe_to_topic(topic).await {

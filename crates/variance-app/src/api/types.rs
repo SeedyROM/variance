@@ -189,6 +189,11 @@ pub struct MlsGroupInfo {
     pub member_count: usize,
     pub last_message_timestamp: Option<i64>,
     pub has_unread: bool,
+    /// DID of the group creator (admin). `None` for groups created before
+    /// metadata population was added.
+    pub admin_did: Option<String>,
+    /// The local user's role in this group: `"admin"`, `"moderator"`, or `"member"`.
+    pub your_role: String,
 }
 
 #[derive(Deserialize)]

@@ -114,6 +114,7 @@ impl EventRouter {
                 storage: self.storage.clone(),
                 local_did: self.local_did.clone(),
                 receipts: self.receipts.clone(),
+                username_registry: self.username_registry.clone(),
             },
             events.clone(),
         );

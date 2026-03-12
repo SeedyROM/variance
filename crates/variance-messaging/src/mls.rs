@@ -95,6 +95,7 @@ pub struct MlsGroupHandler {
 ///
 /// Contains the commit (broadcast to existing members via GossipSub)
 /// and the welcome (sent directly to the new member).
+#[derive(Debug)]
 pub struct AddMemberResult {
     /// The commit message — broadcast to existing group members.
     pub commit: MlsMessageOut,
@@ -254,6 +255,123 @@ impl MlsGroupHandler {
             welcome,
             group_info,
         })
+    }
+
+    /// Add a member without immediately merging the commit.
+    ///
+    /// Unlike `add_member()`, this leaves the group in `PendingCommit` state.
+    /// The caller must serialize the commit+welcome and send a `GroupInvitation`
+    /// to the invitee. When the invitee responds:
+    /// - **Accept**: call `confirm_add_member()` to merge the commit
+    /// - **Decline / timeout**: call `cancel_add_member()` to roll back
+    ///
+    /// While a commit is pending, the group is blocked from other MLS operations
+    /// (no new invites, no encrypted messages, no removes).
+    pub fn add_member_deferred(
+        &self,
+        group_id: &str,
+        key_package: KeyPackage,
+    ) -> Result<AddMemberResult> {
+        let group_lock = self
+            .groups
+            .get(group_id)
+            .ok_or_else(|| Error::GroupNotFound {
+                group_id: group_id.to_string(),
+            })?;
+
+        let mut group = group_lock.write().map_err(lock_poisoned)?;
+
+        // Fail fast if there's already a pending commit (another invite in flight).
+        if group.pending_commit().is_some() {
+            return Err(Error::MlsPendingCommit);
+        }
+
+        let (commit, welcome, group_info) = group
+            .add_members(&self.provider, &self.signature_keypair, &[key_package])
+            .map_err(|e| Error::MlsCommit {
+                message: format!("Failed to add member (deferred): {e:?}"),
+            })?;
+
+        // Do NOT merge — leave group in PendingCommit state.
+        Ok(AddMemberResult {
+            commit,
+            welcome,
+            group_info,
+        })
+    }
+
+    /// Merge the pending commit after the invitee accepts.
+    ///
+    /// This finalizes the add-member operation, advancing the group epoch.
+    /// After this call, the commit should be broadcast to existing members
+    /// via GossipSub so they process the epoch change.
+    pub fn confirm_add_member(&self, group_id: &str) -> Result<()> {
+        let group_lock = self
+            .groups
+            .get(group_id)
+            .ok_or_else(|| Error::GroupNotFound {
+                group_id: group_id.to_string(),
+            })?;
+
+        let mut group = group_lock.write().map_err(lock_poisoned)?;
+
+        if group.pending_commit().is_none() {
+            return Err(Error::MlsNoPendingCommit {
+                group_id: group_id.to_string(),
+            });
+        }
+
+        group
+            .merge_pending_commit(&self.provider)
+            .map_err(|e| Error::MlsCommit {
+                message: format!("Failed to merge pending commit: {e:?}"),
+            })?;
+
+        Ok(())
+    }
+
+    /// Roll back the pending commit after the invitee declines or the invite times out.
+    ///
+    /// This restores the group to its pre-invite state — same epoch, same membership.
+    /// No message needs to be broadcast; other members never saw the commit.
+    pub fn cancel_add_member(&self, group_id: &str) -> Result<()> {
+        let group_lock = self
+            .groups
+            .get(group_id)
+            .ok_or_else(|| Error::GroupNotFound {
+                group_id: group_id.to_string(),
+            })?;
+
+        let mut group = group_lock.write().map_err(lock_poisoned)?;
+
+        if group.pending_commit().is_none() {
+            return Err(Error::MlsNoPendingCommit {
+                group_id: group_id.to_string(),
+            });
+        }
+
+        group
+            .clear_pending_commit(self.provider.storage())
+            .map_err(|e| Error::MlsCommit {
+                message: format!("Failed to clear pending commit: {e:?}"),
+            })?;
+
+        Ok(())
+    }
+
+    /// Check whether a group has an in-flight pending commit.
+    ///
+    /// Returns `true` while the group is blocked awaiting an invite response.
+    pub fn has_pending_commit(&self, group_id: &str) -> Result<bool> {
+        let group_lock = self
+            .groups
+            .get(group_id)
+            .ok_or_else(|| Error::GroupNotFound {
+                group_id: group_id.to_string(),
+            })?;
+
+        let group = group_lock.read().map_err(lock_poisoned)?;
+        Ok(group.pending_commit().is_some())
     }
 
     /// Remove a member from a group by their leaf index.
@@ -1156,5 +1274,170 @@ mod tests {
         let members = alice.list_members("group-rm").unwrap();
         assert_eq!(members.len(), 1);
         assert_eq!(members[0], "did:key:alice");
+    }
+
+    #[test]
+    fn deferred_add_then_confirm() {
+        // Alice creates a group and adds Bob with the deferred flow.
+        let alice_sk = test_signing_key();
+        let alice = MlsGroupHandler::new("did:key:alice".to_string(), &alice_sk).unwrap();
+        alice.create_group("deferred-1").unwrap();
+
+        let bob_sk = test_signing_key();
+        let bob = MlsGroupHandler::new("did:key:bob".to_string(), &bob_sk).unwrap();
+        let bob_kp = bob.generate_key_package().unwrap();
+
+        let epoch_before = alice.epoch("deferred-1").unwrap();
+
+        // Deferred add — group should now have a pending commit.
+        let result = alice.add_member_deferred("deferred-1", bob_kp).unwrap();
+        assert!(alice.has_pending_commit("deferred-1").unwrap());
+
+        // Epoch should NOT have advanced yet (commit not merged).
+        assert_eq!(alice.epoch("deferred-1").unwrap(), epoch_before);
+
+        // Bob joins via the Welcome.
+        let welcome_bytes = MlsGroupHandler::serialize_message(&result.welcome).unwrap();
+        let welcome_in = MlsGroupHandler::deserialize_message(&welcome_bytes).unwrap();
+        let joined_id = bob.join_group_from_welcome(welcome_in).unwrap();
+        assert_eq!(joined_id, "deferred-1");
+
+        // Alice confirms (simulating invitee accepted).
+        alice.confirm_add_member("deferred-1").unwrap();
+        assert!(!alice.has_pending_commit("deferred-1").unwrap());
+
+        // Epoch should have advanced now.
+        assert!(alice.epoch("deferred-1").unwrap() > epoch_before);
+
+        // Both see each other as members.
+        let alice_members = alice.list_members("deferred-1").unwrap();
+        assert_eq!(alice_members.len(), 2);
+        let bob_members = bob.list_members("deferred-1").unwrap();
+        assert_eq!(bob_members.len(), 2);
+
+        // Messaging works after confirm.
+        let enc = alice
+            .encrypt_message("deferred-1", b"hello deferred")
+            .unwrap();
+        let enc_bytes = MlsGroupHandler::serialize_message(&enc).unwrap();
+        let dec = bob
+            .process_message(
+                "deferred-1",
+                MlsGroupHandler::deserialize_message(&enc_bytes).unwrap(),
+            )
+            .unwrap()
+            .expect("application message");
+        assert_eq!(dec.plaintext, b"hello deferred");
+    }
+
+    #[test]
+    fn deferred_add_then_cancel() {
+        // Alice creates a group and starts adding Bob, then cancels.
+        let alice_sk = test_signing_key();
+        let alice = MlsGroupHandler::new("did:key:alice".to_string(), &alice_sk).unwrap();
+        alice.create_group("deferred-cancel").unwrap();
+
+        let bob_sk = test_signing_key();
+        let bob = MlsGroupHandler::new("did:key:bob".to_string(), &bob_sk).unwrap();
+        let bob_kp = bob.generate_key_package().unwrap();
+
+        let epoch_before = alice.epoch("deferred-cancel").unwrap();
+
+        // Deferred add.
+        let _result = alice
+            .add_member_deferred("deferred-cancel", bob_kp)
+            .unwrap();
+        assert!(alice.has_pending_commit("deferred-cancel").unwrap());
+
+        // Cancel (simulating invitee declined or timeout).
+        alice.cancel_add_member("deferred-cancel").unwrap();
+        assert!(!alice.has_pending_commit("deferred-cancel").unwrap());
+
+        // Epoch should NOT have advanced — group is back to original state.
+        assert_eq!(alice.epoch("deferred-cancel").unwrap(), epoch_before);
+
+        // Alice is still the only member.
+        let members = alice.list_members("deferred-cancel").unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0], "did:key:alice");
+
+        // Alice can still encrypt messages (group is unblocked).
+        // We need a second member to decrypt, so add Charlie immediately.
+        let charlie_sk = test_signing_key();
+        let charlie = MlsGroupHandler::new("did:key:charlie".to_string(), &charlie_sk).unwrap();
+        let charlie_kp = charlie.generate_key_package().unwrap();
+        let add = alice.add_member("deferred-cancel", charlie_kp).unwrap();
+
+        let welcome_bytes = MlsGroupHandler::serialize_message(&add.welcome).unwrap();
+        charlie
+            .join_group_from_welcome(MlsGroupHandler::deserialize_message(&welcome_bytes).unwrap())
+            .unwrap();
+
+        let enc = alice
+            .encrypt_message("deferred-cancel", b"after cancel")
+            .unwrap();
+        let enc_bytes = MlsGroupHandler::serialize_message(&enc).unwrap();
+        let dec = charlie
+            .process_message(
+                "deferred-cancel",
+                MlsGroupHandler::deserialize_message(&enc_bytes).unwrap(),
+            )
+            .unwrap()
+            .expect("application message");
+        assert_eq!(dec.plaintext, b"after cancel");
+    }
+
+    #[test]
+    fn deferred_add_blocks_second_invite() {
+        // A second deferred add should fail while one is pending.
+        let alice_sk = test_signing_key();
+        let alice = MlsGroupHandler::new("did:key:alice".to_string(), &alice_sk).unwrap();
+        alice.create_group("deferred-block").unwrap();
+
+        let bob_sk = test_signing_key();
+        let bob = MlsGroupHandler::new("did:key:bob".to_string(), &bob_sk).unwrap();
+        let bob_kp = bob.generate_key_package().unwrap();
+
+        let charlie_sk = test_signing_key();
+        let charlie = MlsGroupHandler::new("did:key:charlie".to_string(), &charlie_sk).unwrap();
+        let charlie_kp = charlie.generate_key_package().unwrap();
+
+        // First invite — should succeed.
+        let _result = alice.add_member_deferred("deferred-block", bob_kp).unwrap();
+
+        // Second invite — should fail with MlsPendingCommit.
+        let err = alice
+            .add_member_deferred("deferred-block", charlie_kp)
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::MlsPendingCommit),
+            "expected MlsPendingCommit, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn confirm_without_pending_commit_errors() {
+        let sk = test_signing_key();
+        let handler = MlsGroupHandler::new("did:key:test".to_string(), &sk).unwrap();
+        handler.create_group("no-pending").unwrap();
+
+        let err = handler.confirm_add_member("no-pending").unwrap_err();
+        assert!(
+            matches!(err, Error::MlsNoPendingCommit { .. }),
+            "expected MlsNoPendingCommit, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn cancel_without_pending_commit_errors() {
+        let sk = test_signing_key();
+        let handler = MlsGroupHandler::new("did:key:test".to_string(), &sk).unwrap();
+        handler.create_group("no-pending-cancel").unwrap();
+
+        let err = handler.cancel_add_member("no-pending-cancel").unwrap_err();
+        assert!(
+            matches!(err, Error::MlsNoPendingCommit { .. }),
+            "expected MlsNoPendingCommit, got: {err:?}"
+        );
     }
 }

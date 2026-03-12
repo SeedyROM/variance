@@ -16,6 +16,7 @@ mod config;
 mod conversations;
 mod groups;
 mod identity;
+mod invitations;
 mod rate_limit;
 mod social;
 
@@ -115,6 +116,16 @@ pub fn create_router(state: AppState) -> Router {
             axum::routing::delete(groups::mls_remove_member),
         )
         .route("/mls/welcome/accept", post(groups::mls_accept_welcome))
+        // Group invitation endpoints
+        .route("/invitations", get(invitations::list_invitations))
+        .route(
+            "/invitations/{group_id}/accept",
+            post(invitations::accept_invitation),
+        )
+        .route(
+            "/invitations/{group_id}/decline",
+            post(invitations::decline_invitation),
+        )
         // Receipt endpoints
         .route("/receipts/delivered", post(social::send_delivered_receipt))
         .route("/receipts/read", post(social::send_read_receipt))
@@ -151,6 +162,7 @@ impl IntoResponse for Error {
             Error::BadRequest { message } => (StatusCode::BAD_REQUEST, message),
             Error::NotFound { message } => (StatusCode::NOT_FOUND, message),
             Error::Unauthorized { message } => (StatusCode::UNAUTHORIZED, message),
+            Error::Forbidden { message } => (StatusCode::FORBIDDEN, message),
             Error::SessionRequired { message } => (StatusCode::UNPROCESSABLE_ENTITY, message),
             Error::App { message } => (StatusCode::INTERNAL_SERVER_ERROR, message),
         };

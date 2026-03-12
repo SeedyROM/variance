@@ -1,18 +1,38 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { LogOut, Trash2, User, UserMinus } from "lucide-react";
+import { LogOut, Shield, Trash2, User, UserMinus } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
 import { Button } from "../ui/Button";
 import { groupsApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { useToastStore } from "../../stores/toastStore";
+import { cn } from "../../utils/cn";
 import type { MlsGroupInfo } from "../../api/types";
 
 interface ManageGroupPanelProps {
   group: MlsGroupInfo;
   onClose: () => void;
   onLeave: () => void;
+}
+
+function RoleBadge({ role }: { role: string }) {
+  if (role === "admin") {
+    return (
+      <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+        <Shield className="h-2.5 w-2.5" />
+        Admin
+      </span>
+    );
+  }
+  if (role === "moderator") {
+    return (
+      <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+        Mod
+      </span>
+    );
+  }
+  return null;
 }
 
 export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelProps) {
@@ -23,6 +43,8 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
   const localDid = useIdentityStore((s) => s.did);
   const markRead = useMessagingStore((s) => s.markRead);
   const addToast = useToastStore((s) => s.addToast);
+
+  const isAdmin = group.your_role === "admin";
 
   const { data: members = [] } = useQuery({
     queryKey: ["group-members", group.id],
@@ -81,17 +103,22 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
           <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto">
             {members.map((m) => {
               const isMe = m.did === localDid;
+              const canKick = isAdmin && !isMe && m.role !== "admin";
               return (
                 <div
                   key={m.did}
-                  className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-surface-900 dark:text-surface-50 group"
+                  className={cn(
+                    "flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-surface-900 dark:text-surface-50",
+                    canKick && "group"
+                  )}
                 >
                   <User className="h-3.5 w-3.5 shrink-0 text-surface-400" />
                   <span className="truncate flex-1">
                     {m.display_name ?? m.did.slice(-12)}
                     {isMe && <span className="ml-1.5 text-xs text-surface-400">(you)</span>}
                   </span>
-                  {!isMe && (
+                  <RoleBadge role={m.role} />
+                  {canKick && (
                     <button
                       onClick={() => kickMutation.mutate(m.did)}
                       disabled={kickMutation.isPending}
@@ -107,38 +134,41 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
           </div>
         </div>
 
-        {/* Invite */}
-        <div className="flex flex-col gap-2">
-          <p className="text-xs font-medium text-surface-500 uppercase tracking-wide">
-            Invite member
-          </p>
-          <div>
-            <label className="block text-xs text-surface-500 mb-1">Username or DID</label>
-            <input
-              type="text"
-              value={invitee}
-              onChange={(e) => setInvitee(e.target.value)}
-              placeholder="alice or alice#0042 or did:variance:..."
-              className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm
-                dark:border-surface-600 dark:bg-surface-800 dark:text-surface-50
-                focus:outline-none focus:ring-2 focus:ring-primary-500"
-            />
+        {/* Invite — admin only */}
+        {isAdmin && (
+          <div className="flex flex-col gap-2">
+            <p className="text-xs font-medium text-surface-500 uppercase tracking-wide">
+              Invite member
+            </p>
+            <div>
+              <label className="block text-xs text-surface-500 mb-1">Username or DID</label>
+              <input
+                type="text"
+                value={invitee}
+                onChange={(e) => setInvitee(e.target.value)}
+                placeholder="alice or alice#0042 or did:variance:..."
+                className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm
+                  dark:border-surface-600 dark:bg-surface-800 dark:text-surface-50
+                  focus:outline-none focus:ring-2 focus:ring-primary-500"
+              />
+            </div>
+            {inviteMutation.isSuccess && (
+              <p className="text-xs text-green-600 dark:text-green-400">
+                Invitation sent. Waiting for response...
+              </p>
+            )}
+            <Button
+              disabled={!canInvite || inviteMutation.isPending}
+              loading={inviteMutation.isPending}
+              onClick={() => inviteMutation.mutate()}
+            >
+              Invite
+            </Button>
           </div>
-          {inviteMutation.isSuccess && (
-            <p className="text-xs text-green-600 dark:text-green-400">Invite sent.</p>
-          )}
-          <Button
-            disabled={!canInvite || inviteMutation.isPending}
-            loading={inviteMutation.isPending}
-            onClick={() => inviteMutation.mutate()}
-          >
-            Invite
-          </Button>
-        </div>
+        )}
 
         {/* Leave / Delete */}
         <div className="border-t border-surface-200 dark:border-surface-700 pt-4 flex flex-col gap-3">
-          {/* Leave */}
           {!confirmLeave && !confirmDelete ? (
             <div className="flex flex-col gap-2">
               <button
@@ -148,13 +178,15 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
                 <LogOut className="h-4 w-4" />
                 Leave group
               </button>
-              <button
-                onClick={() => setConfirmDelete(true)}
-                className="flex items-center gap-2 text-sm text-red-500 hover:text-red-600"
-              >
-                <Trash2 className="h-4 w-4" />
-                Delete group
-              </button>
+              {isAdmin && (
+                <button
+                  onClick={() => setConfirmDelete(true)}
+                  className="flex items-center gap-2 text-sm text-red-500 hover:text-red-600"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Delete group
+                </button>
+              )}
             </div>
           ) : confirmLeave ? (
             <div className="flex flex-col gap-2">

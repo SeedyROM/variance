@@ -62,6 +62,12 @@ pub enum Error {
     #[snafu(display("MLS commit error: {message}"))]
     MlsCommit { message: String },
 
+    #[snafu(display("MLS group has a pending commit — cannot perform other operations until the invite is accepted, declined, or times out"))]
+    MlsPendingCommit,
+
+    #[snafu(display("No pending commit to confirm or cancel for group {group_id}"))]
+    MlsNoPendingCommit { group_id: String },
+
     #[snafu(display("Internal lock poisoned: {message}"))]
     LockPoisoned { message: String },
 }

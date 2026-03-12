@@ -77,11 +77,23 @@ export interface MlsGroupInfo {
   member_count: number;
   last_message_timestamp: number | null;
   has_unread?: boolean;
+  admin_did?: string;
+  your_role: string;
 }
 
 export interface GroupMemberInfo {
   did: string;
   display_name: string | null;
+  role: string;
+}
+
+export interface PendingInvitation {
+  group_id: string;
+  group_name: string;
+  inviter_did: string;
+  inviter_display_name: string | null;
+  timestamp: number;
+  member_count: number;
 }
 
 export interface SendDirectMessageRequest {
@@ -141,6 +153,21 @@ export type WsEvent =
       timestamp: number;
     }
   | { type: "MlsGroupJoined"; group_id: string; group_name?: string; inviter: string }
+  | {
+      type: "GroupInvitationReceived";
+      group_id: string;
+      group_name: string;
+      inviter_did: string;
+      inviter_display_name?: string;
+    }
+  | {
+      type: "GroupInvitationAccepted";
+      group_id: string;
+      invitee_did: string;
+      invitee_display_name?: string;
+    }
+  | { type: "GroupInvitationDeclined"; group_id: string; invitee_did: string }
+  | { type: "GroupInvitationExpired"; group_id: string; invitee_did: string }
   | { type: "TypingStarted"; from: string; recipient: string }
   | { type: "TypingStopped"; from: string; recipient: string }
   | { type: "ReceiptDelivered"; message_id: string }

@@ -27,6 +27,11 @@ interface MessagingStore {
   // the set of DIDs that are currently typing in that conversation.
   typingUsers: Map<string, Set<string>>;
   setTyping: (from: string, recipient: string, isTyping: boolean) => void;
+  // Pending group invitations count (for badge in sidebar).
+  pendingInvitationCount: number;
+  setPendingInvitationCount: (count: number) => void;
+  incrementPendingInvitations: () => void;
+  decrementPendingInvitations: () => void;
 }
 
 // Timers for auto-expiring typing indicators, keyed by "{recipient}::{from}".
@@ -141,4 +146,10 @@ export const useMessagingStore = create<MessagingStore>((set) => ({
       return { typingUsers: newMap };
     });
   },
+  pendingInvitationCount: 0,
+  setPendingInvitationCount: (count) => set({ pendingInvitationCount: count }),
+  incrementPendingInvitations: () =>
+    set((s) => ({ pendingInvitationCount: s.pendingInvitationCount + 1 })),
+  decrementPendingInvitations: () =>
+    set((s) => ({ pendingInvitationCount: Math.max(0, s.pendingInvitationCount - 1) })),
 }));
