@@ -223,14 +223,17 @@ export function useWebSocket() {
               const isActive =
                 activeConversationRef.current?.type === "dm" &&
                 activeConversationRef.current.peerId === event.from;
+              const isSelf = event.from === currentDid;
               if (!isActive) {
                 markUnread(conversationId);
-                const senderName =
-                  useMessagingStore.getState().peerNames.get(event.from) ?? "Someone";
-                void notify(conversationId, `New message from ${senderName}`, {
-                  type: "dm",
-                  peerId: event.from,
-                });
+                if (!isSelf) {
+                  const senderName =
+                    useMessagingStore.getState().peerNames.get(event.from) ?? "Someone";
+                  void notify(conversationId, `New message from ${senderName}`, {
+                    type: "dm",
+                    peerId: event.from,
+                  });
+                }
               }
             }
             break;

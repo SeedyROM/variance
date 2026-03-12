@@ -8,10 +8,10 @@ export function relativeTime(timestampMs: number): string {
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
   if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d ago`;
 
-  return new Date(timestampMs).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
+  const date = new Date(timestampMs);
+  const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+  if (date.getFullYear() !== new Date(now).getFullYear()) opts.year = "numeric";
+  return date.toLocaleDateString(undefined, opts);
 }
 
 /** Format a Unix millisecond timestamp as a short time string (HH:MM). */
@@ -43,7 +43,9 @@ export function dayLabel(timestampMs: number): string {
   if (isSameDay(date, today)) return "Today";
   if (isSameDay(date, yesterday)) return "Yesterday";
 
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
+  if (date.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+  return date.toLocaleDateString(undefined, opts);
 }
 
 function isSameDay(a: Date, b: Date): boolean {

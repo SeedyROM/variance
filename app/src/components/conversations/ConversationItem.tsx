@@ -60,7 +60,7 @@ export function ConversationItem({
       <div className="text-[10px] text-surface-400 font-mono break-all">
         {conversation.peer_did}
       </div>
-      <StatusIndicator online={isOnline} size="xs" />
+      {!isSelf && <StatusIndicator online={isOnline} size="xs" />}
     </div>
   );
 
@@ -79,14 +79,16 @@ export function ConversationItem({
         {/* Avatar with online indicator sitting on the outer edge */}
         <div className="relative shrink-0">
           <Avatar did={conversation.peer_did} size="md" />
-          <StatusDot
-            online={isOnline}
-            size="md"
-            className={cn(
-              "absolute -bottom-0.5 -right-0.5 border-2",
-              isActive ? "border-primary-500/10" : "border-surface-50 dark:border-surface-900"
-            )}
-          />
+          {!isSelf && (
+            <StatusDot
+              online={isOnline}
+              size="md"
+              className={cn(
+                "absolute -bottom-0.5 -right-0.5 border-2",
+                isActive ? "border-primary-500/10" : "border-surface-50 dark:border-surface-900"
+              )}
+            />
+          )}
         </div>
 
         <div className="min-w-0 flex-1">

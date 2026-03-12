@@ -134,7 +134,7 @@ export function ConversationList() {
           {conversationsOpen && (
             <>
               {allItems.length === 0 ? (
-                <div className="flex h-8 flex-col items-center justify-center gap-2 text-center cursor-default">
+                <div className="flex my-4 flex-col items-center justify-center gap-2 text-center cursor-default">
                   <p className="text-sm text-surface-500">No conversations yet</p>
                   <button
                     onClick={() => setShowNew(true)}
