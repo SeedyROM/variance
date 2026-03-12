@@ -2,16 +2,20 @@ import { cn } from "../../utils/cn";
 
 interface AvatarProps {
   did: string;
+  /** Display name — first character is used as the avatar initial when provided. */
+  name?: string;
   size?: "sm" | "md" | "lg";
   className?: string;
 }
 
 /** Deterministic color avatar derived from the DID string. */
-export function Avatar({ did, size = "md", className }: AvatarProps) {
+export function Avatar({ did, name, size = "md", className }: AvatarProps) {
   // Use last 2 chars of the DID hex as a simple color seed
   const seed = did.slice(-2);
   const hue = (parseInt(seed, 16) / 255) * 360;
-  const initial = did.charAt(did.lastIndexOf(":") + 1).toUpperCase();
+  const initial = name
+    ? name.charAt(0).toUpperCase()
+    : did.charAt(did.lastIndexOf(":") + 1).toUpperCase();
 
   return (
     <div

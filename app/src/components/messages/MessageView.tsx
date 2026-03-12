@@ -226,7 +226,7 @@ export function MessageView({ peerDid }: MessageViewProps) {
     <div className="flex h-full flex-col">
       {/* Header */}
       <div className="flex items-center gap-3 border-b border-surface-200 px-4 py-3 dark:border-surface-800">
-        <Avatar did={peerDid} size="md" />
+        <Avatar did={peerDid} name={peerUsername} size="md" />
         <div className="cursor-default min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <p className="text-sm font-semibold text-surface-900 dark:text-surface-50 truncate">

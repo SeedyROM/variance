@@ -16,6 +16,8 @@ import { isDifferentDay } from "../../utils/time";
 import { cn } from "../../utils/cn";
 import type { GroupMessage, GroupMemberInfo, ReactionSummary } from "../../api/types";
 
+export type BubblePosition = "solo" | "first" | "middle" | "last";
+
 /** Returns true when the viewport is narrower than the given pixel width. */
 function useMediaQuery(maxWidth: number): boolean {
   const [matches, setMatches] = useState(
@@ -58,16 +60,22 @@ function GroupMessageInput({ groupId }: { groupId: string }) {
   );
 }
 
-function groupShowSenderAbove(
-  messages: GroupMessage[],
-  index: number,
-  localDid: string | null
-): boolean {
-  const msg = messages[index];
-  if (msg.sender_did === localDid) return false;
-  if (index === 0) return true;
-  const prev = messages[index - 1];
-  return prev.sender_did !== msg.sender_did || isDifferentDay(prev.timestamp, msg.timestamp);
+/** Is this message in the same consecutive sender run as its neighbour? */
+function isSameRun(messages: GroupMessage[], i: number, j: number): boolean {
+  if (j < 0 || j >= messages.length) return false;
+  return (
+    messages[i].sender_did === messages[j].sender_did &&
+    !isDifferentDay(messages[i].timestamp, messages[j].timestamp)
+  );
+}
+
+function bubblePosition(messages: GroupMessage[], index: number): BubblePosition {
+  const prevSame = isSameRun(messages, index, index - 1);
+  const nextSame = isSameRun(messages, index, index + 1);
+  if (prevSame && nextSame) return "middle";
+  if (prevSame) return "last";
+  if (nextSame) return "first";
+  return "solo";
 }
 
 /** Squash reaction messages into per-message, per-emoji counts. */
@@ -214,27 +222,26 @@ export function GroupView({ groupId }: GroupViewProps) {
                 </p>
               </div>
             ) : (
-              <div className="flex flex-col gap-1.5">
+              <div className="flex flex-col">
                 {sortedMessages.map((msg, i) => {
                   const isOwn = msg.sender_did === localDid;
+                  const pos = bubblePosition(sortedMessages, i);
                   const showDivider =
                     i === 0 || isDifferentDay(sortedMessages[i - 1].timestamp, msg.timestamp);
-                  const showSender = groupShowSenderAbove(sortedMessages, i, localDid);
                   const isOnline =
                     msg.sender_did === localDid || (presenceMap.get(msg.sender_did) ?? false);
 
+                  // Spacing: tight (2px) within a run, normal (6px) between runs
+                  const isRunStart = pos === "solo" || pos === "first";
+                  const mt = i === 0 ? "" : isRunStart ? "mt-1.5" : "mt-0.5";
+
                   return (
-                    <div key={msg.id}>
+                    <div key={msg.id} className={mt}>
                       {showDivider && <DateDivider timestamp={msg.timestamp} />}
                       <GroupMessageBubble
                         message={msg}
                         isOwn={isOwn}
-                        showSender={showSender}
-                        showAvatar={
-                          showSender ||
-                          (isOwn &&
-                            (i === 0 || sortedMessages[i - 1].sender_did !== msg.sender_did))
-                        }
+                        position={pos}
                         senderOnline={isOnline}
                         reactions={reactionsByMsgId.get(msg.id) ?? []}
                         onReact={handleReact}
@@ -357,7 +364,12 @@ function MemberSection({
             >
               {/* Avatar with status dot overlay */}
               <div className="relative shrink-0">
-                <Avatar did={m.did} size="sm" className={online ? "" : "opacity-40"} />
+                <Avatar
+                  did={m.did}
+                  name={m.display_name ?? undefined}
+                  size="sm"
+                  className={online ? "" : "opacity-40"}
+                />
                 <StatusDot
                   online={online}
                   size="md"

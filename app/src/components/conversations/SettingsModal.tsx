@@ -150,7 +150,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               </h3>
 
               <div className="flex items-center gap-3">
-                <Avatar did={did} size="md" />
+                <Avatar did={did} name={displayName ?? undefined} size="md" />
                 <div className="min-w-0">
                   {displayName && <p className="font-semibold text-primary-500">{displayName}</p>}
                   <p className="break-all font-mono text-xs text-surface-500 dark:text-surface-400 leading-relaxed">

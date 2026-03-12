@@ -196,7 +196,7 @@ export function ConversationList() {
             onClick={() => setShowSettings(true)}
             className="flex items-center gap-2 rounded-lg p-1.5 cursor-pointer hover:bg-surface-200 dark:hover:bg-surface-800"
           >
-            {did && <Avatar did={did} size="sm" />}
+            {did && <Avatar did={did} name={displayName ?? undefined} size="sm" />}
             {displayName ? (
               <span className="text-xs font-medium text-surface-700 dark:text-surface-300 max-w-25 truncate">
                 {displayName}

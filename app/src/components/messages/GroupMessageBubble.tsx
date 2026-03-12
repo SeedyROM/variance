@@ -4,6 +4,7 @@ import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 
 import type { GroupMessage, ReactionSummary } from "../../api/types";
+import type { BubblePosition } from "./GroupView";
 import { cn } from "../../utils/cn";
 import { shortTime } from "../../utils/time";
 import { Avatar } from "../ui/Avatar";
@@ -17,9 +18,8 @@ const AVATAR_COL_W = "w-7";
 interface GroupMessageBubbleProps {
   message: GroupMessage;
   isOwn: boolean;
-  showSender: boolean;
-  /** Show the avatar for this message (first in a consecutive run). */
-  showAvatar?: boolean;
+  /** Position of this bubble within a consecutive sender run. */
+  position: BubblePosition;
   /** Whether the message sender is currently online. */
   senderOnline?: boolean;
   reactions: ReactionSummary[];
@@ -28,11 +28,40 @@ interface GroupMessageBubbleProps {
 
 const LONG_PRESS_MS = 500;
 
+/**
+ * Border-radius classes for stacked bubbles.
+ *
+ * Own messages (right-aligned, tail = bottom-right):
+ *   solo:   all round,      tight BR (speech tail)
+ *   first:  all round,      tight BR (run continues below)
+ *   middle: tight TR + BR,  full left
+ *   last:   tight TR,       full rest including BR tail
+ *
+ * Others' messages (left-aligned, tail = bottom-left):
+ *   solo:   all round,      tight BL (speech tail)
+ *   first:  all round,      tight BL (run continues below)
+ *   middle: tight TL + BL,  full right
+ *   last:   tight TL,       full rest including BL tail
+ */
+const RADIUS: Record<string, Record<BubblePosition, string>> = {
+  own: {
+    solo: "rounded-2xl rounded-br-sm",
+    first: "rounded-2xl rounded-br-md",
+    middle: "rounded-l-2xl rounded-r-md",
+    last: "rounded-2xl rounded-tr-md rounded-br-sm",
+  },
+  other: {
+    solo: "rounded-2xl rounded-bl-sm",
+    first: "rounded-2xl rounded-bl-md",
+    middle: "rounded-r-2xl rounded-l-md",
+    last: "rounded-2xl rounded-tl-md rounded-bl-sm",
+  },
+};
+
 export function GroupMessageBubble({
   message,
   isOwn,
-  showSender,
-  showAvatar = false,
+  position,
   senderOnline = false,
   reactions,
   onReact,
@@ -42,6 +71,9 @@ export function GroupMessageBubble({
   const [showEmojiBar, setShowEmojiBar] = useState(false);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const emojiBarHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showSender = !isOwn && (position === "first" || position === "solo");
+  const showAvatar = position === "last" || position === "solo";
 
   // Timestamp fades in after 300ms hover
   useEffect(() => {
@@ -84,9 +116,12 @@ export function GroupMessageBubble({
 
   const visibleReactions = reactions.filter((r) => r.count > 0);
 
+  const radiusKey = isOwn ? "own" : "other";
+  const radiusClass = RADIUS[radiusKey][position];
+
   const avatarElement = showAvatar ? (
     <div className="relative shrink-0 self-end">
-      <Avatar did={message.sender_did} size="sm" />
+      <Avatar did={message.sender_did} name={message.sender_username} size="sm" />
       <StatusDot
         online={senderOnline}
         size="md"
@@ -111,8 +146,8 @@ export function GroupMessageBubble({
       )}
 
       <div className={cn("flex items-end gap-2", isOwn ? "flex-row-reverse" : "flex-row")}>
-        {/* Avatar (or alignment spacer) */}
-        {avatarElement}
+        {/* Avatar (or alignment spacer) — only for others' messages */}
+        {!isOwn && avatarElement}
 
         {/* Bubble + reactions stacked together so reactions align under the bubble */}
         <div className={cn("flex flex-col gap-0.5", isOwn ? "items-end" : "items-start")}>
@@ -140,10 +175,11 @@ export function GroupMessageBubble({
 
             <div
               className={cn(
-                "relative max-w-sm rounded-2xl px-3.5 py-2.5 text-sm cursor-default select-none",
+                "relative max-w-sm px-3.5 py-2.5 text-sm cursor-default select-none",
+                radiusClass,
                 isOwn
-                  ? "rounded-br-sm bg-primary-500 text-white"
-                  : "rounded-bl-sm bg-surface-200 text-surface-900 dark:bg-surface-800 dark:text-surface-50"
+                  ? "bg-primary-500 text-white"
+                  : "bg-surface-200 text-surface-900 dark:bg-surface-800 dark:text-surface-50"
               )}
               onMouseDown={startLongPress}
               onMouseUp={cancelLongPress}

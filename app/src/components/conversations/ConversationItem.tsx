@@ -78,7 +78,11 @@ export function ConversationItem({
       >
         {/* Avatar with online indicator sitting on the outer edge */}
         <div className="relative shrink-0">
-          <Avatar did={conversation.peer_did} size="md" />
+          <Avatar
+            did={conversation.peer_did}
+            name={conversation.peer_username ?? peerNames.get(conversation.peer_did)}
+            size="md"
+          />
           {!isSelf && (
             <StatusDot
               online={isOnline}
