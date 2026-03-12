@@ -10,6 +10,7 @@ import { Toaster } from "./components/ui/Toaster";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { usePresencePolling } from "./hooks/usePresencePolling";
 import { useNodeReady } from "./hooks/useNodeReady";
+import { useTheme } from "./hooks/useTheme";
 import { useIdentityStore } from "./stores/identityStore";
 import { useAppStore } from "./stores/appStore";
 import { useMessagingStore } from "./stores/messagingStore";
@@ -105,6 +106,9 @@ export function App() {
   const nodeStatus = useAppStore((s) => s.nodeStatus);
   const setNodeStatus = useAppStore((s) => s.setNodeStatus);
   const setApiPort = useAppStore((s) => s.setApiPort);
+
+  // Apply theme (incl. system dark mode) before any child screen renders.
+  useTheme();
 
   useEffect(() => {
     const onMouseDown = (e: MouseEvent) => {
