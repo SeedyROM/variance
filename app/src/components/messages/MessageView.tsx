@@ -251,7 +251,7 @@ export function MessageView({ peerDid }: MessageViewProps) {
         )}
 
         {sortedMessages.length === 0 ? (
-          <div className="flex h-40 items-center justify-center">
+          <div className="flex h-24 items-center justify-center">
             <p className="text-sm text-surface-400">
               {isSelf ? "No messages yet. Jot something down!" : "No messages yet. Say hello!"}
             </p>

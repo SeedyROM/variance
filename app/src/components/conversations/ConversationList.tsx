@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Settings, Users } from "lucide-react";
+import { ChevronDown, MessageSquare, Plus, Settings, Users } from "lucide-react";
 import { ConversationItem } from "./ConversationItem";
 import { GroupConversationItem } from "./GroupConversationItem";
 import { InvitationsSection } from "./InvitationsSection";
@@ -14,12 +14,14 @@ import { IconButton } from "../ui/IconButton";
 import { conversationsApi, groupsApi } from "../../api/client";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { useIdentityStore } from "../../stores/identityStore";
+import { cn } from "../../utils/cn";
 import type { MlsGroupInfo } from "../../api/types";
 
 export function ConversationList() {
   const [showNew, setShowNew] = useState(false);
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [conversationsOpen, setConversationsOpen] = useState(true);
 
   const activeConversation = useMessagingStore((s) => s.activeConversation);
   const setActiveConversation = useMessagingStore((s) => s.setActiveConversation);
@@ -83,6 +85,10 @@ export function ConversationList() {
     return tsB - tsA;
   });
 
+  // Set of peer DIDs we have existing conversations with, passed to
+  // InvitationsSection so it can prioritize invites from known contacts.
+  const knownPeerDids = new Set(conversations.map((c) => c.peer_did));
+
   return (
     <div className="flex h-full w-72 flex-col border-r border-surface-200 bg-surface-50 dark:border-surface-800 dark:bg-surface-900">
       {/* Spacer — clears macOS traffic lights (~28px) */}
@@ -106,59 +112,81 @@ export function ConversationList() {
         </div>
       </div>
 
-      {/* Unified conversation + group list */}
+      {/* Scrollable subsections */}
       <ScrollArea className="flex-1 px-2 py-1">
-        <InvitationsSection />
-        {allItems.length === 0 ? (
-          <div className="flex h-40 flex-col items-center justify-center gap-2 text-center cursor-default">
-            <p className="text-sm text-surface-500">No conversations yet</p>
-            <button
-              onClick={() => setShowNew(true)}
-              className="text-xs text-primary-500 hover:underline"
-            >
-              Start one
-            </button>
-          </div>
-        ) : (
-          allItems.map((item) => {
-            if (item.kind === "dm") {
-              const conv = conversations.find((c) => c.id === item.id)!;
-              const isActive =
-                activeConversation?.type === "dm" && activeConversation.peerId === conv.peer_did;
-              return (
-                <ConversationItem
-                  key={conv.id}
-                  conversation={conv}
-                  isActive={isActive}
-                  onSelect={() => {
-                    setActiveConversation({ type: "dm", peerId: conv.peer_did });
-                    markRead(conv.id);
-                  }}
-                  onDelete={() => deleteMutation.mutate(conv.peer_did)}
-                />
-              );
-            } else {
-              const g = item.group;
-              const isActive =
-                activeConversation?.type === "group" && activeConversation.groupId === g.id;
-              const groupTypingSet = typingUsers.get(`group:${g.id}`);
-              const isGroupTyping = groupTypingSet !== undefined && groupTypingSet.size > 0;
-              return (
-                <GroupConversationItem
-                  key={g.id}
-                  group={g}
-                  isActive={isActive}
-                  hasUnread={item.has_unread}
-                  isTyping={isGroupTyping}
-                  onSelect={() => {
-                    setActiveConversation({ type: "group", groupId: g.id });
-                    markRead(g.id);
-                  }}
-                />
-              );
-            }
-          })
-        )}
+        <InvitationsSection knownPeerDids={knownPeerDids} />
+
+        {/* Conversations subsection */}
+        <div>
+          <button
+            onClick={() => setConversationsOpen((o) => !o)}
+            className="flex w-full items-center gap-1.5 px-2 py-1.5 text-xs font-medium text-surface-500 uppercase tracking-wide cursor-pointer hover:text-surface-700 dark:hover:text-surface-300 transition-colors"
+          >
+            <ChevronDown
+              className={cn("h-3 w-3 transition-transform", !conversationsOpen && "-rotate-90")}
+            />
+            <MessageSquare className="h-3 w-3" />
+            Conversations
+            {allItems.length > 0 && (
+              <span className="text-surface-400 font-normal">({allItems.length})</span>
+            )}
+          </button>
+          {conversationsOpen && (
+            <>
+              {allItems.length === 0 ? (
+                <div className="flex h-8 flex-col items-center justify-center gap-2 text-center cursor-default">
+                  <p className="text-sm text-surface-500">No conversations yet</p>
+                  <button
+                    onClick={() => setShowNew(true)}
+                    className="text-xs text-primary-500 hover:underline"
+                  >
+                    Start one
+                  </button>
+                </div>
+              ) : (
+                allItems.map((item) => {
+                  if (item.kind === "dm") {
+                    const conv = conversations.find((c) => c.id === item.id)!;
+                    const isActive =
+                      activeConversation?.type === "dm" &&
+                      activeConversation.peerId === conv.peer_did;
+                    return (
+                      <ConversationItem
+                        key={conv.id}
+                        conversation={conv}
+                        isActive={isActive}
+                        onSelect={() => {
+                          setActiveConversation({ type: "dm", peerId: conv.peer_did });
+                          markRead(conv.id);
+                        }}
+                        onDelete={() => deleteMutation.mutate(conv.peer_did)}
+                      />
+                    );
+                  } else {
+                    const g = item.group;
+                    const isActive =
+                      activeConversation?.type === "group" && activeConversation.groupId === g.id;
+                    const groupTypingSet = typingUsers.get(`group:${g.id}`);
+                    const isGroupTyping = groupTypingSet !== undefined && groupTypingSet.size > 0;
+                    return (
+                      <GroupConversationItem
+                        key={g.id}
+                        group={g}
+                        isActive={isActive}
+                        hasUnread={item.has_unread}
+                        isTyping={isGroupTyping}
+                        onSelect={() => {
+                          setActiveConversation({ type: "group", groupId: g.id });
+                          markRead(g.id);
+                        }}
+                      />
+                    );
+                  }
+                })
+              )}
+            </>
+          )}
+        </div>
       </ScrollArea>
 
       {/* Footer */}

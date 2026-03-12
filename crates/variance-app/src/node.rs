@@ -406,13 +406,40 @@ async fn register_with_network(
     olm_identity_key: Vec<u8>,
     one_time_keys: Vec<Vec<u8>>,
 ) {
+    let mls_key_package = generate_mls_key_package(state);
+
+    // The KeyPackage's private HPKE init key lives only in the in-memory
+    // MemoryStorage. Persist immediately so restarts don't lose it — otherwise
+    // incoming Welcomes that reference this KeyPackage would fail with
+    // NoMatchingKeyPackage after a restart.
+    if mls_key_package.is_some() {
+        match state.mls_groups.export_state() {
+            Ok(bytes) => {
+                if let Err(e) = state
+                    .storage
+                    .store_mls_state(&state.local_did, &bytes)
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to persist MLS state after KeyPackage generation: {}",
+                        e
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                "Failed to export MLS state after KeyPackage generation: {}",
+                e
+            ),
+        }
+    }
+
     if let Err(e) = state
         .node_handle
         .set_local_identity(
             state.local_did.clone(),
             olm_identity_key,
             one_time_keys,
-            generate_mls_key_package(state),
+            mls_key_package,
             state.mailbox_token.to_vec(),
         )
         .await
