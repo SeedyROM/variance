@@ -282,6 +282,14 @@ pub trait MessageStorage: Send + Sync {
     /// Delete an outbound invite (after accept/decline/timeout).
     async fn delete_outbound_invite(&self, group_id: &str, invitee_did: &str) -> Result<()>;
 
+    /// Fetch all outbound invites for a specific group.
+    ///
+    /// Returns `(invitee_did, GroupInvitation, created_at_ms)` triples.
+    async fn fetch_outbound_invites_for_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<(String, GroupInvitation, i64)>>;
+
     /// Fetch all outbound invites that have expired.
     ///
     /// An invite is expired when `created_at_ms + timeout_ms < now_ms`.
@@ -291,4 +299,16 @@ pub trait MessageStorage: Send + Sync {
         timeout_ms: i64,
         now_ms: i64,
     ) -> Result<Vec<(String, String, GroupInvitation)>>;
+
+    /// Update a member's role within a group's stored metadata.
+    ///
+    /// Fetches the group metadata, finds the member by DID, updates their
+    /// `role` field, and persists the modified metadata back to storage.
+    /// Returns `true` if the member was found and updated, `false` otherwise.
+    async fn update_member_role(
+        &self,
+        group_id: &str,
+        member_did: &str,
+        new_role: i32,
+    ) -> Result<bool>;
 }

@@ -76,6 +76,21 @@ pub struct GroupMemberInfo {
     pub role: String,
 }
 
+/// A pending outbound invitation visible to group admins.
+#[derive(Debug, serde::Serialize)]
+pub struct OutboundInvitationInfo {
+    pub invitee_did: String,
+    pub invitee_display_name: Option<String>,
+    pub created_at: i64,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChangeRoleRequest {
+    /// New role: `"moderator"` or `"member"`.
+    pub new_role: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct MlsAcceptWelcomeRequest {
     /// Hex-encoded TLS-serialized MLS Welcome message.
@@ -88,6 +103,9 @@ pub struct MlsAcceptWelcomeRequest {
 /// groups hit practical performance limits. This can be raised later as the
 /// protocol and implementation mature.
 const MAX_GROUP_MEMBERS: usize = 100;
+
+/// Invitation timeout in ms (must match event_router::messaging::INVITE_TIMEOUT_MS).
+const INVITE_TIMEOUT_MS: i64 = 5 * 60 * 1000;
 
 /// Convert a protobuf `GroupRole` integer to a human-readable label.
 fn role_label(role_i32: i32) -> &'static str {
@@ -320,6 +338,37 @@ pub(super) async fn mls_list_members(
         .collect();
 
     Ok(Json(members))
+}
+
+/// List outbound (pending) invitations for a group. Admin-only.
+pub(super) async fn mls_list_outbound_invitations(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<OutboundInvitationInfo>>> {
+    require_role(&state, &id, "admin").await?;
+
+    let invites = state
+        .storage
+        .fetch_outbound_invites_for_group(&id)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to fetch outbound invitations: {}", e),
+        })?;
+
+    let results: Vec<OutboundInvitationInfo> = invites
+        .into_iter()
+        .map(|(invitee_did, _invitation, created_at_ms)| {
+            let invitee_display_name = state.username_registry.get_display_name(&invitee_did);
+            OutboundInvitationInfo {
+                invitee_did,
+                invitee_display_name,
+                created_at: created_at_ms,
+                expires_at: created_at_ms + INVITE_TIMEOUT_MS,
+            }
+        })
+        .collect();
+
+    Ok(Json(results))
 }
 
 /// Create a new MLS group. The local user is the sole initial member.
@@ -681,8 +730,8 @@ pub(super) async fn mls_remove_member(
 ) -> Result<Json<serde_json::Value>> {
     use variance_messaging::mls::MlsGroupHandler;
 
-    // Only admins can kick members.
-    require_role(&state, &id, "admin").await?;
+    // Moderators and admins can kick members.
+    require_role(&state, &id, "moderator").await?;
 
     // Can't remove someone of equal or higher role.
     let meta = state.storage.fetch_group_metadata(&id).await.ok().flatten();
@@ -754,6 +803,91 @@ pub(super) async fn mls_remove_member(
         "success": true,
         "group_id": id,
         "removed_did": member_did,
+    })))
+}
+
+/// Change a member's role within an MLS group.
+///
+/// Only admins can promote/demote. The target must be outranked by the actor,
+/// and the new role must also be below the actor's own role (admins cannot
+/// create other admins via this endpoint).
+pub(super) async fn mls_change_member_role(
+    State(state): State<AppState>,
+    Path((id, member_did)): Path<(String, String)>,
+    Json(req): Json<ChangeRoleRequest>,
+) -> Result<Json<serde_json::Value>> {
+    // Only admins can change roles.
+    require_role(&state, &id, "admin").await?;
+
+    // Validate the requested new role.
+    let new_role_rank = role_rank(&req.new_role);
+    if new_role_rank == 0 || req.new_role == "admin" {
+        return Err(Error::BadRequest {
+            message: format!(
+                "Invalid target role '{}'. Must be 'moderator' or 'member'.",
+                req.new_role,
+            ),
+        });
+    }
+
+    // Can't change the role of someone you don't outrank.
+    let meta = state.storage.fetch_group_metadata(&id).await.ok().flatten();
+    let my_role = member_role_from_metadata(meta.as_ref(), &state.local_did);
+    let target_role = member_role_from_metadata(meta.as_ref(), &member_did);
+    if !outranks(my_role, target_role) {
+        return Err(Error::Forbidden {
+            message: format!(
+                "Cannot change role of {} (role: {}) — your role ({}) does not outrank theirs",
+                member_did, target_role, my_role,
+            ),
+        });
+    }
+
+    // Map role string to protobuf i32.
+    let new_role_i32 = match req.new_role.as_str() {
+        "moderator" => variance_proto::messaging_proto::GroupRole::Moderator as i32,
+        _ => variance_proto::messaging_proto::GroupRole::Member as i32,
+    };
+
+    // Update local storage.
+    let updated = state
+        .storage
+        .update_member_role(&id, &member_did, new_role_i32)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to update member role: {}", e),
+        })?;
+
+    if !updated {
+        return Err(Error::NotFound {
+            message: format!("Member {} not found in group {}", member_did, id),
+        });
+    }
+
+    // Broadcast role change as an MLS-encrypted metadata message so all
+    // peers learn about the change.
+    let mut metadata = HashMap::new();
+    metadata.insert("type".to_string(), "role_change".to_string());
+    metadata.insert("target_did".to_string(), member_did.clone());
+    metadata.insert("new_role".to_string(), req.new_role.clone());
+
+    let content = MessageContent {
+        text: String::new(),
+        attachments: vec![],
+        mentions: vec![],
+        reply_to: None,
+        metadata,
+    };
+
+    if let Err(e) = send_group_content(&state, &id, content).await {
+        tracing::warn!("Failed to broadcast role change to group: {}", e);
+    }
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "group_id": id,
+        "member_did": member_did,
+        "new_role": req.new_role,
     })))
 }
 

@@ -8,6 +8,7 @@ import type {
   IdentityStatus,
   MessageResponse,
   MlsGroupInfo,
+  OutboundInvitation,
   PendingInvitation,
   RegisterUsernameResponse,
   RelayPeer,
@@ -176,6 +177,15 @@ export const groupsApi = {
       `/mls/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(memberDid)}`,
       { method: "DELETE" }
     ),
+
+  changeRole: (groupId: string, memberDid: string, newRole: string) =>
+    request<{ success: boolean; group_id: string; member_did: string; new_role: string }>(
+      `/mls/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(memberDid)}/role`,
+      { method: "PUT", body: JSON.stringify({ new_role: newRole }) }
+    ),
+
+  listOutboundInvitations: (groupId: string) =>
+    request<OutboundInvitation[]>(`/mls/groups/${encodeURIComponent(groupId)}/invitations`),
 };
 
 // ===== Invitations =====

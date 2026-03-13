@@ -208,6 +208,35 @@ impl LocalMessageStorage {
         Ok(groups)
     }
 
+    pub(crate) async fn impl_update_member_role(
+        &self,
+        group_id: &str,
+        member_did: &str,
+        new_role: i32,
+    ) -> Result<bool> {
+        let tree = self.group_metadata_tree()?;
+        let Some(raw) = tree
+            .get(group_id.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?
+        else {
+            return Ok(false);
+        };
+
+        let mut group = Group::decode(raw.as_ref()).map_err(|e| Error::Protocol { source: e })?;
+
+        let Some(member) = group.members.iter_mut().find(|m| m.did == member_did) else {
+            return Ok(false);
+        };
+
+        member.role = new_role;
+
+        let bytes = Message::encode_to_vec(&group);
+        tree.insert(group_id.as_bytes(), bytes.as_slice())
+            .map_err(|e| Error::Storage { source: e })?;
+
+        Ok(true)
+    }
+
     pub(crate) async fn impl_store_mls_state(&self, local_did: &str, state: &[u8]) -> Result<()> {
         let tree = self.mls_state_tree()?;
         tree.insert(local_did.as_bytes(), state)
@@ -289,7 +318,9 @@ impl LocalMessageStorage {
 mod tests {
     use crate::storage::{LocalMessageStorage, MessageStorage};
     use tempfile::tempdir;
-    use variance_proto::messaging_proto::{GroupMessage, MessageType};
+    use variance_proto::messaging_proto::{
+        Group, GroupMember, GroupMessage, GroupRole, MessageType,
+    };
 
     #[tokio::test]
     async fn test_store_and_fetch_group() {
@@ -505,5 +536,96 @@ mod tests {
                 .has_group_message("other-group", "unique-msg-id")
                 .await
         );
+    }
+
+    #[tokio::test]
+    async fn test_update_member_role() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let group = Group {
+            id: "group-role-test".to_string(),
+            name: "Role Test".to_string(),
+            members: vec![
+                GroupMember {
+                    did: "did:key:admin".to_string(),
+                    role: GroupRole::Admin as i32,
+                    joined_at: 1000,
+                    nickname: None,
+                },
+                GroupMember {
+                    did: "did:key:bob".to_string(),
+                    role: GroupRole::Member as i32,
+                    joined_at: 2000,
+                    nickname: None,
+                },
+            ],
+            ..Default::default()
+        };
+        storage.store_group_metadata(&group).await.unwrap();
+
+        // Promote bob to moderator.
+        let updated = storage
+            .update_member_role(
+                "group-role-test",
+                "did:key:bob",
+                GroupRole::Moderator as i32,
+            )
+            .await
+            .unwrap();
+        assert!(updated);
+
+        let meta = storage
+            .fetch_group_metadata("group-role-test")
+            .await
+            .unwrap()
+            .unwrap();
+        let bob = meta
+            .members
+            .iter()
+            .find(|m| m.did == "did:key:bob")
+            .unwrap();
+        assert_eq!(bob.role, GroupRole::Moderator as i32);
+
+        // Demote bob back to member.
+        let updated = storage
+            .update_member_role("group-role-test", "did:key:bob", GroupRole::Member as i32)
+            .await
+            .unwrap();
+        assert!(updated);
+
+        let meta = storage
+            .fetch_group_metadata("group-role-test")
+            .await
+            .unwrap()
+            .unwrap();
+        let bob = meta
+            .members
+            .iter()
+            .find(|m| m.did == "did:key:bob")
+            .unwrap();
+        assert_eq!(bob.role, GroupRole::Member as i32);
+
+        // Unknown member returns false.
+        let updated = storage
+            .update_member_role(
+                "group-role-test",
+                "did:key:unknown",
+                GroupRole::Moderator as i32,
+            )
+            .await
+            .unwrap();
+        assert!(!updated);
+
+        // Unknown group returns false.
+        let updated = storage
+            .update_member_role(
+                "nonexistent-group",
+                "did:key:bob",
+                GroupRole::Moderator as i32,
+            )
+            .await
+            .unwrap();
+        assert!(!updated);
     }
 }

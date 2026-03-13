@@ -470,12 +470,29 @@ impl MessageStorage for LocalMessageStorage {
             .await
     }
 
+    async fn fetch_outbound_invites_for_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<(String, GroupInvitation, i64)>> {
+        self.impl_fetch_outbound_invites_for_group(group_id).await
+    }
+
     async fn fetch_expired_outbound_invites(
         &self,
         timeout_ms: i64,
         now_ms: i64,
     ) -> Result<Vec<(String, String, GroupInvitation)>> {
         self.impl_fetch_expired_outbound_invites(timeout_ms, now_ms)
+            .await
+    }
+
+    async fn update_member_role(
+        &self,
+        group_id: &str,
+        member_did: &str,
+        new_role: i32,
+    ) -> Result<bool> {
+        self.impl_update_member_role(group_id, member_did, new_role)
             .await
     }
 }

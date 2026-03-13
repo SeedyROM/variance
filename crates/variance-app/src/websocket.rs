@@ -160,6 +160,18 @@ pub enum WsMessage {
         group_id: String,
         invitee_did: String,
     },
+    /// A member's role was changed (promote/demote).
+    RoleChanged {
+        group_id: String,
+        target_did: String,
+        new_role: String,
+        changed_by: String,
+    },
+    /// The local user was removed from a group (kicked).
+    MlsGroupRemoved {
+        group_id: String,
+        reason: String,
+    },
     OfflineMessagesReceived {
         count: usize,
     },
@@ -226,6 +238,8 @@ impl WsMessage {
             | Self::GroupInvitationAccepted { .. }
             | Self::GroupInvitationDeclined { .. }
             | Self::GroupInvitationExpired { .. }
+            | Self::RoleChanged { .. }
+            | Self::MlsGroupRemoved { .. }
             | Self::OfflineMessagesReceived { .. }
             | Self::TypingStarted { .. }
             | Self::TypingStopped { .. }

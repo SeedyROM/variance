@@ -34,7 +34,12 @@ pub(super) struct SocialDeps {
 
 /// Spawn all social-related event listeners (typing, receipts, rename, identity/presence).
 pub(super) fn spawn_social_listeners(deps: SocialDeps, events: EventChannels) {
-    spawn_typing_listener(deps.ws_manager.clone(), deps.typing, events.clone());
+    spawn_typing_listener(
+        deps.ws_manager.clone(),
+        deps.typing,
+        deps.mls_groups.clone(),
+        events.clone(),
+    );
     spawn_receipt_listener(deps.ws_manager.clone(), deps.receipts, events.clone());
     spawn_rename_listener(
         deps.ws_manager.clone(),
@@ -61,6 +66,7 @@ pub(super) fn spawn_social_listeners(deps: SocialDeps, events: EventChannels) {
 fn spawn_typing_listener(
     ws_manager: WebSocketManager,
     typing: Arc<TypingHandler>,
+    mls_groups: Arc<MlsGroupHandler>,
     events: EventChannels,
 ) {
     tokio::spawn(async move {
@@ -73,6 +79,23 @@ fn spawn_typing_listener(
             is_typing,
         }) = rx.recv().await
         {
+            // For group typing indicators, verify the sender is still a group
+            // member. Kicked members may still attempt to send indicators; drop
+            // them silently.
+            if let Some(group_id) = recipient.strip_prefix("group:") {
+                let is_member = mls_groups
+                    .list_members(group_id)
+                    .map(|members| members.contains(&sender_did))
+                    .unwrap_or(false);
+                if !is_member {
+                    debug!(
+                        "EventRouter: Dropping typing indicator from non-member {} for group {}",
+                        sender_did, group_id
+                    );
+                    continue;
+                }
+            }
+
             // Update the local typing state so the polling endpoint also works
             use variance_proto::messaging_proto::{typing_indicator::Recipient, TypingIndicator};
             let indicator = TypingIndicator {

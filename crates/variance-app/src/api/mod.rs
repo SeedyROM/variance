@@ -115,6 +115,14 @@ pub fn create_router(state: AppState) -> Router {
             "/mls/groups/{id}/members/{member_did}",
             axum::routing::delete(groups::mls_remove_member),
         )
+        .route(
+            "/mls/groups/{id}/members/{member_did}/role",
+            axum::routing::put(groups::mls_change_member_role),
+        )
+        .route(
+            "/mls/groups/{id}/invitations",
+            get(groups::mls_list_outbound_invitations),
+        )
         .route("/mls/welcome/accept", post(groups::mls_accept_welcome))
         // Group invitation endpoints
         .route("/invitations", get(invitations::list_invitations))

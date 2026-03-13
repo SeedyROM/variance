@@ -121,6 +121,15 @@ pub(super) async fn start_typing(
     axum::Json(req): axum::Json<TypingRequest>,
 ) -> Result<Json<serde_json::Value>> {
     if req.is_group {
+        // If we've been removed from this group, silently no-op to avoid
+        // leaking typing indicators to a group we no longer belong to.
+        if !state.mls_groups.is_member(&req.recipient) {
+            return Ok(Json(serde_json::json!({
+                "success": true,
+                "message": "Typing indicator sent"
+            })));
+        }
+
         // Rate-limit + sustained-composition threshold for group typing
         let indicator = state.typing.try_start_typing_group(req.recipient.clone());
 

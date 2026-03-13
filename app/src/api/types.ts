@@ -96,6 +96,13 @@ export interface PendingInvitation {
   member_count: number;
 }
 
+export interface OutboundInvitation {
+  invitee_did: string;
+  invitee_display_name: string | null;
+  created_at: number;
+  expires_at: number;
+}
+
 export interface SendDirectMessageRequest {
   recipient_did: string;
   text: string;
@@ -168,6 +175,14 @@ export type WsEvent =
     }
   | { type: "GroupInvitationDeclined"; group_id: string; invitee_did: string }
   | { type: "GroupInvitationExpired"; group_id: string; invitee_did: string }
+  | {
+      type: "RoleChanged";
+      group_id: string;
+      target_did: string;
+      new_role: string;
+      changed_by: string;
+    }
+  | { type: "MlsGroupRemoved"; group_id: string; reason: string }
   | { type: "TypingStarted"; from: string; recipient: string }
   | { type: "TypingStopped"; from: string; recipient: string }
   | { type: "ReceiptDelivered"; message_id: string }

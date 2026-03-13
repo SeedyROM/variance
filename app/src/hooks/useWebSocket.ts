@@ -367,6 +367,7 @@ export function useWebSocket() {
             // The invitee accepted — MLS commit has been broadcast, group is live.
             void queryClient.invalidateQueries({ queryKey: ["groups"] });
             void queryClient.invalidateQueries({ queryKey: ["group-members"] });
+            void queryClient.invalidateQueries({ queryKey: ["outbound-invitations"] });
             const accepteeName =
               event.invitee_display_name ??
               useMessagingStore.getState().peerNames.get(event.invitee_did) ??
@@ -379,6 +380,7 @@ export function useWebSocket() {
 
           case "GroupInvitationDeclined": {
             void queryClient.invalidateQueries({ queryKey: ["groups"] });
+            void queryClient.invalidateQueries({ queryKey: ["outbound-invitations"] });
             const declineeName =
               useMessagingStore.getState().peerNames.get(event.invitee_did) ?? "A user";
             useToastStore
@@ -389,11 +391,40 @@ export function useWebSocket() {
 
           case "GroupInvitationExpired": {
             void queryClient.invalidateQueries({ queryKey: ["groups"] });
+            void queryClient.invalidateQueries({ queryKey: ["outbound-invitations"] });
             const expiredName =
               useMessagingStore.getState().peerNames.get(event.invitee_did) ?? "A user";
             useToastStore
               .getState()
               .addToast(`Group invitation to ${expiredName} expired (timed out)`, "info");
+            break;
+          }
+
+          case "RoleChanged": {
+            void queryClient.invalidateQueries({ queryKey: ["group-members"] });
+            void queryClient.invalidateQueries({ queryKey: ["groups"] });
+            const targetName =
+              useMessagingStore.getState().peerNames.get(event.target_did) ?? event.target_did;
+            useToastStore.getState().addToast(`${targetName} is now ${event.new_role}`, "info");
+            break;
+          }
+
+          case "MlsGroupRemoved": {
+            void queryClient.invalidateQueries({ queryKey: ["groups"] });
+            void queryClient.invalidateQueries({ queryKey: ["group-members"] });
+            useToastStore
+              .getState()
+              .addToast(
+                event.reason === "kicked"
+                  ? "You were removed from the group"
+                  : "You left the group",
+                "info"
+              );
+            // If the user is viewing the removed group, navigate away.
+            const removedActive = activeConversationRef.current;
+            if (removedActive?.type === "group" && removedActive.groupId === event.group_id) {
+              setActiveConversation(null);
+            }
             break;
           }
 

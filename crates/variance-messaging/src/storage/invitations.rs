@@ -147,6 +147,43 @@ impl LocalMessageStorage {
         Ok(())
     }
 
+    /// Fetch all outbound invites for a specific group.
+    ///
+    /// Uses `scan_prefix` on the `{group_id}:` key prefix.
+    /// Returns `(invitee_did, GroupInvitation, created_at_ms)` triples.
+    pub(crate) async fn impl_fetch_outbound_invites_for_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<(String, GroupInvitation, i64)>> {
+        let tree = self.outbound_invites_tree()?;
+        let prefix = format!("{group_id}:");
+        let mut results = Vec::new();
+
+        for entry in tree.scan_prefix(prefix.as_bytes()) {
+            let (key, value) = entry.map_err(|e| Error::Storage { source: e })?;
+            let envelope: OutboundInvite = match serde_json::from_slice(&value) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            let key_str = String::from_utf8_lossy(&key);
+            // Key format: {group_id}:{invitee_did}
+            // The prefix already matched group_id, so everything after the first
+            // `:did:` boundary is the invitee DID.
+            if let Some(split_pos) = key_str.find(":did:") {
+                let invitee_did = key_str[split_pos + 1..].to_string();
+                let invitation = match GroupInvitation::decode(envelope.invitation_bytes.as_slice())
+                {
+                    Ok(inv) => inv,
+                    Err(_) => continue,
+                };
+                results.push((invitee_did, invitation, envelope.created_at_ms));
+            }
+        }
+
+        Ok(results)
+    }
+
     /// Fetch all outbound invites that have expired (created_at_ms + timeout < now).
     ///
     /// Returns `(group_id, invitee_did, GroupInvitation)` triples.
@@ -334,5 +371,66 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_outbound_invites_for_group() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // Two invites in group-a, one in group-b
+        let inv1 = test_invitation("group-a", "did:key:alice", "did:key:bob");
+        let inv2 = test_invitation("group-a", "did:key:alice", "did:key:charlie");
+        let inv3 = test_invitation("group-b", "did:key:alice", "did:key:dave");
+
+        storage
+            .store_outbound_invite("group-a", "did:key:bob", &inv1, now)
+            .await
+            .unwrap();
+        storage
+            .store_outbound_invite("group-a", "did:key:charlie", &inv2, now + 1000)
+            .await
+            .unwrap();
+        storage
+            .store_outbound_invite("group-b", "did:key:dave", &inv3, now + 2000)
+            .await
+            .unwrap();
+
+        // Fetch only group-a invites
+        let results = storage
+            .fetch_outbound_invites_for_group("group-a")
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+
+        let dids: Vec<&str> = results.iter().map(|(did, _, _)| did.as_str()).collect();
+        assert!(dids.contains(&"did:key:bob"));
+        assert!(dids.contains(&"did:key:charlie"));
+
+        // Verify created_at values
+        for (did, _, ts) in &results {
+            if did == "did:key:bob" {
+                assert_eq!(*ts, now);
+            } else {
+                assert_eq!(*ts, now + 1000);
+            }
+        }
+
+        // Fetch group-b — should only have one
+        let results_b = storage
+            .fetch_outbound_invites_for_group("group-b")
+            .await
+            .unwrap();
+        assert_eq!(results_b.len(), 1);
+        assert_eq!(results_b[0].0, "did:key:dave");
+
+        // Fetch nonexistent group — empty
+        let results_c = storage
+            .fetch_outbound_invites_for_group("group-nope")
+            .await
+            .unwrap();
+        assert!(results_c.is_empty());
     }
 }

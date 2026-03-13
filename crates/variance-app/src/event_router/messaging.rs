@@ -42,6 +42,7 @@ pub(super) fn spawn_messaging_listeners(deps: MessagingDeps, events: EventChanne
         deps.mls_groups.clone(),
         deps.storage.clone(),
         deps.local_did.clone(),
+        deps.node_handle.clone(),
         events.clone(),
     );
     spawn_group_sync_listener(
@@ -529,6 +530,7 @@ fn spawn_group_message_listener(
     mls_groups: Arc<MlsGroupHandler>,
     storage: Arc<LocalMessageStorage>,
     local_did: String,
+    node_handle: NodeHandle,
     events: EventChannels,
 ) {
     tokio::spawn(async move {
@@ -582,6 +584,48 @@ fn spawn_group_message_listener(
                                             message_id, e
                                         );
                                     }
+
+                                    // Detect role_change metadata and apply locally.
+                                    if content.metadata.get("type").map(String::as_str)
+                                        == Some("role_change")
+                                    {
+                                        if let (Some(target_did), Some(new_role)) = (
+                                            content.metadata.get("target_did"),
+                                            content.metadata.get("new_role"),
+                                        ) {
+                                            let new_role_i32 = match new_role.as_str() {
+                                                "moderator" => {
+                                                    variance_proto::messaging_proto::GroupRole::Moderator
+                                                        as i32
+                                                }
+                                                _ => {
+                                                    variance_proto::messaging_proto::GroupRole::Member
+                                                        as i32
+                                                }
+                                            };
+                                            if let Err(e) = storage
+                                                .update_member_role(
+                                                    &group_id,
+                                                    target_did,
+                                                    new_role_i32,
+                                                )
+                                                .await
+                                            {
+                                                warn!(
+                                                    "EventRouter: Failed to apply role change for {} in {}: {}",
+                                                    target_did, group_id, e
+                                                );
+                                            }
+
+                                            let role_msg = WsMessage::RoleChanged {
+                                                group_id: group_id.clone(),
+                                                target_did: target_did.clone(),
+                                                new_role: new_role.clone(),
+                                                changed_by: from.clone(),
+                                            };
+                                            ws_manager.broadcast(role_msg);
+                                        }
+                                    }
                                 }
 
                                 let msg = WsMessage::GroupMessageReceived {
@@ -598,6 +642,49 @@ fn spawn_group_message_listener(
                             Ok(None) => {
                                 // Commit or proposal processed — epoch or tree changed.
                                 persist_mls_state_async(&mls_groups, &storage, &local_did).await;
+
+                                // Detect if we were removed from the group.
+                                let still_member = mls_groups
+                                    .list_members(&group_id)
+                                    .map(|members| members.contains(&local_did))
+                                    .unwrap_or(false);
+
+                                if !still_member {
+                                    debug!(
+                                        "EventRouter: Local user was removed from group {}, cleaning up",
+                                        group_id,
+                                    );
+
+                                    // Unsubscribe from GossipSub topic.
+                                    let topic = format!("/variance/group/{}", group_id);
+                                    if let Err(e) = node_handle.unsubscribe_from_topic(topic).await
+                                    {
+                                        warn!(
+                                            "EventRouter: Failed to unsubscribe from group topic after removal: {}",
+                                            e,
+                                        );
+                                    }
+
+                                    // Remove the MLS group state so is_member() returns false.
+                                    mls_groups.remove_group(&group_id);
+                                    persist_mls_state_async(&mls_groups, &storage, &local_did)
+                                        .await;
+
+                                    // Clean up stored metadata.
+                                    if let Err(e) = storage.delete_group_metadata(&group_id).await {
+                                        warn!(
+                                            "EventRouter: Failed to delete group metadata after removal: {}",
+                                            e,
+                                        );
+                                    }
+
+                                    // Notify frontend so it can remove the group from the list.
+                                    let msg = WsMessage::MlsGroupRemoved {
+                                        group_id: group_id.clone(),
+                                        reason: "You were removed from this group".to_string(),
+                                    };
+                                    ws_manager.broadcast(msg);
+                                }
                             }
                             Err(e) => {
                                 warn!("EventRouter: MLS decrypt failed for {}: {}", message_id, e);
