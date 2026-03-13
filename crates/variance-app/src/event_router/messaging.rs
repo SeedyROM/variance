@@ -703,9 +703,12 @@ fn spawn_group_message_listener(
                                     }
 
                                     // Notify frontend so it can remove the group from the list.
+                                    // Use "kicked" so the frontend can distinguish removal-by-admin
+                                    // from voluntary leave (which is handled synchronously in the
+                                    // HTTP handler and never reaches here).
                                     let msg = WsMessage::MlsGroupRemoved {
                                         group_id: group_id.clone(),
-                                        reason: "You were removed from this group".to_string(),
+                                        reason: "kicked".to_string(),
                                     };
                                     ws_manager.broadcast(msg);
                                 }
