@@ -52,6 +52,16 @@ export function ConversationList() {
     },
   });
 
+  const leaveGroupMutation = useMutation({
+    mutationFn: (groupId: string) => groupsApi.leave(groupId),
+    onSuccess: (_data, groupId) => {
+      void queryClient.invalidateQueries({ queryKey: ["groups"] });
+      if (activeConversation?.type === "group" && activeConversation.groupId === groupId) {
+        setActiveConversation(null);
+      }
+    },
+  });
+
   // Build a unified sorted list: DMs and groups merged by last activity.
   type ListItem =
     | {
@@ -179,6 +189,7 @@ export function ConversationList() {
                           setActiveConversation({ type: "group", groupId: g.id });
                           markRead(g.id);
                         }}
+                        onLeave={() => leaveGroupMutation.mutate(g.id)}
                       />
                     );
                   }

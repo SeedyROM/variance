@@ -330,6 +330,14 @@ impl MessageStorage for LocalMessageStorage {
         self.impl_fetch_group_last_read_at(our_did, group_id).await
     }
 
+    async fn delete_last_read_at(&self, our_did: &str, peer_did: &str) -> Result<()> {
+        self.impl_delete_last_read_at(our_did, peer_did).await
+    }
+
+    async fn delete_group_last_read_at(&self, our_did: &str, group_id: &str) -> Result<()> {
+        self.impl_delete_group_last_read_at(our_did, group_id).await
+    }
+
     async fn delete_direct_conversation(&self, did1: &str, did2: &str) -> Result<()> {
         self.impl_delete_direct_conversation(did1, did2).await
     }
@@ -483,6 +491,11 @@ impl MessageStorage for LocalMessageStorage {
         now_ms: i64,
     ) -> Result<Vec<(String, String, GroupInvitation)>> {
         self.impl_fetch_expired_outbound_invites(timeout_ms, now_ms)
+            .await
+    }
+
+    async fn delete_all_outbound_invites_for_group(&self, group_id: &str) -> Result<()> {
+        self.impl_delete_all_outbound_invites_for_group(group_id)
             .await
     }
 

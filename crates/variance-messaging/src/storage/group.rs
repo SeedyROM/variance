@@ -163,14 +163,39 @@ impl LocalMessageStorage {
     pub(crate) async fn impl_delete_group_messages(&self, group_id: &str) -> Result<()> {
         let tree = self.group_tree()?;
         let prefix = format!("{}:", group_id);
-        let keys_to_delete: Vec<sled::IVec> = tree
-            .scan_prefix(prefix.as_bytes())
-            .filter_map(|r| r.ok().map(|(k, _)| k))
-            .collect();
-        for key in keys_to_delete {
-            tree.remove(&key)
-                .map_err(|e| Error::Storage { source: e })?;
+
+        // Collect keys and extract message_ids for plaintext cache cleanup.
+        // Key format: {group_id}:{timestamp:020}:{message_id}
+        let mut keys_to_delete: Vec<sled::IVec> = Vec::new();
+        let mut message_ids: Vec<String> = Vec::new();
+
+        for (key, _) in tree.scan_prefix(prefix.as_bytes()).flatten() {
+            if let Ok(key_str) = std::str::from_utf8(&key) {
+                if let Some(last_colon) = key_str.rfind(':') {
+                    message_ids.push(key_str[last_colon + 1..].to_string());
+                }
+            }
+            keys_to_delete.push(key);
         }
+
+        for key in &keys_to_delete {
+            tree.remove(key).map_err(|e| Error::Storage { source: e })?;
+        }
+
+        // Also clean the group plaintext cache for these messages.
+        if !message_ids.is_empty() {
+            if let Ok(pt_tree) = self.db.open_tree("group_plaintext_cache") {
+                for msg_id in &message_ids {
+                    if let Err(e) = pt_tree.remove(msg_id.as_bytes()) {
+                        warn!(
+                            "Failed to remove group plaintext cache for {}: {}",
+                            msg_id, e
+                        );
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 

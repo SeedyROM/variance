@@ -130,6 +130,12 @@ pub trait MessageStorage: Send + Sync {
     /// Fetch the last-read timestamp for a group. Returns `None` if never read.
     async fn fetch_group_last_read_at(&self, our_did: &str, group_id: &str) -> Result<Option<i64>>;
 
+    /// Delete the last-read-at entry for a direct conversation.
+    async fn delete_last_read_at(&self, our_did: &str, peer_did: &str) -> Result<()>;
+
+    /// Delete the last-read-at entry for a group.
+    async fn delete_group_last_read_at(&self, our_did: &str, group_id: &str) -> Result<()>;
+
     /// Delete all messages in a direct conversation.
     async fn delete_direct_conversation(&self, did1: &str, did2: &str) -> Result<()>;
 
@@ -299,6 +305,9 @@ pub trait MessageStorage: Send + Sync {
         timeout_ms: i64,
         now_ms: i64,
     ) -> Result<Vec<(String, String, GroupInvitation)>>;
+
+    /// Delete all outbound invites for a group (used during group leave/kick cleanup).
+    async fn delete_all_outbound_invites_for_group(&self, group_id: &str) -> Result<()>;
 
     /// Update a member's role within a group's stored metadata.
     ///

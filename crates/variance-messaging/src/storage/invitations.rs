@@ -147,6 +147,24 @@ impl LocalMessageStorage {
         Ok(())
     }
 
+    /// Delete all outbound invites for a group (used during group leave/kick cleanup).
+    pub(crate) async fn impl_delete_all_outbound_invites_for_group(
+        &self,
+        group_id: &str,
+    ) -> Result<()> {
+        let tree = self.outbound_invites_tree()?;
+        let prefix = format!("{group_id}:");
+        let keys: Vec<sled::IVec> = tree
+            .scan_prefix(prefix.as_bytes())
+            .filter_map(|r| r.ok().map(|(k, _)| k))
+            .collect();
+        for key in keys {
+            tree.remove(&key)
+                .map_err(|e| Error::Storage { source: e })?;
+        }
+        Ok(())
+    }
+
     /// Fetch all outbound invites for a specific group.
     ///
     /// Uses `scan_prefix` on the `{group_id}:` key prefix.

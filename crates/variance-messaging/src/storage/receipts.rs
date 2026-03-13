@@ -131,6 +131,30 @@ impl LocalMessageStorage {
             }))
     }
 
+    pub(crate) async fn impl_delete_last_read_at(
+        &self,
+        our_did: &str,
+        peer_did: &str,
+    ) -> Result<()> {
+        let tree = self.last_read_at_tree()?;
+        let key = format!("{}::{}", our_did, peer_did);
+        tree.remove(key.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    pub(crate) async fn impl_delete_group_last_read_at(
+        &self,
+        our_did: &str,
+        group_id: &str,
+    ) -> Result<()> {
+        let tree = self.last_read_at_tree()?;
+        let key = format!("{}::group::{}", our_did, group_id);
+        tree.remove(key.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
     pub(crate) async fn impl_store_pending_receipt(
         &self,
         target_did: &str,

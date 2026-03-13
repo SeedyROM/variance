@@ -670,10 +670,34 @@ fn spawn_group_message_listener(
                                     persist_mls_state_async(&mls_groups, &storage, &local_did)
                                         .await;
 
-                                    // Clean up stored metadata.
+                                    // Purge all local state for this group.
                                     if let Err(e) = storage.delete_group_metadata(&group_id).await {
                                         warn!(
                                             "EventRouter: Failed to delete group metadata after removal: {}",
+                                            e,
+                                        );
+                                    }
+                                    if let Err(e) = storage.delete_group_messages(&group_id).await {
+                                        warn!(
+                                            "EventRouter: Failed to delete group messages after removal: {}",
+                                            e,
+                                        );
+                                    }
+                                    if let Err(e) = storage
+                                        .delete_group_last_read_at(&local_did, &group_id)
+                                        .await
+                                    {
+                                        warn!(
+                                            "EventRouter: Failed to delete group last_read_at after removal: {}",
+                                            e,
+                                        );
+                                    }
+                                    if let Err(e) = storage
+                                        .delete_all_outbound_invites_for_group(&group_id)
+                                        .await
+                                    {
+                                        warn!(
+                                            "EventRouter: Failed to delete outbound invites after removal: {}",
                                             e,
                                         );
                                     }

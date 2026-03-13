@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { Avatar } from "../ui/Avatar";
 import { StatusDot, StatusIndicator } from "../ui/StatusIndicator";
 import { TypingDots } from "../messages/TypingIndicator";
 import { Tooltip } from "../ui/Tooltip";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { cn } from "../../utils/cn";
 import { relativeTime } from "../../utils/time";
 import { useIdentityStore } from "../../stores/identityStore";
@@ -21,6 +23,7 @@ export function ConversationItem({
   onSelect,
   onDelete,
 }: ConversationItemProps) {
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const localDid = useIdentityStore((s) => s.did);
   const presenceMap = useMessagingStore((s) => s.presenceMap);
   const peerNames = useMessagingStore((s) => s.peerNames);
@@ -42,9 +45,7 @@ export function ConversationItem({
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
-    if (confirm(`Delete conversation with ${displayName}?`)) {
-      onDelete();
-    }
+    setShowDeleteConfirm(true);
   };
 
   const handleSelect = () => {
@@ -65,60 +66,75 @@ export function ConversationItem({
   );
 
   return (
-    <Tooltip content={tooltipContent} placement="right" delay={600} maxWidth={300}>
-      <button
-        onContextMenu={handleContextMenu}
-        onClick={handleSelect}
-        className={cn(
-          "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors cursor-pointer",
-          isActive
-            ? "bg-primary-500/10 text-primary-700 dark:text-primary-300"
-            : "hover:bg-surface-200 dark:hover:bg-surface-800"
-        )}
-      >
-        {/* Avatar with online indicator sitting on the outer edge */}
-        <div className="relative shrink-0">
-          <Avatar
-            did={conversation.peer_did}
-            name={conversation.peer_username ?? peerNames.get(conversation.peer_did)}
-            size="md"
-          />
-          {!isSelf && (
-            <StatusDot
-              online={isOnline}
+    <>
+      <Tooltip content={tooltipContent} placement="right" delay={600} maxWidth={300}>
+        <button
+          onContextMenu={handleContextMenu}
+          onClick={handleSelect}
+          className={cn(
+            "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors cursor-pointer",
+            isActive
+              ? "bg-primary-500/10 text-primary-700 dark:text-primary-300"
+              : "hover:bg-surface-200 dark:hover:bg-surface-800"
+          )}
+        >
+          {/* Avatar with online indicator sitting on the outer edge */}
+          <div className="relative shrink-0">
+            <Avatar
+              did={conversation.peer_did}
+              name={conversation.peer_username ?? peerNames.get(conversation.peer_did)}
               size="md"
-              className={cn(
-                "absolute -bottom-0.5 -right-0.5 border-2",
-                isActive ? "border-primary-500/10" : "border-surface-50 dark:border-surface-900"
-              )}
             />
-          )}
-        </div>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
-            <p
-              className={cn(
-                "truncate text-sm text-surface-900 dark:text-surface-50",
-                hasUnread ? "font-bold" : "font-medium"
-              )}
-            >
-              {displayName}
-            </p>
-            {hasUnread && <div className="shrink-0 w-2 h-2 rounded-full bg-primary-500" />}
+            {!isSelf && (
+              <StatusDot
+                online={isOnline}
+                size="md"
+                className={cn(
+                  "absolute -bottom-0.5 -right-0.5 border-2",
+                  isActive ? "border-primary-500/10" : "border-surface-50 dark:border-surface-900"
+                )}
+              />
+            )}
           </div>
-          {isTyping ? (
-            <span className="flex items-center gap-1.5 text-xs text-primary-500">
-              <TypingDots className="text-primary-500" />
-              <span>typing</span>
-            </span>
-          ) : (
-            <p className="truncate text-xs text-surface-500">
-              {relativeTime(conversation.last_message_timestamp)}
-            </p>
-          )}
-        </div>
-      </button>
-    </Tooltip>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-2">
+              <p
+                className={cn(
+                  "truncate text-sm text-surface-900 dark:text-surface-50",
+                  hasUnread ? "font-bold" : "font-medium"
+                )}
+              >
+                {displayName}
+              </p>
+              {hasUnread && <div className="shrink-0 w-2 h-2 rounded-full bg-primary-500" />}
+            </div>
+            {isTyping ? (
+              <span className="flex items-center gap-1.5 text-xs text-primary-500">
+                <TypingDots className="text-primary-500" />
+                <span>typing</span>
+              </span>
+            ) : (
+              <p className="truncate text-xs text-surface-500">
+                {relativeTime(conversation.last_message_timestamp)}
+              </p>
+            )}
+          </div>
+        </button>
+      </Tooltip>
+
+      <ConfirmDialog
+        open={showDeleteConfirm}
+        onClose={() => setShowDeleteConfirm(false)}
+        onConfirm={() => {
+          setShowDeleteConfirm(false);
+          onDelete();
+        }}
+        title="Delete Conversation"
+        message={`Delete all messages with ${displayName}? This cannot be undone.`}
+        confirmLabel="Delete"
+        destructive
+      />
+    </>
   );
 }

@@ -99,14 +99,42 @@ impl LocalMessageStorage {
         let conv_id = Self::conversation_id(did1, did2);
         let prefix = format!("{conv_id}:");
 
-        let keys_to_delete: Vec<sled::IVec> = tree
-            .scan_prefix(prefix.as_bytes())
-            .keys()
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| Error::Storage { source: e })?;
+        // Collect keys and extract message_ids for plaintext cache cleanup.
+        // Key format: {conv_id}:{timestamp:020}:{message_id}
+        let mut keys_to_delete: Vec<sled::IVec> = Vec::new();
+        let mut message_ids: Vec<String> = Vec::new();
 
-        for key in keys_to_delete {
+        for entry in tree.scan_prefix(prefix.as_bytes()) {
+            let (key, _) = entry.map_err(|e| Error::Storage { source: e })?;
+            if let Ok(key_str) = std::str::from_utf8(&key) {
+                if let Some(last_colon) = key_str.rfind(':') {
+                    message_ids.push(key_str[last_colon + 1..].to_string());
+                }
+            }
+            keys_to_delete.push(key);
+        }
+
+        for key in &keys_to_delete {
             tree.remove(key).map_err(|e| Error::Storage { source: e })?;
+        }
+
+        // Also clean the plaintext cache for these messages.
+        if !message_ids.is_empty() {
+            match self.plaintext_tree() {
+                Ok(pt_tree) => {
+                    for msg_id in &message_ids {
+                        if let Err(e) = pt_tree.remove(msg_id.as_bytes()) {
+                            warn!("Failed to remove plaintext cache for {}: {}", msg_id, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to open plaintext tree while deleting conversation: {}",
+                        e
+                    );
+                }
+            }
         }
 
         Ok(())

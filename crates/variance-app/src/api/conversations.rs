@@ -174,6 +174,15 @@ pub(super) async fn delete_conversation(
             message: format!("Failed to delete conversation: {}", e),
         })?;
 
+    // Also clean up the last-read-at entry for this conversation.
+    if let Err(e) = state
+        .storage
+        .delete_last_read_at(&state.local_did, &peer_did)
+        .await
+    {
+        tracing::warn!("Failed to delete last_read_at for {}: {}", peer_did, e);
+    }
+
     Ok(Json(serde_json::json!({ "success": true })))
 }
 

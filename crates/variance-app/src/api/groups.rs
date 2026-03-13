@@ -627,6 +627,7 @@ pub(super) async fn mls_leave_group(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     use variance_messaging::mls::MlsGroupHandler;
+    use variance_messaging::storage::MessageStorage;
 
     let leave_msg = state.mls_groups.leave_group(&id).map_err(|e| Error::App {
         message: format!("Failed to leave MLS group: {}", e),
@@ -660,6 +661,28 @@ pub(super) async fn mls_leave_group(
 
     state.mls_groups.remove_group(&id);
     persist_mls_state(&state).await;
+
+    // Purge all local state for this group.
+    if let Err(e) = state.storage.delete_group_messages(&id).await {
+        tracing::warn!("Failed to delete group messages on leave: {}", e);
+    }
+    if let Err(e) = state.storage.delete_group_metadata(&id).await {
+        tracing::warn!("Failed to delete group metadata on leave: {}", e);
+    }
+    if let Err(e) = state
+        .storage
+        .delete_group_last_read_at(&state.local_did, &id)
+        .await
+    {
+        tracing::warn!("Failed to delete group last_read_at on leave: {}", e);
+    }
+    if let Err(e) = state
+        .storage
+        .delete_all_outbound_invites_for_group(&id)
+        .await
+    {
+        tracing::warn!("Failed to delete outbound invites on leave: {}", e);
+    }
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -715,6 +738,20 @@ pub(super) async fn mls_delete_group(
     }
     if let Err(e) = state.storage.delete_group_metadata(&id).await {
         tracing::warn!("Failed to delete group metadata: {}", e);
+    }
+    if let Err(e) = state
+        .storage
+        .delete_group_last_read_at(&state.local_did, &id)
+        .await
+    {
+        tracing::warn!("Failed to delete group last_read_at on delete: {}", e);
+    }
+    if let Err(e) = state
+        .storage
+        .delete_all_outbound_invites_for_group(&id)
+        .await
+    {
+        tracing::warn!("Failed to delete outbound invites on delete: {}", e);
     }
 
     Ok(Json(serde_json::json!({
