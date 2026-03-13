@@ -81,7 +81,7 @@ export function UnlockScreen() {
       <div className="w-full max-w-sm">
         <form
           onSubmit={handleUnlock}
-          className="rounded-2xl bg-surface-50 p-8 shadow-lg dark:bg-surface-900"
+          className="rounded-2xl bg-surface-50 p-8 shadow-lg dark:bg-surface-900 dark:border dark:border-surface-700"
         >
           <div className="mb-2 flex items-center justify-center">
             <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-950/40">

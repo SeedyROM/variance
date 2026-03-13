@@ -43,7 +43,7 @@ export function SetupComplete({ did, onStart, passphrase }: SetupCompleteProps) 
   };
 
   return (
-    <div className="rounded-2xl bg-surface-50 p-8 shadow-lg dark:bg-surface-900 text-center">
+    <div className="rounded-2xl bg-surface-50 p-8 shadow-lg dark:bg-surface-900 dark:border dark:border-surface-700 text-center">
       <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-full bg-green-100 dark:bg-green-950/40">
         <CheckCircle className="h-8 w-8 text-green-600 dark:text-green-400" />
       </div>

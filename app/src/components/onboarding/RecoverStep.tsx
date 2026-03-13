@@ -38,7 +38,7 @@ export function RecoverStep({ onBack, onComplete, passphrase }: RecoverStepProps
   };
 
   return (
-    <div className="rounded-2xl bg-surface-50 p-8 shadow-lg dark:bg-surface-900">
+    <div className="rounded-2xl bg-surface-50 p-8 shadow-lg dark:bg-surface-900 dark:border dark:border-surface-700">
       <button
         onClick={onBack}
         className="mb-6 flex items-center gap-1 text-sm text-surface-500 hover:text-surface-700 dark:hover:text-surface-300"

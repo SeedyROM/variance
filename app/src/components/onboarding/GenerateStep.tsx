@@ -37,7 +37,7 @@ export function GenerateStep({ onBack, onComplete, passphrase }: GenerateStepPro
 
   if (!identity) {
     return (
-      <div className="rounded-2xl bg-surface-50 p-8 shadow-lg dark:bg-surface-900">
+      <div className="rounded-2xl bg-surface-50 p-8 shadow-lg dark:bg-surface-900 dark:border dark:border-surface-700">
         <button
           onClick={onBack}
           className="mb-6 flex items-center gap-1 text-sm text-surface-500 hover:text-surface-700 dark:hover:text-surface-300"
@@ -66,7 +66,7 @@ export function GenerateStep({ onBack, onComplete, passphrase }: GenerateStepPro
   }
 
   return (
-    <div className="rounded-2xl bg-surface-50 p-8 shadow-lg dark:bg-surface-900">
+    <div className="rounded-2xl bg-surface-50 p-8 shadow-lg dark:bg-surface-900 dark:border dark:border-surface-700">
       <h2 className="mb-2 text-xl font-bold text-surface-900 dark:text-surface-50">
         Your Recovery Phrase
       </h2>
