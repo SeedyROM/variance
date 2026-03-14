@@ -89,11 +89,31 @@ frontend-install:
 frontend-fmt:
     cd app && pnpm exec prettier --write "src/**/*.{ts,tsx,css,json}"
 
+# Run frontend unit tests (Vitest)
+frontend-test:
+    cd app && pnpm test
+
+# TypeScript type check (no emit)
+frontend-typecheck:
+    cd app && pnpm exec tsc --noEmit
+
+# Run Playwright e2e tests
+e2e:
+    cd app && pnpm exec playwright test
+
+# Run a specific e2e test file
+e2e-file file:
+    cd app && pnpm exec playwright test "e2e/{{file}}"
+
 # === Combined Commands ===
 
 # Run all checks (format check, clippy, tests)
 all: fmt-check clippy test
     @echo "✅ All checks passed!"
+
+# Run all test layers: Rust, frontend unit, and e2e
+test-all: test frontend-test e2e
+    @echo "✅ All test layers passed!"
 
 # Format all code (Rust + Frontend)
 fmt-all: fmt frontend-fmt
@@ -110,7 +130,7 @@ quick: fmt clippy
     @echo "✅ Quick checks passed!"
 
 # Full CI check (what CI would run)
-ci: fmt-check clippy test build
+ci: fmt-check clippy test frontend-typecheck frontend-test e2e build
     @echo "✅ CI checks passed!"
 
 # Setup the project (install dependencies)

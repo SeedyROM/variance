@@ -546,13 +546,24 @@ async fn test_direct_message_reply_to() {
     let msgs = json.as_array().unwrap();
     assert_eq!(msgs.len(), 2);
 
-    // First message has no reply_to
+    // Find original and reply by text (order is non-deterministic when timestamps match)
+    let original = msgs
+        .iter()
+        .find(|m| m["text"] == "Original message")
+        .expect("Original message should exist");
+    let reply = msgs
+        .iter()
+        .find(|m| m["text"] == "This is a reply")
+        .expect("Reply message should exist");
+
+    // Original message has no reply_to
     assert!(
-        msgs[0]["reply_to"].is_null(),
-        "Original message should not have reply_to"
+        original["reply_to"].is_null(),
+        "Original message should not have reply_to, but got: {:?}",
+        original["reply_to"]
     );
-    // Second message references the first
-    assert_eq!(msgs[1]["reply_to"], first_msg_id);
+    // Reply references the original
+    assert_eq!(reply["reply_to"], first_msg_id);
 }
 
 /// Group messages with reply_to should store and return the referenced message ID.
