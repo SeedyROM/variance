@@ -177,7 +177,9 @@ export function GroupView({ groupId }: GroupViewProps) {
 
   // Split reaction messages from regular messages and aggregate.
   const reactionMessages = messages.filter((m) => m.metadata?.type === "reaction");
-  const sortedMessages = messages.filter((m) => m.metadata?.type !== "reaction");
+  const sortedMessages = messages.filter(
+    (m) => m.metadata?.type !== "reaction" && m.metadata?.type !== "role_change"
+  );
   const reactionsByMsgId = aggregateGroupReactions(reactionMessages, localDid);
 
   const handleReact = useCallback(

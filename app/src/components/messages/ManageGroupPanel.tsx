@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Dialog } from "../ui/Dialog";
 import { Button } from "../ui/Button";
+import { Input } from "../ui/Input";
 import { groupsApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
@@ -304,15 +305,11 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
               Invite member
             </p>
             <div>
-              <label className="block text-xs text-surface-500 mb-1">Username or DID</label>
-              <input
-                type="text"
+              <Input
+                label="Username or DID"
                 value={invitee}
                 onChange={(e) => setInvitee(e.target.value)}
                 placeholder="alice or alice#0042 or did:variance:..."
-                className="w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm
-                  dark:border-surface-600 dark:bg-surface-800 dark:text-surface-50
-                  focus:outline-none focus:ring-2 focus:ring-primary-500"
               />
             </div>
             {inviteMutation.isSuccess && (

@@ -621,9 +621,58 @@ impl MlsGroupHandler {
         Ok(msg)
     }
 
+    /// Commit any pending proposals in the group's proposal store.
+    ///
+    /// After a leave proposal is received, a remaining member must commit it
+    /// to actually remove the departing member from the MLS tree.
+    /// Returns the commit message to broadcast, or `None` if there are no
+    /// pending proposals.
+    pub fn commit_pending_proposals(&self, group_id: &str) -> Result<Option<MlsMessageOut>> {
+        let group_lock = self
+            .groups
+            .get(group_id)
+            .ok_or_else(|| Error::GroupNotFound {
+                group_id: group_id.to_string(),
+            })?;
+
+        let mut group = group_lock.write().map_err(lock_poisoned)?;
+
+        if group.pending_proposals().next().is_none() {
+            return Ok(None);
+        }
+
+        let (commit, _welcome, _group_info) = group
+            .commit_to_pending_proposals(&self.provider, &self.signature_keypair)
+            .map_err(|e| Error::MlsCommit {
+                message: format!("Failed to commit pending proposals: {e:?}"),
+            })?;
+
+        group
+            .merge_pending_commit(&self.provider)
+            .map_err(|e| Error::MlsCommit {
+                message: format!("Failed to merge pending commit after proposal commit: {e:?}"),
+            })?;
+
+        Ok(Some(commit))
+    }
+
     /// Remove a group from local state (after leaving or being removed).
+    ///
+    /// This deletes the group's persisted state from the OpenMLS provider
+    /// storage so that a future `join_group_from_welcome` for the same
+    /// group ID does not fail with `GroupAlreadyExists`.
     pub fn remove_group(&self, group_id: &str) {
-        self.groups.remove(group_id);
+        if let Some((_, group_arc)) = self.groups.remove(group_id) {
+            if let Ok(mut group) = group_arc.write() {
+                if let Err(e) = group.delete(self.provider.storage()) {
+                    tracing::warn!(
+                        "Failed to delete MLS group {} from provider storage: {:?}",
+                        group_id,
+                        e,
+                    );
+                }
+            }
+        }
     }
 
     /// Serialize an `MlsMessageOut` to bytes for wire transport.
@@ -1439,5 +1488,129 @@ mod tests {
             matches!(err, Error::MlsNoPendingCommit { .. }),
             "expected MlsNoPendingCommit, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn reinvite_after_kick_with_fresh_key_package() {
+        // Regression test: after being removed from a group, generating a
+        // fresh KeyPackage must allow the kicked user to rejoin via a new
+        // Welcome.  Previously the stale (consumed) key package caused
+        // `NoMatchingKeyPackage`.
+        let alice_sk = test_signing_key();
+        let alice = MlsGroupHandler::new("did:key:alice".to_string(), &alice_sk).unwrap();
+        alice.create_group("kick-reinvite").unwrap();
+
+        let bob_sk = test_signing_key();
+        let bob = MlsGroupHandler::new("did:key:bob".to_string(), &bob_sk).unwrap();
+        let bob_kp = bob.generate_key_package().unwrap();
+
+        // Alice adds Bob.
+        let add_result = alice.add_member("kick-reinvite", bob_kp).unwrap();
+        let welcome_bytes = MlsGroupHandler::serialize_message(&add_result.welcome).unwrap();
+        bob.join_group_from_welcome(MlsGroupHandler::deserialize_message(&welcome_bytes).unwrap())
+            .unwrap();
+
+        // Verify Bob is a member.
+        let members = alice.list_members("kick-reinvite").unwrap();
+        assert!(members.contains(&"did:key:bob".to_string()));
+
+        // Alice kicks Bob.
+        let bob_idx = alice
+            .find_member_index("kick-reinvite", "did:key:bob")
+            .unwrap()
+            .expect("Bob should be in group");
+        alice.remove_member("kick-reinvite", bob_idx).unwrap();
+
+        // Simulate the kicked user's cleanup: remove local group state.
+        bob.remove_group("kick-reinvite");
+
+        // Generate a fresh KeyPackage (the fix).
+        let bob_kp2 = bob.generate_key_package().unwrap();
+
+        // Alice re-invites Bob with the fresh key package.
+        let readd = alice.add_member("kick-reinvite", bob_kp2).unwrap();
+        let welcome2_bytes = MlsGroupHandler::serialize_message(&readd.welcome).unwrap();
+        let joined_id = bob
+            .join_group_from_welcome(MlsGroupHandler::deserialize_message(&welcome2_bytes).unwrap())
+            .unwrap();
+        assert_eq!(joined_id, "kick-reinvite");
+
+        // Both see each other as members again.
+        let alice_members = alice.list_members("kick-reinvite").unwrap();
+        assert_eq!(alice_members.len(), 2);
+        let bob_members = bob.list_members("kick-reinvite").unwrap();
+        assert_eq!(bob_members.len(), 2);
+
+        // Messaging works after rejoin.
+        let enc = alice
+            .encrypt_message("kick-reinvite", b"welcome back")
+            .unwrap();
+        let enc_bytes = MlsGroupHandler::serialize_message(&enc).unwrap();
+        let dec = bob
+            .process_message(
+                "kick-reinvite",
+                MlsGroupHandler::deserialize_message(&enc_bytes).unwrap(),
+            )
+            .unwrap()
+            .expect("application message");
+        assert_eq!(dec.plaintext, b"welcome back");
+    }
+
+    #[test]
+    fn leave_proposal_committed_by_remaining_member() {
+        // When Bob leaves via a proposal, Alice (a remaining member) must
+        // commit the proposal for the removal to take effect.
+        let alice_sk = test_signing_key();
+        let alice = MlsGroupHandler::new("did:key:alice".to_string(), &alice_sk).unwrap();
+        alice.create_group("leave-commit").unwrap();
+
+        let bob_sk = test_signing_key();
+        let bob = MlsGroupHandler::new("did:key:bob".to_string(), &bob_sk).unwrap();
+        let bob_kp = bob.generate_key_package().unwrap();
+
+        // Alice adds Bob.
+        let add_result = alice.add_member("leave-commit", bob_kp).unwrap();
+        let welcome_bytes = MlsGroupHandler::serialize_message(&add_result.welcome).unwrap();
+        bob.join_group_from_welcome(MlsGroupHandler::deserialize_message(&welcome_bytes).unwrap())
+            .unwrap();
+        assert_eq!(alice.list_members("leave-commit").unwrap().len(), 2);
+
+        // Bob leaves — this produces a proposal, not a commit.
+        let leave_msg = bob.leave_group("leave-commit").unwrap();
+        let leave_bytes = MlsGroupHandler::serialize_message(&leave_msg).unwrap();
+
+        // Alice receives and processes the leave proposal.
+        let result = alice
+            .process_message(
+                "leave-commit",
+                MlsGroupHandler::deserialize_message(&leave_bytes).unwrap(),
+            )
+            .unwrap();
+        assert!(result.is_none(), "proposal should not produce plaintext");
+
+        // Bob is still in Alice's member list — proposal is pending, not committed.
+        assert_eq!(alice.list_members("leave-commit").unwrap().len(), 2);
+
+        // Alice auto-commits the pending proposal.
+        let commit = alice
+            .commit_pending_proposals("leave-commit")
+            .unwrap()
+            .expect("should produce a commit");
+        assert!(commit.tls_serialize_detached().is_ok());
+
+        // Now Bob is removed from Alice's member list.
+        let members = alice.list_members("leave-commit").unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0], "did:key:alice");
+    }
+
+    #[test]
+    fn commit_pending_proposals_returns_none_when_empty() {
+        let sk = test_signing_key();
+        let handler = MlsGroupHandler::new("did:key:test".to_string(), &sk).unwrap();
+        handler.create_group("no-proposals").unwrap();
+
+        let result = handler.commit_pending_proposals("no-proposals").unwrap();
+        assert!(result.is_none());
     }
 }

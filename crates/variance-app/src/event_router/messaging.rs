@@ -553,42 +553,37 @@ fn spawn_group_message_listener(
                         message_id,
                     );
                 } else {
+                    // Snapshot member list before MLS processing so we can
+                    // detect removals after a commit is applied.
+                    let members_before: Vec<String> =
+                        mls_groups.list_members(&group_id).unwrap_or_default();
+
                     match variance_messaging::mls::MlsGroupHandler::deserialize_message(
                         &message.mls_ciphertext,
                     ) {
                         Ok(mls_msg) => match mls_groups.process_message(&group_id, mls_msg) {
                             Ok(Some(decrypted)) => {
-                                // Store the raw message so history fetches include it.
-                                if let Err(e) = storage.store_group(&message).await {
-                                    warn!(
-                                        "EventRouter: Failed to store group message {}: {}",
-                                        message_id, e
-                                    );
-                                }
-
-                                // Cache the plaintext (at-rest encrypted) for history.
-                                // MLS forward secrecy means we can't re-decrypt later.
+                                // Decode the plaintext to inspect metadata before
+                                // deciding whether to store / display this message.
                                 #[allow(unused_imports)]
                                 use prost::Message as _;
-                                if let Ok(content) =
+                                let content =
                                     variance_proto::messaging_proto::MessageContent::decode(
                                         decrypted.plaintext.as_slice(),
                                     )
-                                {
-                                    if let Err(e) = mls_groups
-                                        .persist_group_plaintext(&storage, &message_id, &content)
-                                        .await
-                                    {
-                                        warn!(
-                                            "EventRouter: Failed to cache group plaintext {}: {}",
-                                            message_id, e
-                                        );
-                                    }
+                                    .ok();
 
-                                    // Detect role_change metadata and apply locally.
-                                    if content.metadata.get("type").map(String::as_str)
-                                        == Some("role_change")
-                                    {
+                                let is_role_change = content
+                                    .as_ref()
+                                    .and_then(|c| c.metadata.get("type"))
+                                    .map(String::as_str)
+                                    == Some("role_change");
+
+                                // Role changes are control signals — apply them but
+                                // don't store as chat history or notify the frontend
+                                // of a new "message".
+                                if is_role_change {
+                                    if let Some(ref content) = content {
                                         if let (Some(target_did), Some(new_role)) = (
                                             content.metadata.get("target_did"),
                                             content.metadata.get("new_role"),
@@ -626,15 +621,37 @@ fn spawn_group_message_listener(
                                             ws_manager.broadcast(role_msg);
                                         }
                                     }
-                                }
+                                } else {
+                                    // Regular message or reaction — store for history.
+                                    if let Err(e) = storage.store_group(&message).await {
+                                        warn!(
+                                            "EventRouter: Failed to store group message {}: {}",
+                                            message_id, e
+                                        );
+                                    }
 
-                                let msg = WsMessage::GroupMessageReceived {
-                                    group_id: group_id.clone(),
-                                    from,
-                                    message_id,
-                                    timestamp,
-                                };
-                                ws_manager.broadcast(msg);
+                                    // Cache the plaintext (at-rest encrypted) for history.
+                                    // MLS forward secrecy means we can't re-decrypt later.
+                                    if let Some(ref content) = content {
+                                        if let Err(e) = mls_groups
+                                            .persist_group_plaintext(&storage, &message_id, content)
+                                            .await
+                                        {
+                                            warn!(
+                                                "EventRouter: Failed to cache group plaintext {}: {}",
+                                                message_id, e
+                                            );
+                                        }
+                                    }
+
+                                    let msg = WsMessage::GroupMessageReceived {
+                                        group_id: group_id.clone(),
+                                        from,
+                                        message_id,
+                                        timestamp,
+                                    };
+                                    ws_manager.broadcast(msg);
+                                }
 
                                 // Decrypt advanced the ratchet — persist the new state.
                                 persist_mls_state_async(&mls_groups, &storage, &local_did).await;
@@ -643,11 +660,75 @@ fn spawn_group_message_listener(
                                 // Commit or proposal processed — epoch or tree changed.
                                 persist_mls_state_async(&mls_groups, &storage, &local_did).await;
 
-                                // Detect if we were removed from the group.
-                                let still_member = mls_groups
-                                    .list_members(&group_id)
-                                    .map(|members| members.contains(&local_did))
-                                    .unwrap_or(false);
+                                let mut members_after: Vec<String> =
+                                    mls_groups.list_members(&group_id).unwrap_or_default();
+
+                                // If the member list didn't change, a proposal was
+                                // stored (not a commit).  Auto-commit it so the
+                                // departing member is actually removed from the tree.
+                                if members_after == members_before {
+                                    match mls_groups.commit_pending_proposals(&group_id) {
+                                        Ok(Some(commit_msg)) => {
+                                            persist_mls_state_async(
+                                                &mls_groups,
+                                                &storage,
+                                                &local_did,
+                                            )
+                                            .await;
+
+                                            // Broadcast the commit to other members.
+                                            if let Ok(commit_bytes) =
+                                                MlsGroupHandler::serialize_message(&commit_msg)
+                                            {
+                                                let topic = format!("/variance/group/{}", group_id);
+                                                let commit_proto =
+                                                    variance_proto::messaging_proto::GroupMessage {
+                                                        id: ulid::Ulid::new().to_string(),
+                                                        sender_did: local_did.to_string(),
+                                                        group_id: group_id.clone(),
+                                                        timestamp: chrono::Utc::now()
+                                                            .timestamp_millis(),
+                                                        r#type: 0,
+                                                        reply_to: None,
+                                                        mls_ciphertext: commit_bytes,
+                                                    };
+                                                if let Err(e) = node_handle
+                                                    .publish_group_message(topic, commit_proto)
+                                                    .await
+                                                {
+                                                    warn!(
+                                                        "EventRouter: Failed to publish auto-commit for {}: {}",
+                                                        group_id, e,
+                                                    );
+                                                }
+                                            }
+
+                                            // Re-snapshot after committing.
+                                            members_after = mls_groups
+                                                .list_members(&group_id)
+                                                .unwrap_or_default();
+                                        }
+                                        Ok(None) => {
+                                            // No pending proposals — nothing to do.
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                "EventRouter: Failed to auto-commit pending proposals for {}: {}",
+                                                group_id, e,
+                                            );
+                                        }
+                                    }
+                                }
+
+                                // Detect members removed since the snapshot.
+                                let removed: Vec<String> = members_before
+                                    .iter()
+                                    .filter(|m| !members_after.contains(m))
+                                    .cloned()
+                                    .collect();
+
+                                // Check if the local user was among the removed.
+                                let still_member = members_after.contains(&local_did);
 
                                 if !still_member {
                                     debug!(
@@ -702,15 +783,55 @@ fn spawn_group_message_listener(
                                         );
                                     }
 
-                                    // Notify frontend so it can remove the group from the list.
-                                    // Use "kicked" so the frontend can distinguish removal-by-admin
-                                    // from voluntary leave (which is handled synchronously in the
-                                    // HTTP handler and never reaches here).
+                                    // Notify frontend so it can remove the group.
                                     let msg = WsMessage::MlsGroupRemoved {
                                         group_id: group_id.clone(),
                                         reason: "kicked".to_string(),
                                     };
                                     ws_manager.broadcast(msg);
+
+                                    // Generate a fresh KeyPackage so we can be reinvited.
+                                    match mls_groups.generate_key_package() {
+                                        Ok(kp) => {
+                                            match MlsGroupHandler::serialize_message_bytes(&kp) {
+                                                Ok(kp_bytes) => {
+                                                    if let Err(e) = node_handle
+                                                        .update_mls_key_package(kp_bytes)
+                                                        .await
+                                                    {
+                                                        warn!(
+                                                            "EventRouter: Failed to republish MLS KeyPackage after kick: {}",
+                                                            e,
+                                                        );
+                                                    }
+                                                    persist_mls_state_async(
+                                                        &mls_groups,
+                                                        &storage,
+                                                        &local_did,
+                                                    )
+                                                    .await;
+                                                }
+                                                Err(e) => warn!(
+                                                    "EventRouter: Failed to serialize refreshed KeyPackage after kick: {}",
+                                                    e,
+                                                ),
+                                            }
+                                        }
+                                        Err(e) => warn!(
+                                            "EventRouter: Failed to generate refreshed KeyPackage after kick: {}",
+                                            e,
+                                        ),
+                                    }
+                                } else {
+                                    // We're still a member — notify frontend about
+                                    // any other members that were removed so it can
+                                    // refresh the member list / sidebar.
+                                    for removed_did in &removed {
+                                        ws_manager.broadcast(WsMessage::GroupMemberRemoved {
+                                            group_id: group_id.clone(),
+                                            member_did: removed_did.clone(),
+                                        });
+                                    }
                                 }
                             }
                             Err(e) => {

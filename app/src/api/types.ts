@@ -183,6 +183,7 @@ export type WsEvent =
       changed_by: string;
     }
   | { type: "MlsGroupRemoved"; group_id: string; reason: string }
+  | { type: "GroupMemberRemoved"; group_id: string; member_did: string }
   | { type: "TypingStarted"; from: string; recipient: string }
   | { type: "TypingStopped"; from: string; recipient: string }
   | { type: "ReceiptDelivered"; message_id: string }

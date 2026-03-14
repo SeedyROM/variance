@@ -428,6 +428,13 @@ export function useWebSocket() {
             break;
           }
 
+          case "GroupMemberRemoved": {
+            void queryClient.invalidateQueries({
+              queryKey: ["group-members", event.group_id],
+            });
+            break;
+          }
+
           default:
             break;
         }

@@ -64,6 +64,9 @@ export function MessageEditor({ placeholder, onSend, isPending, typing }: Messag
       attributes: {
         class:
           "max-h-40 overflow-y-auto text-sm text-surface-900 dark:text-surface-50 focus:outline-none prose prose-sm dark:prose-invert max-w-none",
+        spellcheck: "true",
+        autocorrect: "on",
+        autocapitalize: "sentences",
       },
       handleKeyDown(view, event) {
         if (event.key === "Enter" && !event.shiftKey) {

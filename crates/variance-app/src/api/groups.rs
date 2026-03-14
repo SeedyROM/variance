@@ -684,6 +684,24 @@ pub(super) async fn mls_leave_group(
         tracing::warn!("Failed to delete outbound invites on leave: {}", e);
     }
 
+    // Generate a fresh KeyPackage so we can be reinvited.
+    // The previous one was consumed when we originally joined via Welcome.
+    match state.mls_groups.generate_key_package() {
+        Ok(kp) => match MlsGroupHandler::serialize_message_bytes(&kp) {
+            Ok(kp_bytes) => {
+                if let Err(e) = state.node_handle.update_mls_key_package(kp_bytes).await {
+                    tracing::warn!("Failed to republish MLS KeyPackage after leave: {}", e);
+                }
+                persist_mls_state(&state).await;
+            }
+            Err(e) => tracing::warn!(
+                "Failed to serialize refreshed KeyPackage after leave: {}",
+                e
+            ),
+        },
+        Err(e) => tracing::warn!("Failed to generate refreshed KeyPackage after leave: {}", e),
+    }
+
     Ok(Json(serde_json::json!({
         "success": true,
         "group_id": id,
@@ -916,7 +934,7 @@ pub(super) async fn mls_change_member_role(
         metadata,
     };
 
-    if let Err(e) = send_group_content(&state, &id, content).await {
+    if let Err(e) = send_group_content(&state, &id, content, false).await {
         tracing::warn!("Failed to broadcast role change to group: {}", e);
     }
 
@@ -947,7 +965,7 @@ pub(super) async fn mls_send_group_message(
         metadata: req.metadata,
     };
 
-    let message_id = send_group_content(&state, &req.group_id, content).await?;
+    let message_id = send_group_content(&state, &req.group_id, content, true).await?;
 
     Ok(Json(MessageResponse {
         message_id,
@@ -1019,10 +1037,18 @@ pub(super) async fn mls_accept_welcome(
 /// Shared by `mls_send_group_message`, `add_group_reaction`, and
 /// `remove_group_reaction` to avoid duplicating the MLS encrypt → publish →
 /// persist → cache → event pipeline.
+/// Encrypt and broadcast group content over GossipSub.
+///
+/// When `store` is `true` the message is persisted locally and a
+/// `MessageSent` event is emitted (used for regular messages and
+/// reactions).  Control messages like role changes set `store` to
+/// `false` — they are ephemeral signals that peers process but never
+/// display in chat history.
 async fn send_group_content(
     state: &AppState,
     group_id: &str,
     content: MessageContent,
+    store: bool,
 ) -> Result<String> {
     use variance_messaging::mls::MlsGroupHandler;
 
@@ -1061,26 +1087,30 @@ async fn send_group_content(
         tracing::warn!("Failed to publish MLS group message to GossipSub: {}", e);
     }
 
-    if let Err(e) = state.storage.store_group(&message).await {
-        tracing::warn!("Failed to store MLS group message locally: {}", e);
-    }
+    if store {
+        if let Err(e) = state.storage.store_group(&message).await {
+            tracing::warn!("Failed to store MLS group message locally: {}", e);
+        }
 
-    if let Err(e) = state
-        .mls_groups
-        .persist_group_plaintext(&state.storage, &message_id, &content)
-        .await
-    {
-        tracing::warn!("Failed to cache group message plaintext: {}", e);
+        if let Err(e) = state
+            .mls_groups
+            .persist_group_plaintext(&state.storage, &message_id, &content)
+            .await
+        {
+            tracing::warn!("Failed to cache group message plaintext: {}", e);
+        }
     }
 
     persist_mls_state(state).await;
 
-    state
-        .event_channels
-        .send_group_message(GroupMessageEvent::MessageSent {
-            message_id: message_id.clone(),
-            group_id: group_id.to_string(),
-        });
+    if store {
+        state
+            .event_channels
+            .send_group_message(GroupMessageEvent::MessageSent {
+                message_id: message_id.clone(),
+                group_id: group_id.to_string(),
+            });
+    }
 
     Ok(message_id)
 }
@@ -1114,7 +1144,7 @@ pub(super) async fn add_group_reaction(
         metadata,
     };
 
-    let id = send_group_content(&state, &req.group_id, content).await?;
+    let id = send_group_content(&state, &req.group_id, content, true).await?;
 
     Ok(Json(MessageResponse {
         message_id: id,
@@ -1143,7 +1173,7 @@ pub(super) async fn remove_group_reaction(
         metadata,
     };
 
-    let id = send_group_content(&state, &req.group_id, content).await?;
+    let id = send_group_content(&state, &req.group_id, content, true).await?;
 
     Ok(Json(MessageResponse {
         message_id: id,

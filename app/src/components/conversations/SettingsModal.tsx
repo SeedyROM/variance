@@ -279,17 +279,17 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               )}
 
               <div className="space-y-1.5">
-                <input
+                <Input
                   value={relayPeerId}
                   onChange={(e) => setRelayPeerId(e.target.value)}
                   placeholder="Peer ID"
-                  className="w-full rounded-md px-2.5 py-1.5 text-xs bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 text-surface-900 dark:text-surface-100 placeholder-surface-400 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                  className="rounded-md px-2.5 py-1.5 text-xs"
                 />
-                <input
+                <Input
                   value={relayMultiaddr}
                   onChange={(e) => setRelayMultiaddr(e.target.value)}
                   placeholder="Multiaddr (e.g. /ip4/1.2.3.4/tcp/4001)"
-                  className="w-full rounded-md px-2.5 py-1.5 text-xs bg-surface-50 dark:bg-surface-900 border border-surface-300 dark:border-surface-600 text-surface-900 dark:text-surface-100 placeholder-surface-400 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                  className="rounded-md px-2.5 py-1.5 text-xs"
                 />
                 <Button
                   variant="secondary"

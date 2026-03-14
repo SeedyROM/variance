@@ -172,6 +172,11 @@ pub enum WsMessage {
         group_id: String,
         reason: String,
     },
+    /// A member was removed from a group (visible to remaining members).
+    GroupMemberRemoved {
+        group_id: String,
+        member_did: String,
+    },
     OfflineMessagesReceived {
         count: usize,
     },
@@ -240,6 +245,7 @@ impl WsMessage {
             | Self::GroupInvitationExpired { .. }
             | Self::RoleChanged { .. }
             | Self::MlsGroupRemoved { .. }
+            | Self::GroupMemberRemoved { .. }
             | Self::OfflineMessagesReceived { .. }
             | Self::TypingStarted { .. }
             | Self::TypingStopped { .. }

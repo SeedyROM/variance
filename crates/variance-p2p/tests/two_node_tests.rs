@@ -102,6 +102,7 @@ async fn test_two_nodes_discover_via_mdns() {
             tokio::select! {
                 Ok(_event) = id_rx_a.recv() => return "a_saw_b",
                 Ok(_event) = id_rx_b.recv() => return "b_saw_a",
+                else => continue,
             }
         }
     })
