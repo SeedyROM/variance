@@ -619,4 +619,210 @@ mod tests {
         // If this compiles, cloning works
         let _cloned = handle.clone();
     }
+
+    #[test]
+    fn username_dht_key_format() {
+        let key = username_dht_key("alice#0042");
+        // RecordKey doesn't expose its inner bytes directly, but Debug output
+        // will contain the key. Verify by round-tripping through the expected format.
+        let expected = libp2p::kad::RecordKey::new(&"/variance/username/alice#0042");
+        assert_eq!(
+            format!("{:?}", key),
+            format!("{:?}", expected),
+            "username_dht_key should produce /variance/username/<username>"
+        );
+    }
+
+    #[test]
+    fn username_dht_key_different_usernames_produce_different_keys() {
+        let k1 = username_dht_key("alice#0001");
+        let k2 = username_dht_key("bob#0002");
+        assert_ne!(format!("{:?}", k1), format!("{:?}", k2),);
+    }
+
+    #[tokio::test]
+    async fn send_identity_request_errors_when_receiver_dropped() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let handle = NodeHandle::new(tx);
+        drop(rx);
+
+        let request = IdentityRequest {
+            query: Some(
+                variance_proto::identity_proto::identity_request::Query::Did(
+                    "did:peer:test".to_string(),
+                ),
+            ),
+            requester_did: None,
+            timestamp: 0,
+        };
+
+        let err = handle
+            .send_identity_request(PeerId::random(), request)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Failed to send command to node"),
+            "Expected channel-closed error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn send_direct_message_errors_when_receiver_dropped() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let handle = NodeHandle::new(tx);
+        drop(rx);
+
+        let message = DirectMessage {
+            id: "msg-1".to_string(),
+            sender_did: "did:variance:alice".to_string(),
+            recipient_did: "did:variance:bob".to_string(),
+            ciphertext: vec![1, 2, 3],
+            ..Default::default()
+        };
+
+        let err = handle
+            .send_direct_message("did:variance:bob".to_string(), message)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Failed to send command to node"));
+    }
+
+    #[tokio::test]
+    async fn publish_group_message_errors_when_receiver_dropped() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let handle = NodeHandle::new(tx);
+        drop(rx);
+
+        let message = GroupMessage::default();
+        let err = handle
+            .publish_group_message("topic".to_string(), message)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Failed to send command to node"));
+    }
+
+    #[tokio::test]
+    async fn subscribe_to_topic_errors_when_receiver_dropped() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let handle = NodeHandle::new(tx);
+        drop(rx);
+
+        let err = handle
+            .subscribe_to_topic("topic".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Failed to send command to node"));
+    }
+
+    #[tokio::test]
+    async fn set_local_identity_errors_when_receiver_dropped() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let handle = NodeHandle::new(tx);
+        drop(rx);
+
+        let err = handle
+            .set_local_identity(
+                "did:variance:me".to_string(),
+                vec![1, 2, 3],
+                vec![vec![4, 5]],
+                None,
+                vec![6, 7, 8],
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Failed to send command to node"));
+    }
+
+    #[tokio::test]
+    async fn resolve_identity_errors_when_receiver_dropped() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let handle = NodeHandle::new(tx);
+        drop(rx);
+
+        let err = handle
+            .resolve_identity_by_did("did:variance:someone".to_string())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Failed to send command to node"));
+    }
+
+    #[tokio::test]
+    async fn get_connected_dids_errors_when_receiver_dropped() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let handle = NodeHandle::new(tx);
+        drop(rx);
+
+        let err = handle.get_connected_dids().await.unwrap_err();
+        assert!(err.to_string().contains("Failed to send command to node"));
+    }
+
+    #[tokio::test]
+    async fn send_identity_request_errors_when_oneshot_dropped() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<NodeCommand>(1);
+        let handle = NodeHandle::new(tx);
+
+        // Spawn a task that receives the command but drops the oneshot sender
+        let join = tokio::spawn(async move {
+            if let Some(NodeCommand::SendIdentityRequest { response_tx, .. }) = rx.recv().await {
+                drop(response_tx);
+            }
+        });
+
+        let request = IdentityRequest {
+            query: Some(
+                variance_proto::identity_proto::identity_request::Query::Did(
+                    "did:peer:test".to_string(),
+                ),
+            ),
+            requester_did: None,
+            timestamp: 0,
+        };
+
+        let err = handle
+            .send_identity_request(PeerId::random(), request)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Failed to receive response from node"),
+            "Expected oneshot-closed error, got: {}",
+            err
+        );
+        join.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fire_and_forget_commands_send_successfully() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<NodeCommand>(10);
+        let handle = NodeHandle::new(tx);
+
+        // These are fire-and-forget: they succeed if the command was enqueued
+        handle
+            .send_typing_indicator("did:variance:bob".to_string(), TypingIndicator::default())
+            .await
+            .unwrap();
+
+        handle
+            .broadcast_username_change("did:variance:me".to_string(), "alice".to_string(), 42)
+            .await
+            .unwrap();
+
+        handle
+            .update_one_time_keys(vec![vec![1, 2, 3]])
+            .await
+            .unwrap();
+
+        handle
+            .update_mls_key_package(vec![10, 20, 30])
+            .await
+            .unwrap();
+
+        // Verify all four commands arrived
+        let mut count = 0;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 4);
+    }
 }

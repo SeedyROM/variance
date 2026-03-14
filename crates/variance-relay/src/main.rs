@@ -71,6 +71,7 @@ struct Args {
 
 /// Snapshot of relay stats for the HTTP `/stats` endpoint.
 #[derive(Serialize, Clone)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 struct RelayStatsSnapshot {
     active_reservations: usize,
     active_circuits: usize,
@@ -550,5 +551,442 @@ fn load_or_generate_keypair(data_dir: &Path) -> Result<Keypair> {
             .with_context(|| format!("Failed to write keypair to {}", path.display()))?;
         info!("Generated and persisted new keypair to {}", path.display());
         Ok(keypair)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode as HttpStatusCode};
+    use axum::routing::get;
+    use tower::ServiceExt;
+
+    fn test_peer() -> PeerId {
+        PeerId::random()
+    }
+
+    // ── RelayStats ──────────────────────────────────────────────────
+
+    #[test]
+    fn relay_stats_new() {
+        let stats = RelayStats::new();
+        assert_eq!(stats.active_reservations, 0);
+        assert_eq!(stats.active_circuits, 0);
+        assert_eq!(stats.total_reservations, 0);
+        assert_eq!(stats.total_circuits, 0);
+        assert_eq!(stats.denied_reservations, 0);
+        assert_eq!(stats.denied_circuits, 0);
+        assert!(stats.peer_reservations.is_empty());
+    }
+
+    #[test]
+    fn relay_stats_reservation_accepted() {
+        let mut stats = RelayStats::new();
+        let peer = test_peer();
+
+        stats.reservation_accepted(peer);
+        assert_eq!(stats.active_reservations, 1);
+        assert_eq!(stats.total_reservations, 1);
+        assert_eq!(stats.peer_reservations[&peer], 1);
+
+        stats.reservation_accepted(peer);
+        assert_eq!(stats.active_reservations, 2);
+        assert_eq!(stats.total_reservations, 2);
+        assert_eq!(stats.peer_reservations[&peer], 2);
+    }
+
+    #[test]
+    fn relay_stats_reservation_timed_out() {
+        let mut stats = RelayStats::new();
+        let peer = test_peer();
+
+        stats.reservation_accepted(peer);
+        stats.reservation_accepted(peer);
+        assert_eq!(stats.active_reservations, 2);
+        assert_eq!(stats.peer_reservations[&peer], 2);
+
+        stats.reservation_timed_out(&peer);
+        assert_eq!(stats.active_reservations, 1);
+        assert_eq!(stats.peer_reservations[&peer], 1);
+
+        stats.reservation_timed_out(&peer);
+        assert_eq!(stats.active_reservations, 0);
+        // Peer entry removed when count reaches 0
+        assert!(!stats.peer_reservations.contains_key(&peer));
+    }
+
+    #[test]
+    fn relay_stats_reservation_timed_out_unknown_peer() {
+        let mut stats = RelayStats::new();
+        let peer = test_peer();
+
+        // Should not panic for unknown peer
+        stats.reservation_timed_out(&peer);
+        assert_eq!(stats.active_reservations, 0);
+    }
+
+    #[test]
+    fn relay_stats_reservation_timed_out_saturates() {
+        let mut stats = RelayStats::new();
+        let peer = test_peer();
+
+        // active_reservations is 0, should not underflow
+        stats.reservation_timed_out(&peer);
+        assert_eq!(stats.active_reservations, 0);
+    }
+
+    #[test]
+    fn relay_stats_peer_disconnected() {
+        let mut stats = RelayStats::new();
+        let peer = test_peer();
+
+        stats.reservation_accepted(peer);
+        stats.reservation_accepted(peer);
+        stats.reservation_accepted(peer);
+        assert_eq!(stats.active_reservations, 3);
+        assert_eq!(stats.peer_reservations.len(), 1);
+
+        stats.peer_disconnected(&peer);
+        // All 3 reservations cleaned up
+        assert_eq!(stats.active_reservations, 0);
+        assert!(!stats.peer_reservations.contains_key(&peer));
+    }
+
+    #[test]
+    fn relay_stats_peer_disconnected_unknown_peer() {
+        let mut stats = RelayStats::new();
+        // Should not panic
+        stats.peer_disconnected(&test_peer());
+        assert_eq!(stats.active_reservations, 0);
+    }
+
+    #[test]
+    fn relay_stats_peer_disconnected_saturates() {
+        let mut stats = RelayStats::new();
+        let peer_a = test_peer();
+        let peer_b = test_peer();
+
+        stats.reservation_accepted(peer_a);
+        // Manually corrupt: remove one active without going through timed_out
+        // (simulates a race or bug). peer_disconnected should saturate, not underflow.
+        stats.reservation_accepted(peer_b);
+        stats.active_reservations = 1; // pretend only 1 active globally
+                                       // peer_b has 1 reservation in the map
+
+        stats.peer_disconnected(&peer_b);
+        assert_eq!(stats.active_reservations, 0); // saturating_sub(1)
+    }
+
+    #[test]
+    fn relay_stats_multi_peer_isolation() {
+        let mut stats = RelayStats::new();
+        let peer_a = test_peer();
+        let peer_b = test_peer();
+
+        stats.reservation_accepted(peer_a);
+        stats.reservation_accepted(peer_a);
+        stats.reservation_accepted(peer_b);
+
+        assert_eq!(stats.active_reservations, 3);
+        assert_eq!(stats.peer_reservations[&peer_a], 2);
+        assert_eq!(stats.peer_reservations[&peer_b], 1);
+
+        stats.peer_disconnected(&peer_a);
+        assert_eq!(stats.active_reservations, 1);
+        assert!(!stats.peer_reservations.contains_key(&peer_a));
+        assert_eq!(stats.peer_reservations[&peer_b], 1);
+    }
+
+    #[test]
+    fn relay_stats_snapshot() {
+        let mut stats = RelayStats::new();
+        let peer = test_peer();
+
+        stats.reservation_accepted(peer);
+        stats.active_circuits = 2;
+        stats.total_circuits = 5;
+        stats.denied_reservations = 3;
+        stats.denied_circuits = 1;
+
+        let snap = stats.snapshot();
+        assert_eq!(snap.active_reservations, 1);
+        assert_eq!(snap.active_circuits, 2);
+        assert_eq!(snap.total_reservations, 1);
+        assert_eq!(snap.total_circuits, 5);
+        assert_eq!(snap.denied_reservations, 3);
+        assert_eq!(snap.denied_circuits, 1);
+        assert_eq!(snap.tracked_peers, 1);
+    }
+
+    #[test]
+    fn relay_stats_log_summary_does_not_panic() {
+        let stats = RelayStats::new();
+        stats.log_summary();
+    }
+
+    // ── handle_relay_event ──────────────────────────────────────────
+
+    #[test]
+    fn handle_relay_event_reservation_accepted() {
+        let mut stats = RelayStats::new();
+        let peer = test_peer();
+
+        handle_relay_event(
+            relay::Event::ReservationReqAccepted {
+                src_peer_id: peer,
+                renewed: false,
+            },
+            &mut stats,
+        );
+
+        assert_eq!(stats.active_reservations, 1);
+        assert_eq!(stats.total_reservations, 1);
+        assert_eq!(stats.peer_reservations[&peer], 1);
+    }
+
+    #[test]
+    fn handle_relay_event_reservation_denied() {
+        let mut stats = RelayStats::new();
+        let peer = test_peer();
+
+        handle_relay_event(
+            relay::Event::ReservationReqDenied {
+                src_peer_id: peer,
+                status: relay::StatusCode::ResourceLimitExceeded,
+            },
+            &mut stats,
+        );
+
+        assert_eq!(stats.denied_reservations, 1);
+        assert_eq!(stats.active_reservations, 0);
+    }
+
+    #[test]
+    fn handle_relay_event_reservation_timed_out() {
+        let mut stats = RelayStats::new();
+        let peer = test_peer();
+
+        // First accept, then time out
+        stats.reservation_accepted(peer);
+        handle_relay_event(
+            relay::Event::ReservationTimedOut { src_peer_id: peer },
+            &mut stats,
+        );
+
+        assert_eq!(stats.active_reservations, 0);
+    }
+
+    #[test]
+    fn handle_relay_event_circuit_accepted() {
+        let mut stats = RelayStats::new();
+
+        handle_relay_event(
+            relay::Event::CircuitReqAccepted {
+                src_peer_id: test_peer(),
+                dst_peer_id: test_peer(),
+            },
+            &mut stats,
+        );
+
+        assert_eq!(stats.active_circuits, 1);
+        assert_eq!(stats.total_circuits, 1);
+    }
+
+    #[test]
+    fn handle_relay_event_circuit_denied() {
+        let mut stats = RelayStats::new();
+
+        handle_relay_event(
+            relay::Event::CircuitReqDenied {
+                src_peer_id: test_peer(),
+                dst_peer_id: test_peer(),
+                status: relay::StatusCode::ResourceLimitExceeded,
+            },
+            &mut stats,
+        );
+
+        assert_eq!(stats.denied_circuits, 1);
+        assert_eq!(stats.active_circuits, 0);
+    }
+
+    #[test]
+    fn handle_relay_event_circuit_closed() {
+        let mut stats = RelayStats::new();
+        stats.active_circuits = 1;
+
+        handle_relay_event(
+            relay::Event::CircuitClosed {
+                src_peer_id: test_peer(),
+                dst_peer_id: test_peer(),
+                error: None,
+            },
+            &mut stats,
+        );
+
+        assert_eq!(stats.active_circuits, 0);
+    }
+
+    #[test]
+    fn handle_relay_event_circuit_closed_with_error() {
+        let mut stats = RelayStats::new();
+        stats.active_circuits = 2;
+
+        handle_relay_event(
+            relay::Event::CircuitClosed {
+                src_peer_id: test_peer(),
+                dst_peer_id: test_peer(),
+                error: Some(std::io::Error::other("test error")),
+            },
+            &mut stats,
+        );
+
+        assert_eq!(stats.active_circuits, 1);
+    }
+
+    #[test]
+    fn handle_relay_event_circuit_closed_saturates() {
+        let mut stats = RelayStats::new();
+        assert_eq!(stats.active_circuits, 0);
+
+        handle_relay_event(
+            relay::Event::CircuitClosed {
+                src_peer_id: test_peer(),
+                dst_peer_id: test_peer(),
+                error: None,
+            },
+            &mut stats,
+        );
+
+        assert_eq!(stats.active_circuits, 0);
+    }
+
+    // ── parse_bootstrap_peer ────────────────────────────────────────
+
+    #[test]
+    fn parse_bootstrap_peer_valid() {
+        let keypair = Keypair::generate_ed25519();
+        let peer_id = keypair.public().to_peer_id();
+        let spec = format!("{}@/ip4/1.2.3.4/tcp/4001", peer_id);
+
+        let (parsed_peer, parsed_addr) = parse_bootstrap_peer(&spec).unwrap();
+        assert_eq!(parsed_peer, peer_id);
+        assert_eq!(parsed_addr.to_string(), "/ip4/1.2.3.4/tcp/4001");
+    }
+
+    #[test]
+    fn parse_bootstrap_peer_missing_at() {
+        let result = parse_bootstrap_peer("no-at-sign-here");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("expected PEERID@MULTIADDR"));
+    }
+
+    #[test]
+    fn parse_bootstrap_peer_invalid_peer_id() {
+        let result = parse_bootstrap_peer("not-a-peer-id@/ip4/1.2.3.4/tcp/4001");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("invalid PeerId"));
+    }
+
+    #[test]
+    fn parse_bootstrap_peer_invalid_multiaddr() {
+        let keypair = Keypair::generate_ed25519();
+        let peer_id = keypair.public().to_peer_id();
+        let spec = format!("{}@not-a-multiaddr", peer_id);
+
+        let result = parse_bootstrap_peer(&spec);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("invalid multiaddr"));
+    }
+
+    // ── load_or_generate_keypair ────────────────────────────────────
+
+    #[test]
+    fn keypair_generate_and_reload() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let kp1 = load_or_generate_keypair(dir.path()).unwrap();
+        let kp2 = load_or_generate_keypair(dir.path()).unwrap();
+
+        // Same keypair should be loaded on second call
+        assert_eq!(kp1.public().to_peer_id(), kp2.public().to_peer_id(),);
+    }
+
+    #[test]
+    fn keypair_file_is_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("keypair.json");
+
+        assert!(!key_path.exists());
+        let _ = load_or_generate_keypair(dir.path()).unwrap();
+        assert!(key_path.exists());
+    }
+
+    #[test]
+    fn keypair_corrupt_file_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("keypair.json");
+
+        fs::write(&key_path, "not valid json").unwrap();
+        let result = load_or_generate_keypair(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn keypair_invalid_hex_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("keypair.json");
+
+        // Valid JSON string but invalid hex content
+        fs::write(&key_path, "\"not-valid-hex-zzzz\"").unwrap();
+        let result = load_or_generate_keypair(dir.path());
+        assert!(result.is_err());
+    }
+
+    // ── stats_handler ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn stats_handler_returns_json() {
+        let stats = Arc::new(Mutex::new(RelayStats::new()));
+        {
+            let mut s = stats.lock().unwrap();
+            s.reservation_accepted(test_peer());
+            s.active_circuits = 3;
+        }
+
+        let app = Router::new()
+            .route("/stats", get(stats_handler))
+            .with_state(stats);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), HttpStatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let snap: RelayStatsSnapshot = serde_json::from_slice(&body).unwrap();
+        assert_eq!(snap.active_reservations, 1);
+        assert_eq!(snap.active_circuits, 3);
+        assert_eq!(snap.tracked_peers, 1);
+    }
+
+    // ── default_data_dir ────────────────────────────────────────────
+
+    #[test]
+    fn default_data_dir_contains_variance_relay() {
+        let dir = default_data_dir();
+        assert!(dir.contains(".variance-relay"));
     }
 }

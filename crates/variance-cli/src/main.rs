@@ -193,8 +193,12 @@ async fn start_node_cmd(
         .await
         .context("Failed to bind to address")?;
 
+    let actual_addr = listener
+        .local_addr()
+        .context("Failed to get local address")?;
+
     tracing::info!("✓ Variance node started successfully");
-    tracing::info!("  HTTP API: http://{}", listen_addr);
+    tracing::info!("  HTTP API: http://{}", actual_addr);
     tracing::info!("  Press Ctrl+C to shutdown");
 
     // Extract components before moving router

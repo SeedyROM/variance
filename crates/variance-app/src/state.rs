@@ -322,13 +322,13 @@ impl AppState {
     }
 
     /// Create a new application state (for testing only - generates random keys)
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn new(local_did: String) -> Self {
         Self::with_db_path(local_did, ".variance/messages.db")
     }
 
     /// Create a test NodeHandle for testing
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     fn test_node_handle() -> variance_p2p::NodeHandle {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(100);
 
@@ -424,7 +424,7 @@ impl AppState {
     }
 
     /// Create a new application state with a custom database path (for testing only)
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn with_db_path(local_did: String, db_path: &str) -> Self {
         use ed25519_dalek::SigningKey;
         use variance_identity::storage::LocalStorage;

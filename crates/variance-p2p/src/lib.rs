@@ -36,3 +36,45 @@ pub fn keypair_from_ed25519(mut bytes: Vec<u8>) -> Option<libp2p::identity::Keyp
         libp2p::identity::ed25519::Keypair::from(secret),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keypair_from_valid_ed25519_bytes() {
+        let secret = libp2p::identity::ed25519::SecretKey::generate();
+        let bytes = secret.as_ref().to_vec();
+
+        let keypair =
+            keypair_from_ed25519(bytes).expect("valid 32-byte key should produce a keypair");
+        let peer_id = keypair.public().to_peer_id();
+        assert_ne!(peer_id.to_string(), "");
+    }
+
+    #[test]
+    fn keypair_deterministic_across_calls() {
+        let secret = libp2p::identity::ed25519::SecretKey::generate();
+        let bytes = secret.as_ref().to_vec();
+
+        let kp1 = keypair_from_ed25519(bytes.clone()).unwrap();
+        let kp2 = keypair_from_ed25519(bytes).unwrap();
+
+        assert_eq!(
+            kp1.public().to_peer_id(),
+            kp2.public().to_peer_id(),
+            "same secret key bytes should produce the same PeerId"
+        );
+    }
+
+    #[test]
+    fn keypair_from_empty_bytes_returns_none() {
+        assert!(keypair_from_ed25519(vec![]).is_none());
+    }
+
+    #[test]
+    fn keypair_from_wrong_length_returns_none() {
+        assert!(keypair_from_ed25519(vec![0u8; 16]).is_none());
+        assert!(keypair_from_ed25519(vec![0u8; 64]).is_none());
+    }
+}

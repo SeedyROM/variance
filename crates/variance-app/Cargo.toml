@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+test-utils = ["dep:tempfile"]
+
 [dependencies]
 variance-proto = { path = "../variance-proto" }
 variance-p2p = { path = "../variance-p2p" }
@@ -58,5 +62,14 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 ulid = { workspace = true }
 dashmap = { workspace = true }
 
+# Optional: only used in test-utils feature and unit tests
+tempfile = { version = "3.15", optional = true }
+
 [dev-dependencies]
 tempfile = "3.15"
+libp2p-identity = { workspace = true }
+tower = { workspace = true }
+
+[[test]]
+name = "api_lifecycle"
+required-features = ["test-utils"]

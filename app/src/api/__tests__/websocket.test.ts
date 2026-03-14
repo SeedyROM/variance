@@ -86,4 +86,110 @@ describe("VarianceWebSocket", () => {
     ws.disconnect();
     vi.useRealTimers();
   });
+
+  it("fires WsConnected event on open", async () => {
+    const ws = new VarianceWebSocket();
+    const handler = vi.fn();
+    ws.on(handler);
+
+    await ws.connect();
+    mockWs.onopen?.();
+
+    expect(handler).toHaveBeenCalledWith({ type: "WsConnected" });
+    ws.disconnect();
+  });
+
+  it("fires WsDisconnected event on close", async () => {
+    const ws = new VarianceWebSocket();
+    const handler = vi.fn();
+    ws.on(handler);
+
+    await ws.connect();
+    mockWs.onopen?.();
+    mockWs.onclose?.();
+
+    expect(handler).toHaveBeenCalledWith({ type: "WsDisconnected" });
+    ws.disconnect();
+  });
+
+  it("unsubscribes handler via returned function", async () => {
+    const ws = new VarianceWebSocket();
+    const handler = vi.fn();
+    const unsub = ws.on(handler);
+
+    unsub();
+
+    await ws.connect();
+    mockWs.onopen?.();
+    mockWs.onmessage?.({ data: JSON.stringify({ type: "Test", data: {} }) });
+
+    // WsConnected would have been called if still subscribed
+    expect(handler).not.toHaveBeenCalled();
+    ws.disconnect();
+  });
+
+  it("flattens event without data field", async () => {
+    const ws = new VarianceWebSocket();
+    const handler = vi.fn();
+    ws.on(handler);
+
+    await ws.connect();
+    mockWs.onopen?.();
+    mockWs.onmessage?.({ data: JSON.stringify({ type: "Ping" }) });
+
+    // Should get { type: "Ping" } with no extra fields
+    expect(handler).toHaveBeenCalledWith({ type: "Ping" });
+    ws.disconnect();
+  });
+
+  it("does not reconnect after disconnect()", async () => {
+    vi.useFakeTimers();
+    const ws = new VarianceWebSocket();
+    await ws.connect();
+    mockWs.onopen?.();
+    ws.disconnect();
+
+    // No reconnect timer should remain
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it("schedules reconnect when port is null", async () => {
+    vi.useFakeTimers();
+    const mod = await import("@tauri-apps/api/core");
+    vi.mocked(mod.invoke).mockResolvedValueOnce(null);
+
+    const ws = new VarianceWebSocket();
+    await ws.connect();
+
+    // Should have a reconnect timer pending
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    ws.disconnect();
+    vi.useRealTimers();
+  });
+
+  it("supports multiple handlers simultaneously", async () => {
+    const ws = new VarianceWebSocket();
+    const h1 = vi.fn();
+    const h2 = vi.fn();
+    ws.on(h1);
+    ws.on(h2);
+
+    await ws.connect();
+    mockWs.onopen?.();
+    mockWs.onmessage?.({ data: JSON.stringify({ type: "Test", data: { x: 1 } }) });
+
+    expect(h1).toHaveBeenCalledWith({ type: "Test", x: 1 });
+    expect(h2).toHaveBeenCalledWith({ type: "Test", x: 1 });
+    ws.disconnect();
+  });
+
+  it("onerror triggers close", async () => {
+    const ws = new VarianceWebSocket();
+    await ws.connect();
+    const closeSpy = vi.spyOn(mockWs, "close");
+    mockWs.onerror?.();
+    expect(closeSpy).toHaveBeenCalled();
+    ws.disconnect();
+  });
 });
