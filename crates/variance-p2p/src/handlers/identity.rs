@@ -382,4 +382,491 @@ mod tests {
             Some(variance_proto::identity_proto::identity_response::Result::Error(_))
         ));
     }
+
+    // ── New tests for self-resolution and identity mutation methods ──
+
+    #[tokio::test]
+    async fn self_resolution_returns_olm_keys() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+
+        let my_did = "did:variance:myself".to_string();
+        let olm_key = vec![10, 20, 30];
+        let otks = vec![vec![1, 2], vec![3, 4]];
+        let mailbox = vec![0xAA, 0xBB];
+
+        handler
+            .set_local_identity(
+                my_did.clone(),
+                olm_key.clone(),
+                otks.clone(),
+                None,
+                mailbox.clone(),
+            )
+            .await;
+
+        // Query our own DID
+        let request = IdentityRequest {
+            query: Some(
+                variance_proto::identity_proto::identity_request::Query::Did(my_did.clone()),
+            ),
+            requester_did: None,
+            timestamp: 0,
+        };
+
+        let response = handler.handle_request(request).await.unwrap();
+
+        match response.result {
+            Some(variance_proto::identity_proto::identity_response::Result::Found(found)) => {
+                assert_eq!(found.olm_identity_key, olm_key);
+                assert_eq!(found.one_time_keys, otks);
+                assert_eq!(found.mailbox_token, mailbox);
+                assert!(found.mls_key_package.is_none());
+                // No username set yet
+                assert!(found.username.is_none());
+                assert!(found.discriminator.is_none());
+                // DID document should be present with our DID
+                let doc = found.did_document.unwrap();
+                assert_eq!(doc.id, my_did);
+                assert!(doc.display_name.is_none());
+            }
+            other => panic!("Expected Found, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn self_resolution_includes_mls_key_package() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+
+        let mls_pkg = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        handler
+            .set_local_identity(
+                "did:variance:me".to_string(),
+                vec![1],
+                vec![],
+                Some(mls_pkg.clone()),
+                vec![2],
+            )
+            .await;
+
+        let request = IdentityRequest {
+            query: Some(
+                variance_proto::identity_proto::identity_request::Query::Did(
+                    "did:variance:me".to_string(),
+                ),
+            ),
+            requester_did: None,
+            timestamp: 0,
+        };
+
+        let response = handler.handle_request(request).await.unwrap();
+        match response.result {
+            Some(variance_proto::identity_proto::identity_response::Result::Found(found)) => {
+                assert_eq!(found.mls_key_package, Some(mls_pkg));
+            }
+            other => panic!("Expected Found, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_local_username_populates_display_name() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+
+        handler
+            .set_local_identity(
+                "did:variance:me".to_string(),
+                vec![1],
+                vec![],
+                None,
+                vec![2],
+            )
+            .await;
+
+        handler.set_local_username("alice".to_string(), 42).await;
+
+        let request = IdentityRequest {
+            query: Some(
+                variance_proto::identity_proto::identity_request::Query::Did(
+                    "did:variance:me".to_string(),
+                ),
+            ),
+            requester_did: None,
+            timestamp: 0,
+        };
+
+        let response = handler.handle_request(request).await.unwrap();
+        match response.result {
+            Some(variance_proto::identity_proto::identity_response::Result::Found(found)) => {
+                assert_eq!(found.username, Some("alice".to_string()));
+                assert_eq!(found.discriminator, Some(42));
+                // display_name should be formatted as "alice#0042"
+                let doc = found.did_document.unwrap();
+                assert_eq!(doc.display_name, Some("alice#0042".to_string()));
+            }
+            other => panic!("Expected Found, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_local_username_without_identity_is_noop() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+
+        // No identity set — set_local_username should not panic
+        handler.set_local_username("alice".to_string(), 42).await;
+
+        // Verify local_identity is still None
+        let local = handler.local_identity.read().await;
+        assert!(local.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_one_time_keys_replaces_keys() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+
+        handler
+            .set_local_identity(
+                "did:variance:me".to_string(),
+                vec![1],
+                vec![vec![10], vec![20]],
+                None,
+                vec![2],
+            )
+            .await;
+
+        // Replace OTKs
+        let new_otks = vec![vec![30], vec![40], vec![50]];
+        handler.update_one_time_keys(new_otks.clone()).await;
+
+        // Verify via self-resolution
+        let request = IdentityRequest {
+            query: Some(
+                variance_proto::identity_proto::identity_request::Query::Did(
+                    "did:variance:me".to_string(),
+                ),
+            ),
+            requester_did: None,
+            timestamp: 0,
+        };
+
+        let response = handler.handle_request(request).await.unwrap();
+        match response.result {
+            Some(variance_proto::identity_proto::identity_response::Result::Found(found)) => {
+                assert_eq!(found.one_time_keys, new_otks);
+            }
+            other => panic!("Expected Found, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_one_time_keys_without_identity_is_noop() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+        handler.update_one_time_keys(vec![vec![99]]).await;
+        let local = handler.local_identity.read().await;
+        assert!(local.is_none());
+    }
+
+    #[tokio::test]
+    async fn update_mls_key_package_replaces_package() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+
+        handler
+            .set_local_identity(
+                "did:variance:me".to_string(),
+                vec![1],
+                vec![],
+                Some(vec![0xAA]),
+                vec![2],
+            )
+            .await;
+
+        let new_pkg = vec![0xBB, 0xCC];
+        handler.update_mls_key_package(new_pkg.clone()).await;
+
+        let request = IdentityRequest {
+            query: Some(
+                variance_proto::identity_proto::identity_request::Query::Did(
+                    "did:variance:me".to_string(),
+                ),
+            ),
+            requester_did: None,
+            timestamp: 0,
+        };
+
+        let response = handler.handle_request(request).await.unwrap();
+        match response.result {
+            Some(variance_proto::identity_proto::identity_response::Result::Found(found)) => {
+                assert_eq!(found.mls_key_package, Some(new_pkg));
+            }
+            other => panic!("Expected Found, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn update_mls_key_package_without_identity_is_noop() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+        handler.update_mls_key_package(vec![0xFF]).await;
+        let local = handler.local_identity.read().await;
+        assert!(local.is_none());
+    }
+
+    #[tokio::test]
+    async fn peer_id_query_self_resolves_via_local_identity() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+
+        handler
+            .set_local_identity(
+                "did:variance:myself".to_string(),
+                vec![1, 2, 3],
+                vec![vec![4]],
+                None,
+                vec![5],
+            )
+            .await;
+
+        // Query by our own PeerId
+        let request = IdentityRequest {
+            query: Some(
+                variance_proto::identity_proto::identity_request::Query::PeerId(
+                    peer_id.to_string(),
+                ),
+            ),
+            requester_did: None,
+            timestamp: 0,
+        };
+
+        let response = handler.handle_request(request).await.unwrap();
+        match response.result {
+            Some(variance_proto::identity_proto::identity_response::Result::Found(found)) => {
+                assert_eq!(found.olm_identity_key, vec![1, 2, 3]);
+                let doc = found.did_document.unwrap();
+                assert_eq!(doc.id, "did:variance:myself");
+            }
+            other => panic!("Expected Found for self PeerId query, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn peer_id_query_without_local_identity_falls_through() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+
+        // No local identity set — query our own PeerId
+        let request = IdentityRequest {
+            query: Some(
+                variance_proto::identity_proto::identity_request::Query::PeerId(
+                    peer_id.to_string(),
+                ),
+            ),
+            requester_did: None,
+            timestamp: 0,
+        };
+
+        let response = handler.handle_request(request).await.unwrap();
+        // Falls through to did:peer:{peer_id} lookup which is not cached → NotFound
+        assert!(matches!(
+            response.result,
+            Some(variance_proto::identity_proto::identity_response::Result::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn peer_id_query_foreign_peer_falls_to_did_peer() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+
+        let foreign_peer = PeerId::random();
+
+        let request = IdentityRequest {
+            query: Some(
+                variance_proto::identity_proto::identity_request::Query::PeerId(
+                    foreign_peer.to_string(),
+                ),
+            ),
+            requester_did: None,
+            timestamp: 0,
+        };
+
+        let response = handler.handle_request(request).await.unwrap();
+        // Should try did:peer:{foreign_peer} and get NotFound
+        assert!(matches!(
+            response.result,
+            Some(variance_proto::identity_proto::identity_response::Result::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn self_resolution_takes_priority_over_cache() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+
+        let my_did = "did:variance:me".to_string();
+
+        // Cache a DID with same ID but different data
+        let mut cached = Did::new(&peer_id).unwrap();
+        // Overwrite the DID id to match our local identity
+        cached.id = my_did.clone();
+        cached.update_profile(Some("cached_name".to_string()), None, None);
+        handler.cache_did(cached).await.unwrap();
+
+        // Set local identity with specific Olm keys
+        handler
+            .set_local_identity(
+                my_did.clone(),
+                vec![0xFF],
+                vec![vec![0xAA]],
+                None,
+                vec![0xBB],
+            )
+            .await;
+
+        let request = IdentityRequest {
+            query: Some(variance_proto::identity_proto::identity_request::Query::Did(my_did)),
+            requester_did: None,
+            timestamp: 0,
+        };
+
+        let response = handler.handle_request(request).await.unwrap();
+        match response.result {
+            Some(variance_proto::identity_proto::identity_response::Result::Found(found)) => {
+                // Should return our Olm keys (self-resolution), not the cached doc
+                assert_eq!(found.olm_identity_key, vec![0xFF]);
+                assert_eq!(found.one_time_keys, vec![vec![0xAA]]);
+            }
+            other => panic!("Expected Found, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn self_resolution_timestamp_is_recent() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+
+        handler
+            .set_local_identity(
+                "did:variance:me".to_string(),
+                vec![1],
+                vec![],
+                None,
+                vec![2],
+            )
+            .await;
+
+        let before = chrono::Utc::now().timestamp();
+
+        let request = IdentityRequest {
+            query: Some(
+                variance_proto::identity_proto::identity_request::Query::Did(
+                    "did:variance:me".to_string(),
+                ),
+            ),
+            requester_did: None,
+            timestamp: 0,
+        };
+
+        let response = handler.handle_request(request).await.unwrap();
+        let after = chrono::Utc::now().timestamp();
+
+        assert!(
+            response.timestamp >= before && response.timestamp <= after,
+            "Response timestamp {} should be between {} and {}",
+            response.timestamp,
+            before,
+            after,
+        );
+    }
+
+    #[tokio::test]
+    async fn get_cached_did_returns_none_for_unknown() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+        assert!(handler.get_cached_did("unknown").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn cache_did_indexes_by_both_id_and_display_name() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+
+        let mut did = Did::new(&peer_id).unwrap();
+        let did_id = did.id.clone();
+        did.update_profile(Some("bob".to_string()), None, None);
+        handler.cache_did(did).await.unwrap();
+
+        // Lookup by DID id
+        assert!(handler.get_cached_did(&did_id).await.is_some());
+        // Lookup by display name
+        assert!(handler.get_cached_did("bob").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn resolve_username_not_found() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+
+        let request = IdentityRequest {
+            query: Some(
+                variance_proto::identity_proto::identity_request::Query::Username(
+                    variance_proto::identity_proto::UsernameQuery {
+                        username: "nonexistent".to_string(),
+                        discriminator: None,
+                        subnet_id: None,
+                    },
+                ),
+            ),
+            requester_did: None,
+            timestamp: 0,
+        };
+
+        let response = handler.handle_request(request).await.unwrap();
+        assert!(matches!(
+            response.result,
+            Some(variance_proto::identity_proto::identity_response::Result::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn display_name_formatting_variants() {
+        let peer_id = PeerId::random();
+        let handler = IdentityHandler::new(peer_id);
+
+        handler
+            .set_local_identity(
+                "did:variance:me".to_string(),
+                vec![1],
+                vec![],
+                None,
+                vec![2],
+            )
+            .await;
+
+        // Discriminator with leading zeros: 7 → "0007"
+        handler.set_local_username("zack".to_string(), 7).await;
+
+        let request = IdentityRequest {
+            query: Some(
+                variance_proto::identity_proto::identity_request::Query::Did(
+                    "did:variance:me".to_string(),
+                ),
+            ),
+            requester_did: None,
+            timestamp: 0,
+        };
+
+        let response = handler.handle_request(request).await.unwrap();
+        match response.result {
+            Some(variance_proto::identity_proto::identity_response::Result::Found(found)) => {
+                let doc = found.did_document.unwrap();
+                assert_eq!(doc.display_name, Some("zack#0007".to_string()));
+            }
+            other => panic!("Expected Found, got {:?}", other),
+        }
+    }
 }

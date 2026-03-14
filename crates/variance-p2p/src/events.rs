@@ -523,4 +523,334 @@ mod tests {
         let received = rx.recv().await.unwrap();
         assert!(matches!(received, GroupSyncEvent::SyncFailed { .. }));
     }
+
+    // ── New tests for previously uncovered event channels ──
+
+    #[tokio::test]
+    async fn group_message_event_received() {
+        let channels = EventChannels::new(10);
+        let mut rx = channels.subscribe_group_messages();
+
+        channels.send_group_message(GroupMessageEvent::MessageReceived {
+            message: GroupMessage {
+                id: "gm-001".to_string(),
+                group_id: "group-1".to_string(),
+                ..Default::default()
+            },
+        });
+
+        let received = rx.recv().await.unwrap();
+        match received {
+            GroupMessageEvent::MessageReceived { message } => {
+                assert_eq!(message.id, "gm-001");
+                assert_eq!(message.group_id, "group-1");
+            }
+            _ => panic!("Expected MessageReceived"),
+        }
+    }
+
+    #[tokio::test]
+    async fn group_message_sent_event() {
+        let channels = EventChannels::new(10);
+        let mut rx = channels.subscribe_group_messages();
+
+        channels.send_group_message(GroupMessageEvent::MessageSent {
+            message_id: "gm-002".to_string(),
+            group_id: "group-2".to_string(),
+        });
+
+        let received = rx.recv().await.unwrap();
+        match received {
+            GroupMessageEvent::MessageSent {
+                message_id,
+                group_id,
+            } => {
+                assert_eq!(message_id, "gm-002");
+                assert_eq!(group_id, "group-2");
+            }
+            _ => panic!("Expected MessageSent"),
+        }
+    }
+
+    #[tokio::test]
+    async fn typing_event_channel() {
+        let channels = EventChannels::new(10);
+        let mut rx = channels.subscribe_typing();
+
+        channels.send_typing(TypingEvent::IndicatorReceived {
+            sender_did: "did:variance:alice".to_string(),
+            recipient: "did:variance:bob".to_string(),
+            is_typing: true,
+        });
+
+        let received = rx.recv().await.unwrap();
+        match received {
+            TypingEvent::IndicatorReceived {
+                sender_did,
+                recipient,
+                is_typing,
+            } => {
+                assert_eq!(sender_did, "did:variance:alice");
+                assert_eq!(recipient, "did:variance:bob");
+                assert!(is_typing);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn rename_event_channel() {
+        let channels = EventChannels::new(10);
+        let mut rx = channels.subscribe_rename();
+
+        channels.send_rename(RenameEvent::PeerRenamed {
+            did: "did:variance:alice".to_string(),
+            username: "alice_new".to_string(),
+            discriminator: 1234,
+        });
+
+        let received = rx.recv().await.unwrap();
+        match received {
+            RenameEvent::PeerRenamed {
+                did,
+                username,
+                discriminator,
+            } => {
+                assert_eq!(did, "did:variance:alice");
+                assert_eq!(username, "alice_new");
+                assert_eq!(discriminator, 1234);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn receipt_event_channel() {
+        let channels = EventChannels::new(10);
+        let mut rx = channels.subscribe_receipts();
+
+        channels.send_receipt(ReceiptEvent::Received {
+            receipt: ReadReceipt {
+                message_id: "msg-100".to_string(),
+                reader_did: "did:variance:bob".to_string(),
+                ..Default::default()
+            },
+        });
+
+        let received = rx.recv().await.unwrap();
+        match received {
+            ReceiptEvent::Received { receipt } => {
+                assert_eq!(receipt.message_id, "msg-100");
+                assert_eq!(receipt.reader_did, "did:variance:bob");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn identity_request_received_event() {
+        let channels = EventChannels::new(10);
+        let mut rx = channels.subscribe_identity();
+
+        let peer = PeerId::random();
+        channels.send_identity(IdentityEvent::RequestReceived {
+            peer,
+            request: IdentityRequest {
+                query: Some(
+                    variance_proto::identity_proto::identity_request::Query::Did(
+                        "did:peer:xyz".to_string(),
+                    ),
+                ),
+                requester_did: None,
+                timestamp: 42,
+            },
+        });
+
+        let received = rx.recv().await.unwrap();
+        match received {
+            IdentityEvent::RequestReceived {
+                peer: p,
+                request: req,
+            } => {
+                assert_eq!(p, peer);
+                assert_eq!(req.timestamp, 42);
+            }
+            _ => panic!("Expected RequestReceived"),
+        }
+    }
+
+    #[tokio::test]
+    async fn identity_response_received_event() {
+        let channels = EventChannels::new(10);
+        let mut rx = channels.subscribe_identity();
+
+        let peer = PeerId::random();
+        channels.send_identity(IdentityEvent::ResponseReceived {
+            peer,
+            response: IdentityResponse {
+                result: None,
+                timestamp: 99,
+            },
+        });
+
+        let received = rx.recv().await.unwrap();
+        match received {
+            IdentityEvent::ResponseReceived {
+                peer: p,
+                response: resp,
+            } => {
+                assert_eq!(p, peer);
+                assert_eq!(resp.timestamp, 99);
+            }
+            _ => panic!("Expected ResponseReceived"),
+        }
+    }
+
+    #[tokio::test]
+    async fn identity_peer_offline_event() {
+        let channels = EventChannels::new(10);
+        let mut rx = channels.subscribe_identity();
+
+        channels.send_identity(IdentityEvent::PeerOffline {
+            did: "did:variance:gone".to_string(),
+        });
+
+        let received = rx.recv().await.unwrap();
+        match received {
+            IdentityEvent::PeerOffline { did } => {
+                assert_eq!(did, "did:variance:gone");
+            }
+            _ => panic!("Expected PeerOffline"),
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_message_received_event() {
+        let channels = EventChannels::new(10);
+        let mut rx = channels.subscribe_direct_messages();
+
+        let peer = PeerId::random();
+        channels.send_direct_message(DirectMessageEvent::MessageReceived {
+            peer,
+            message: DirectMessage {
+                id: "dm-001".to_string(),
+                sender_did: "did:variance:alice".to_string(),
+                recipient_did: "did:variance:bob".to_string(),
+                ciphertext: vec![0xAB],
+                ..Default::default()
+            },
+        });
+
+        let received = rx.recv().await.unwrap();
+        match received {
+            DirectMessageEvent::MessageReceived { peer: p, message } => {
+                assert_eq!(p, peer);
+                assert_eq!(message.id, "dm-001");
+            }
+            _ => panic!("Expected MessageReceived"),
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_message_sent_event() {
+        let channels = EventChannels::new(10);
+        let mut rx = channels.subscribe_direct_messages();
+
+        channels.send_direct_message(DirectMessageEvent::MessageSent {
+            message_id: "dm-002".to_string(),
+            recipient: "did:variance:bob".to_string(),
+        });
+
+        let received = rx.recv().await.unwrap();
+        match received {
+            DirectMessageEvent::MessageSent {
+                message_id,
+                recipient,
+            } => {
+                assert_eq!(message_id, "dm-002");
+                assert_eq!(recipient, "did:variance:bob");
+            }
+            _ => panic!("Expected MessageSent"),
+        }
+    }
+
+    #[tokio::test]
+    async fn delivery_nack_event() {
+        let channels = EventChannels::new(10);
+        let mut rx = channels.subscribe_direct_messages();
+
+        let peer = PeerId::random();
+        channels.send_direct_message(DirectMessageEvent::DeliveryNack {
+            peer,
+            message_id: "dm-003".to_string(),
+            error: "rate limited".to_string(),
+        });
+
+        let received = rx.recv().await.unwrap();
+        match received {
+            DirectMessageEvent::DeliveryNack {
+                peer: p,
+                message_id,
+                error,
+            } => {
+                assert_eq!(p, peer);
+                assert_eq!(message_id, "dm-003");
+                assert_eq!(error, "rate limited");
+            }
+            _ => panic!("Expected DeliveryNack"),
+        }
+    }
+
+    #[tokio::test]
+    async fn event_channels_default_buffer_size() {
+        let channels = EventChannels::default();
+        // Default should create working channels (buffer_size = 100)
+        let mut rx = channels.subscribe_typing();
+        channels.send_typing(TypingEvent::IndicatorReceived {
+            sender_did: "a".to_string(),
+            recipient: "b".to_string(),
+            is_typing: false,
+        });
+        let _ = rx.recv().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_without_subscribers_does_not_panic() {
+        let channels = EventChannels::new(10);
+        // No subscribers — send should silently drop
+        channels.send_identity(IdentityEvent::DidCached {
+            did: "did:peer:orphan".to_string(),
+        });
+        channels.send_direct_message(DirectMessageEvent::DeliveryFailed {
+            message_id: "x".to_string(),
+            recipient: "y".to_string(),
+        });
+        channels.send_group_message(GroupMessageEvent::MessageSent {
+            message_id: "x".to_string(),
+            group_id: "y".to_string(),
+        });
+        channels.send_typing(TypingEvent::IndicatorReceived {
+            sender_did: "a".to_string(),
+            recipient: "b".to_string(),
+            is_typing: true,
+        });
+        channels.send_rename(RenameEvent::PeerRenamed {
+            did: "a".to_string(),
+            username: "b".to_string(),
+            discriminator: 0,
+        });
+        channels.send_receipt(ReceiptEvent::Received {
+            receipt: ReadReceipt::default(),
+        });
+        channels.send_group_sync(GroupSyncEvent::SyncFailed {
+            group_id: "g".to_string(),
+            error: "e".to_string(),
+        });
+        channels.send_offline_message(OfflineMessageEvent::MessageStored {
+            message_id: "m".to_string(),
+            recipient: "r".to_string(),
+        });
+        channels.send_signaling(SignalingEvent::CallEnded {
+            call_id: "c".to_string(),
+            reason: "r".to_string(),
+        });
+        // If we get here without panic, the test passes
+    }
 }

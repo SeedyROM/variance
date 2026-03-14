@@ -751,4 +751,1571 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"], "Rate limit exceeded");
     }
+
+    // ===== Helper function tests =====
+
+    #[test]
+    fn test_conversation_id_sorted() {
+        let id = helpers::conversation_id("did:variance:bob", "did:variance:alice");
+        assert_eq!(id, "did:variance:alice:did:variance:bob");
+    }
+
+    #[test]
+    fn test_conversation_id_deterministic() {
+        let id1 = helpers::conversation_id("did:variance:alice", "did:variance:bob");
+        let id2 = helpers::conversation_id("did:variance:bob", "did:variance:alice");
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_conversation_id_same_did() {
+        let id = helpers::conversation_id("did:variance:alice", "did:variance:alice");
+        assert_eq!(id, "did:variance:alice:did:variance:alice");
+    }
+
+    #[test]
+    fn test_parse_call_type_audio() {
+        let ct = helpers::parse_call_type("audio").unwrap();
+        assert_eq!(ct, variance_proto::media_proto::CallType::Audio);
+    }
+
+    #[test]
+    fn test_parse_call_type_video() {
+        let ct = helpers::parse_call_type("video").unwrap();
+        assert_eq!(ct, variance_proto::media_proto::CallType::Video);
+    }
+
+    #[test]
+    fn test_parse_call_type_screen() {
+        let ct = helpers::parse_call_type("screen").unwrap();
+        assert_eq!(ct, variance_proto::media_proto::CallType::ScreenShare);
+    }
+
+    #[test]
+    fn test_parse_call_type_invalid() {
+        let result = helpers::parse_call_type("hologram");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_control_type_valid() {
+        assert_eq!(
+            helpers::parse_control_type("ring").unwrap(),
+            variance_proto::media_proto::CallControlType::Ring
+        );
+        assert_eq!(
+            helpers::parse_control_type("accept").unwrap(),
+            variance_proto::media_proto::CallControlType::Accept
+        );
+        assert_eq!(
+            helpers::parse_control_type("reject").unwrap(),
+            variance_proto::media_proto::CallControlType::Reject
+        );
+        assert_eq!(
+            helpers::parse_control_type("hangup").unwrap(),
+            variance_proto::media_proto::CallControlType::Hangup
+        );
+    }
+
+    #[test]
+    fn test_parse_control_type_invalid() {
+        assert!(helpers::parse_control_type("mute").is_err());
+    }
+
+    #[test]
+    fn test_call_type_to_string() {
+        assert_eq!(
+            helpers::call_type_to_string(variance_proto::media_proto::CallType::Audio),
+            "audio"
+        );
+        assert_eq!(
+            helpers::call_type_to_string(variance_proto::media_proto::CallType::Video),
+            "video"
+        );
+        assert_eq!(
+            helpers::call_type_to_string(variance_proto::media_proto::CallType::ScreenShare),
+            "screen"
+        );
+        assert_eq!(
+            helpers::call_type_to_string(variance_proto::media_proto::CallType::Unspecified),
+            "unspecified"
+        );
+    }
+
+    #[test]
+    fn test_call_status_to_string() {
+        use variance_proto::media_proto::CallStatus;
+        assert_eq!(
+            helpers::call_status_to_string(CallStatus::Ringing),
+            "ringing"
+        );
+        assert_eq!(helpers::call_status_to_string(CallStatus::Active), "active");
+        assert_eq!(helpers::call_status_to_string(CallStatus::Ended), "ended");
+        assert_eq!(helpers::call_status_to_string(CallStatus::Failed), "failed");
+        assert_eq!(
+            helpers::call_status_to_string(CallStatus::Connecting),
+            "connecting"
+        );
+        assert_eq!(
+            helpers::call_status_to_string(CallStatus::Unspecified),
+            "unspecified"
+        );
+    }
+
+    #[test]
+    fn test_receipt_status_to_string() {
+        use variance_proto::messaging_proto::ReceiptStatus;
+        assert_eq!(
+            helpers::receipt_status_to_string(ReceiptStatus::Delivered as i32),
+            "delivered"
+        );
+        assert_eq!(
+            helpers::receipt_status_to_string(ReceiptStatus::Read as i32),
+            "read"
+        );
+        assert_eq!(helpers::receipt_status_to_string(999), "unknown");
+    }
+
+    // ===== Error response mapping =====
+
+    #[tokio::test]
+    async fn test_error_bad_request() {
+        let err = crate::Error::BadRequest {
+            message: "test error".to_string(),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_error_not_found() {
+        let err = crate::Error::NotFound {
+            message: "not found".to_string(),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_error_unauthorized() {
+        let err = crate::Error::Unauthorized {
+            message: "unauthorized".to_string(),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_error_forbidden() {
+        let err = crate::Error::Forbidden {
+            message: "forbidden".to_string(),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_error_session_required() {
+        let err = crate::Error::SessionRequired {
+            message: "no session".to_string(),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn test_error_app() {
+        let err = crate::Error::App {
+            message: "internal".to_string(),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn test_error_body_contains_message() {
+        let err = crate::Error::BadRequest {
+            message: "field X is required".to_string(),
+        };
+        let response = err.into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "field X is required");
+    }
+
+    // ===== Call lifecycle tests =====
+
+    #[tokio::test]
+    async fn test_accept_call_nonexistent() {
+        let app = create_router(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/calls/nonexistent-call/accept")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn test_reject_call_nonexistent() {
+        let app = create_router(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/calls/nonexistent-call/reject")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn test_end_call_nonexistent() {
+        let app = create_router(test_state());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/calls/nonexistent-call/end")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn test_create_and_accept_call() {
+        let state = test_state();
+        let app = create_router(state);
+
+        // Create a call
+        let req_body = serde_json::json!({
+            "recipient_did": "did:variance:bob",
+            "call_type": "audio"
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/calls/create")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let call_id = json["call_id"].as_str().unwrap().to_string();
+        assert_eq!(json["status"], "ringing");
+
+        // Accept the call
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/calls/{}/accept", call_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "connecting");
+    }
+
+    #[tokio::test]
+    async fn test_create_and_end_call() {
+        let state = test_state();
+        let app = create_router(state);
+
+        let req_body = serde_json::json!({
+            "recipient_did": "did:variance:bob",
+            "call_type": "video"
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/calls/create")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let call_id = json["call_id"].as_str().unwrap().to_string();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/calls/{}/end", call_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "ended");
+    }
+
+    // ===== Signaling tests =====
+
+    #[tokio::test]
+    async fn test_send_answer() {
+        let app = create_router(test_state());
+
+        let req_body = serde_json::json!({
+            "call_id": "call123",
+            "recipient_did": "did:variance:bob",
+            "sdp": "v=0\r\n"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/signaling/answer")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_send_ice_candidate() {
+        let app = create_router(test_state());
+
+        let req_body = serde_json::json!({
+            "call_id": "call123",
+            "recipient_did": "did:variance:bob",
+            "candidate": "candidate:1 1 UDP 2130706431 10.0.0.1 9 typ host",
+            "sdp_mid": "0",
+            "sdp_m_line_index": 0
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/signaling/ice")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_send_control() {
+        let app = create_router(test_state());
+
+        let req_body = serde_json::json!({
+            "call_id": "call123",
+            "recipient_did": "did:variance:bob",
+            "control_type": "ring",
+            "reason": null
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/signaling/control")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_send_control_invalid_type() {
+        let app = create_router(test_state());
+
+        let req_body = serde_json::json!({
+            "call_id": "call123",
+            "recipient_did": "did:variance:bob",
+            "control_type": "mute"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/signaling/control")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ===== Social handler tests =====
+
+    #[tokio::test]
+    async fn test_send_read_receipt() {
+        let app = create_router(test_state());
+
+        let req_body = serde_json::json!({
+            "message_id": "msg123",
+            "sender_did": "did:variance:bob"
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/receipts/read")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["message_id"], "msg123");
+        assert_eq!(json["status"], "read");
+    }
+
+    #[tokio::test]
+    async fn test_get_receipts_empty() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/receipts/msg-nonexistent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_receipts_after_delivered() {
+        let state = test_state();
+        let app = create_router(state);
+
+        // Send a delivered receipt first
+        let req_body = serde_json::json!({
+            "message_id": "msg-rcpt-001",
+            "sender_did": "did:variance:bob"
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/receipts/delivered")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Now get receipts for that message
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/receipts/msg-rcpt-001")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["message_id"], "msg-rcpt-001");
+        assert_eq!(arr[0]["status"], "delivered");
+    }
+
+    #[tokio::test]
+    async fn test_stop_typing() {
+        let app = create_router(test_state());
+
+        let req_body = serde_json::json!({
+            "recipient": "did:variance:bob",
+            "is_group": false
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/typing/stop")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_stop_typing_group() {
+        let app = create_router(test_state());
+
+        let req_body = serde_json::json!({
+            "recipient": "group-123",
+            "is_group": true
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/typing/stop")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_start_typing_group() {
+        let app = create_router(test_state());
+
+        let req_body = serde_json::json!({
+            "recipient": "group-123",
+            "is_group": true
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/typing/start")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_get_typing_users_group_prefix() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/typing/group:some-group-id")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["users"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_presence() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/presence")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // Mock node handle returns empty list
+        assert!(json["online"].as_array().unwrap().is_empty());
+    }
+
+    // ===== Direct message handler tests =====
+
+    #[tokio::test]
+    async fn test_get_direct_messages_empty() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/messages/direct/did:variance:bob")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_direct_messages_with_pagination() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/messages/direct/did:variance:bob?before=9999999&limit=10")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_start_conversation_empty_did() {
+        let app = create_router(test_state());
+
+        let req_body = serde_json::json!({
+            "recipient_did": "",
+            "text": "Hello!",
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/conversations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_start_conversation_invalid_did() {
+        let app = create_router(test_state());
+
+        let req_body = serde_json::json!({
+            "recipient_did": "not-a-did",
+            "text": "Hello!",
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/conversations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_start_conversation_empty_text() {
+        let app = create_router(test_state());
+
+        let req_body = serde_json::json!({
+            "recipient_did": "did:variance:bob",
+            "text": "   ",
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/conversations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_start_conversation_text_too_long() {
+        let app = create_router(test_state());
+
+        let long_text = "x".repeat(4097);
+        let req_body = serde_json::json!({
+            "recipient_did": "did:variance:bob",
+            "text": long_text,
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/conversations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_conversation() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/conversations/did:variance:nobody")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // delete_conversation succeeds even if no messages exist (idempotent)
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // ===== MLS group handler tests =====
+
+    #[tokio::test]
+    async fn test_mls_list_groups_empty() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/mls/groups")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_mls_create_group() {
+        let state = test_state();
+        let app = create_router(state);
+
+        let req_body = serde_json::json!({
+            "name": "Test Group"
+        });
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mls/groups")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["success"], true);
+        assert!(json["group_id"].as_str().is_some());
+        assert_eq!(json["name"], "Test Group");
+        assert_eq!(json["mls"], true);
+
+        // After creating a group, list should show it
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/mls/groups")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["name"], "Test Group");
+        assert_eq!(json[0]["your_role"], "admin");
+    }
+
+    #[tokio::test]
+    async fn test_mls_create_group_empty_name() {
+        let app = create_router(test_state());
+
+        let req_body = serde_json::json!({
+            "name": "   "
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mls/groups")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_mls_create_group_name_too_long() {
+        let app = create_router(test_state());
+
+        let req_body = serde_json::json!({
+            "name": "x".repeat(101)
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mls/groups")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_mls_list_members_nonexistent_group() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/mls/groups/nonexistent/members")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn test_mls_create_and_list_members() {
+        let state = test_state();
+        let app = create_router(state);
+
+        // Create a group
+        let req_body = serde_json::json!({ "name": "Member Test" });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mls/groups")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let group_id = json["group_id"].as_str().unwrap().to_string();
+
+        // List members
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/mls/groups/{}/members", group_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let members = json.as_array().unwrap();
+        // Creator is the sole member
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0]["did"], "did:variance:test");
+        assert_eq!(members[0]["role"], "admin");
+    }
+
+    #[tokio::test]
+    async fn test_get_group_messages_empty() {
+        let state = test_state();
+        let app = create_router(state.clone());
+
+        // Create a group first so the endpoint doesn't fail on missing group
+        state.mls_groups.create_group("test-group").unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/messages/group/test-group")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    // ===== Invitation handler tests =====
+
+    #[tokio::test]
+    async fn test_list_invitations_empty() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/invitations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_accept_invitation_nonexistent() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/invitations/nonexistent-group/accept")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_decline_invitation_nonexistent() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/invitations/nonexistent-group/decline")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ===== Config handler tests =====
+
+    #[tokio::test]
+    async fn test_get_relays_default() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut state =
+            AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
+        // Point config_path to the temp dir so load_or_default creates a default config
+        state.config_path = dir.path().join("config.toml");
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/config/relays")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_add_and_get_relay() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut state =
+            AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
+        state.config_path = dir.path().join("config.toml");
+        let app = create_router(state);
+
+        // Add a relay
+        let req_body = serde_json::json!({
+            "peer_id": "12D3KooWTest",
+            "multiaddr": "/ip4/1.2.3.4/tcp/4001"
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/config/relays")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify relay was added
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/config/relays")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["peer_id"], "12D3KooWTest");
+        assert_eq!(arr[0]["multiaddr"], "/ip4/1.2.3.4/tcp/4001");
+    }
+
+    #[tokio::test]
+    async fn test_remove_relay() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut state =
+            AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
+        state.config_path = dir.path().join("config.toml");
+        let app = create_router(state);
+
+        // Add a relay first
+        let req_body = serde_json::json!({
+            "peer_id": "12D3KooWRemoveMe",
+            "multiaddr": "/ip4/5.6.7.8/tcp/4001"
+        });
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/config/relays")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Remove it
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/config/relays/12D3KooWRemoveMe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify it's gone
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/config/relays")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_retention_default() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut state =
+            AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
+        state.config_path = dir.path().join("config.toml");
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/config/retention")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["group_message_max_age_days"], 30);
+    }
+
+    #[tokio::test]
+    async fn test_set_and_get_retention() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let mut state =
+            AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
+        state.config_path = dir.path().join("config.toml");
+        let app = create_router(state);
+
+        // Set retention to 90 days
+        let req_body = serde_json::json!({
+            "group_message_max_age_days": 90
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/config/retention")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify it was persisted
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/config/retention")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["group_message_max_age_days"], 90);
+    }
+
+    // ===== Identity handler tests =====
+
+    #[tokio::test]
+    async fn test_resolve_identity_self() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/identity/resolve/did:variance:test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["did"], "did:variance:test");
+        assert_eq!(json["resolved"], true);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_identity_unknown() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/identity/resolve/did:variance:unknown")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["resolved"], false);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_username_not_found() {
+        let app = create_router(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/identity/username/resolve/nonexistent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Mock node handle returns empty providers list, so NotFound
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_username_local_hit() {
+        let state = test_state();
+        state
+            .username_registry
+            .register_local("alice".to_string(), "did:variance:alice-local".to_string())
+            .unwrap();
+        let app = create_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/identity/username/resolve/alice")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["did"], "did:variance:alice-local");
+        assert_eq!(json["username"], "alice");
+        assert!(json["discriminator"].as_u64().is_some());
+    }
+
+    // ===== MLS group send message validation =====
+
+    #[tokio::test]
+    async fn test_mls_send_group_message_empty_text() {
+        let state = test_state();
+        state.mls_groups.create_group("test-group").unwrap();
+        let app = create_router(state);
+
+        let req_body = serde_json::json!({
+            "group_id": "test-group",
+            "text": "   "
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/messages/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_mls_send_group_message_too_long() {
+        let state = test_state();
+        state.mls_groups.create_group("test-group").unwrap();
+        let app = create_router(state);
+
+        let req_body = serde_json::json!({
+            "group_id": "test-group",
+            "text": "x".repeat(4097)
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/messages/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ===== MLS outbound invitations (requires admin role) =====
+
+    #[tokio::test]
+    async fn test_mls_list_outbound_invitations() {
+        let state = test_state();
+        let app = create_router(state.clone());
+
+        // Create a group so the local user is admin
+        let req_body = serde_json::json!({ "name": "Invite Test" });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mls/groups")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let group_id = json["group_id"].as_str().unwrap().to_string();
+
+        // List outbound invitations (should be empty)
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/mls/groups/{}/invitations", group_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_mls_list_outbound_invitations_non_admin() {
+        let app = create_router(test_state());
+
+        // Try to list invitations for a group we're not admin of (no metadata stored)
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/mls/groups/nonexistent-group/invitations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // member_role_from_metadata returns "member" when no metadata exists, so Forbidden
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ===== MLS group message send + retrieve roundtrip =====
+
+    #[tokio::test]
+    async fn test_mls_send_and_get_group_messages() {
+        let state = test_state();
+        let app = create_router(state.clone());
+
+        // Create a group
+        let req_body = serde_json::json!({ "name": "Msg Test" });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mls/groups")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let group_id = json["group_id"].as_str().unwrap().to_string();
+
+        // Send a message
+        let req_body = serde_json::json!({
+            "group_id": group_id,
+            "text": "Hello group!"
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/messages/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&req_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["success"], true);
+        assert!(json["message_id"].as_str().is_some());
+
+        // Retrieve messages
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/messages/group/{}", group_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let msgs = json.as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["text"], "Hello group!");
+        assert_eq!(msgs[0]["sender_did"], "did:variance:test");
+    }
 }
