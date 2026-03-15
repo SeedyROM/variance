@@ -55,3 +55,5 @@ ulid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+vodozemac = "0.9"
+chrono = { workspace = true }

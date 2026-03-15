@@ -120,6 +120,10 @@ pub fn create_router(state: AppState) -> Router {
             axum::routing::put(groups::mls_change_member_role),
         )
         .route(
+            "/mls/groups/{id}/reinitialize",
+            post(groups::mls_reinitialize_group),
+        )
+        .route(
             "/mls/groups/{id}/invitations",
             get(groups::mls_list_outbound_invitations),
         )
@@ -138,6 +142,15 @@ pub fn create_router(state: AppState) -> Router {
         .route("/receipts/delivered", post(social::send_delivered_receipt))
         .route("/receipts/read", post(social::send_read_receipt))
         .route("/receipts/{message_id}", get(social::get_receipts))
+        // Group receipt endpoints
+        .route(
+            "/groups/{group_id}/receipts/read",
+            post(groups::send_group_read_receipts),
+        )
+        .route(
+            "/groups/{group_id}/messages/{message_id}/receipts",
+            get(groups::get_group_message_receipts),
+        )
         // Typing endpoints
         .route("/typing/start", post(social::start_typing))
         .route("/typing/stop", post(social::stop_typing))

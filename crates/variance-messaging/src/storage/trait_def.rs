@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use variance_proto::messaging_proto::{
-    DirectMessage, Group, GroupInvitation, GroupMessage, OfflineMessageEnvelope, ReadReceipt,
+    DirectMessage, Group, GroupInvitation, GroupMessage, GroupReadReceipt, OfflineMessageEnvelope,
+    ReadReceipt,
 };
 
 use crate::error::Result;
@@ -99,6 +100,29 @@ pub trait MessageStorage: Send + Sync {
         message_id: &str,
         reader_did: &str,
     ) -> Result<Option<ReadReceipt>>;
+
+    // ===== Group read receipts (per-member, per-message) =====
+
+    /// Store a group read receipt.
+    ///
+    /// Keyed by `{group_id}:{message_id}:{reader_did}:{timestamp}` so multiple
+    /// status transitions (delivered → read) are preserved.
+    async fn store_group_receipt(&self, receipt: &GroupReadReceipt) -> Result<()>;
+
+    /// Fetch all receipts for a specific group message (all members).
+    async fn fetch_group_receipts(
+        &self,
+        group_id: &str,
+        message_id: &str,
+    ) -> Result<Vec<GroupReadReceipt>>;
+
+    /// Fetch the latest receipt for a specific group message from a specific reader.
+    async fn fetch_group_receipt_status(
+        &self,
+        group_id: &str,
+        message_id: &str,
+        reader_did: &str,
+    ) -> Result<Option<GroupReadReceipt>>;
 
     /// List all direct conversations for a local DID.
     ///

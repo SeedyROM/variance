@@ -86,7 +86,7 @@ enum AttachmentType {
   ATTACHMENT_TYPE_VIDEO = 4;
 }
 
-// Read receipts
+// Read receipts (direct messages)
 message ReadReceipt {
   string message_id = 1;
   string reader_did = 2;
@@ -95,10 +95,33 @@ message ReadReceipt {
   bytes signature = 5;
 }
 
+// Read receipts (group messages — per-member, per-message)
+message GroupReadReceipt {
+  string message_id = 1;
+  string group_id = 2;
+  string reader_did = 3;
+  ReceiptStatus status = 4;
+  int64 timestamp = 5;
+  bytes signature = 6;
+}
+
 enum ReceiptStatus {
   RECEIPT_STATUS_UNSPECIFIED = 0;
   RECEIPT_STATUS_DELIVERED = 1;
   RECEIPT_STATUS_READ = 2;
+}
+
+// Wrapper envelope for all MLS-encrypted group payloads.
+//
+// Enables multiplexing receipts, chat messages, and future payload types
+// over the same GossipSub topic without byte-prefix hacks.
+// The sender MLS-encrypts GroupPayload.encode_to_vec(); the receiver
+// MLS-decrypts and dispatches on the oneof variant.
+message GroupPayload {
+  oneof payload {
+    MessageContent message = 1;
+    GroupReadReceipt receipt = 2;
+  }
 }
 
 // Typing indicators

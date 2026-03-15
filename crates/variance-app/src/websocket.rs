@@ -177,6 +177,23 @@ pub enum WsMessage {
         group_id: String,
         member_did: String,
     },
+    /// A group has been detected as desynced (consecutive MLS decryption failures).
+    ///
+    /// The frontend should show a banner or notification indicating the group is
+    /// experiencing sync issues and offer recovery options (reinitialize for admins,
+    /// request reinvite for members).
+    GroupDesyncDetected {
+        group_id: String,
+        failed_count: u32,
+        local_epoch: u64,
+    },
+    /// A desynced group has been reinitialized by an admin.
+    ///
+    /// Members will receive a Welcome for the new group and should migrate.
+    GroupReinitialized {
+        old_group_id: String,
+        new_group_id: String,
+    },
     OfflineMessagesReceived {
         count: usize,
     },
@@ -191,12 +208,24 @@ pub enum WsMessage {
         recipient: String,
     },
 
-    // Read receipts
+    // Read receipts (DM)
     ReceiptRead {
         message_id: String,
     },
     ReceiptDelivered {
         message_id: String,
+    },
+
+    // Group read receipts
+    GroupReceiptDelivered {
+        group_id: String,
+        message_id: String,
+        member_did: String,
+    },
+    GroupReceiptRead {
+        group_id: String,
+        message_id: String,
+        member_did: String,
     },
 
     // Presence/identity
@@ -246,11 +275,15 @@ impl WsMessage {
             | Self::RoleChanged { .. }
             | Self::MlsGroupRemoved { .. }
             | Self::GroupMemberRemoved { .. }
+            | Self::GroupDesyncDetected { .. }
+            | Self::GroupReinitialized { .. }
             | Self::OfflineMessagesReceived { .. }
             | Self::TypingStarted { .. }
             | Self::TypingStopped { .. }
             | Self::ReceiptRead { .. }
-            | Self::ReceiptDelivered { .. } => MessageCategory::Messages,
+            | Self::ReceiptDelivered { .. }
+            | Self::GroupReceiptDelivered { .. }
+            | Self::GroupReceiptRead { .. } => MessageCategory::Messages,
 
             // Presence / identity
             Self::PresenceUpdated { .. } | Self::PeerRenamed { .. } => MessageCategory::Presence,

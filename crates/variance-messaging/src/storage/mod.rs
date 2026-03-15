@@ -12,7 +12,8 @@ use crate::error::*;
 use async_trait::async_trait;
 use std::path::Path;
 use variance_proto::messaging_proto::{
-    DirectMessage, Group, GroupInvitation, GroupMessage, OfflineMessageEnvelope, ReadReceipt,
+    DirectMessage, Group, GroupInvitation, GroupMessage, GroupReadReceipt, OfflineMessageEnvelope,
+    ReadReceipt,
 };
 
 /// Local storage implementation using sled
@@ -118,6 +119,16 @@ impl LocalMessageStorage {
     pub(crate) fn pending_receipts_tree(&self) -> Result<sled::Tree> {
         self.db
             .open_tree("pending_receipts")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
+    /// Group read receipts tree (per-member, per-message).
+    ///
+    /// Key: `{group_id}:{message_id}:{reader_did}:{timestamp:020}`,
+    /// value: serialized `GroupReadReceipt` proto.
+    pub(crate) fn group_receipts_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("group_receipts")
             .map_err(|e| Error::Storage { source: e })
     }
 
@@ -293,6 +304,28 @@ impl MessageStorage for LocalMessageStorage {
         reader_did: &str,
     ) -> Result<Option<ReadReceipt>> {
         self.impl_fetch_receipt_status(message_id, reader_did).await
+    }
+
+    async fn store_group_receipt(&self, receipt: &GroupReadReceipt) -> Result<()> {
+        self.impl_store_group_receipt(receipt).await
+    }
+
+    async fn fetch_group_receipts(
+        &self,
+        group_id: &str,
+        message_id: &str,
+    ) -> Result<Vec<GroupReadReceipt>> {
+        self.impl_fetch_group_receipts(group_id, message_id).await
+    }
+
+    async fn fetch_group_receipt_status(
+        &self,
+        group_id: &str,
+        message_id: &str,
+        reader_did: &str,
+    ) -> Result<Option<GroupReadReceipt>> {
+        self.impl_fetch_group_receipt_status(group_id, message_id, reader_did)
+            .await
     }
 
     async fn list_direct_conversations(

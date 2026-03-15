@@ -211,3 +211,25 @@ pub struct PresenceResponse {
     /// DIDs of all currently connected peers
     pub online: Vec<String>,
 }
+
+// ===== Group receipt types =====
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SendGroupReadReceiptRequest {
+    /// Specific message IDs to mark as read. If empty, marks all unread
+    /// messages in the group as read (based on the latest message timestamp).
+    pub message_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupReceiptResponse {
+    pub message_id: String,
+    pub reader_did: String,
+    pub status: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupReceiptsResponse {
+    pub receipts: Vec<GroupReceiptResponse>,
+}

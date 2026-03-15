@@ -8640,6 +8640,7 @@ dependencies = [
  "variance-media",
  "variance-messaging",
  "variance-proto",
+ "vodozemac",
  "x25519-dalek 2.0.1",
 ]
 

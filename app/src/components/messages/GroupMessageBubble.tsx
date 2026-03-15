@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { Check, CheckCheck } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
@@ -208,6 +209,15 @@ export function GroupMessageBubble({
                   {message.text}
                 </ReactMarkdown>
               </div>
+              {isOwn && message.status && (
+                <div className="mt-0.5 flex items-center justify-end gap-1">
+                  {message.status === "sent" && <Check className="h-3 w-3 text-white/70" />}
+                  {message.status === "delivered" && (
+                    <CheckCheck className="h-3 w-3 text-white/70" />
+                  )}
+                  {message.status === "read" && <CheckCheck className="h-3 w-3 text-blue-300" />}
+                </div>
+              )}
             </div>
           </div>
 

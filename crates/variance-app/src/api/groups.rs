@@ -33,6 +33,10 @@ pub struct GroupMessageResponse {
     pub reply_to: Option<String>,
     pub sender_username: Option<String>,
     pub metadata: HashMap<String, String>,
+    /// Receipt status for own sent messages: "sent", "delivered", or "read".
+    /// `None` for messages from other members.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -221,6 +225,15 @@ pub(super) async fn get_group_messages(
         .store_group_last_read_at(&state.local_did, &group_id, now)
         .await;
 
+    // Collect other member DIDs for receipt aggregate computation.
+    let other_members: Vec<String> = state
+        .mls_groups
+        .list_members(&group_id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|did| *did != state.local_did)
+        .collect();
+
     let mut responses = Vec::new();
     for m in messages {
         let (text, reply_to, metadata) = match state
@@ -232,6 +245,19 @@ pub(super) async fn get_group_messages(
             _ => (String::new(), None, Default::default()),
         };
 
+        // Compute receipt status for own sent messages.
+        let status = if m.sender_did == state.local_did {
+            Some(
+                state
+                    .receipts
+                    .get_group_aggregate_status(&group_id, &m.id, &other_members)
+                    .await
+                    .unwrap_or_else(|_| "sent".to_string()),
+            )
+        } else {
+            None
+        };
+
         responses.push(GroupMessageResponse {
             id: m.id,
             group_id: m.group_id.clone(),
@@ -241,6 +267,7 @@ pub(super) async fn get_group_messages(
             reply_to,
             sender_username: state.username_registry.get_display_name(&m.sender_did),
             metadata,
+            status,
         });
     }
 
@@ -1044,6 +1071,9 @@ pub(super) async fn mls_accept_welcome(
 /// reactions).  Control messages like role changes set `store` to
 /// `false` — they are ephemeral signals that peers process but never
 /// display in chat history.
+///
+/// All content is wrapped in a `GroupPayload` envelope before MLS encryption,
+/// enabling receipts and future payload types to share the same GossipSub topic.
 async fn send_group_content(
     state: &AppState,
     group_id: &str,
@@ -1051,8 +1081,12 @@ async fn send_group_content(
     store: bool,
 ) -> Result<String> {
     use variance_messaging::mls::MlsGroupHandler;
+    use variance_proto::messaging_proto::{group_payload, GroupPayload};
 
-    let plaintext = prost::Message::encode_to_vec(&content);
+    let payload = GroupPayload {
+        payload: Some(group_payload::Payload::Message(content.clone())),
+    };
+    let plaintext = prost::Message::encode_to_vec(&payload);
 
     let mls_msg = state
         .mls_groups
@@ -1113,6 +1147,58 @@ async fn send_group_content(
     }
 
     Ok(message_id)
+}
+
+/// Encrypt a `GroupReadReceipt` inside a `GroupPayload` and publish to GossipSub.
+///
+/// Receipts are ephemeral — they are NOT stored as `GroupMessage` rows. Only
+/// the receipt table (via `ReceiptHandler`) tracks them. This keeps the chat
+/// history clean while still providing delivery/read feedback.
+pub(crate) async fn publish_group_receipt(
+    state: &AppState,
+    group_id: &str,
+    receipt: variance_proto::messaging_proto::GroupReadReceipt,
+) -> std::result::Result<(), String> {
+    use variance_messaging::mls::MlsGroupHandler;
+    use variance_proto::messaging_proto::{group_payload, GroupPayload};
+
+    let payload = GroupPayload {
+        payload: Some(group_payload::Payload::Receipt(receipt.clone())),
+    };
+    let plaintext = prost::Message::encode_to_vec(&payload);
+
+    let mls_msg = state
+        .mls_groups
+        .encrypt_message(group_id, &plaintext)
+        .map_err(|e| format!("MLS encrypt receipt: {}", e))?;
+
+    let mls_bytes = MlsGroupHandler::serialize_message(&mls_msg)
+        .map_err(|e| format!("MLS serialize receipt: {}", e))?;
+
+    // Wrap in a GroupMessage shell for GossipSub transport.
+    // The id/sender_did/timestamp are for wire framing only — the
+    // actual receipt data is inside the MLS ciphertext.
+    let wire_msg = variance_proto::messaging_proto::GroupMessage {
+        id: ulid::Ulid::new().to_string(),
+        sender_did: state.local_did.clone(),
+        group_id: group_id.to_string(),
+        timestamp: chrono::Utc::now().timestamp_millis(),
+        r#type: variance_proto::messaging_proto::MessageType::Unspecified.into(),
+        reply_to: None,
+        mls_ciphertext: mls_bytes,
+    };
+
+    let topic = format!("/variance/group/{}", group_id);
+    state
+        .node_handle
+        .publish_group_message(topic, wire_msg)
+        .await
+        .map_err(|e| format!("GossipSub publish receipt: {}", e))?;
+
+    // Persist MLS state — encryption advanced the ratchet.
+    persist_mls_state(state).await;
+
+    Ok(())
 }
 
 /// Add a reaction to a group message.
@@ -1179,5 +1265,315 @@ pub(super) async fn remove_group_reaction(
         message_id: id,
         success: true,
         message: "Reaction removed".to_string(),
+    }))
+}
+
+// ===== Group recovery =====
+
+/// Reinitialize a desynced MLS group.
+///
+/// Admin-only. Creates a fresh group under a new ID and re-invites all current
+/// members whose KeyPackages can be fetched. The frontend receives a
+/// `GroupReinitialized` WsMessage with the old and new group IDs.
+///
+/// The caller can optionally provide `key_packages` — a map of `member_did`
+/// to hex-encoded TLS-serialized `KeyPackage`. Members whose packages are not
+/// provided will be resolved via P2P identity queries (best-effort).
+///
+/// `POST /mls/groups/{id}/reinitialize`
+pub(super) async fn mls_reinitialize_group(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ReinitializeGroupRequest>,
+) -> Result<Json<serde_json::Value>> {
+    use variance_messaging::mls::MlsGroupHandler;
+
+    require_role(&state, &id, "admin").await?;
+
+    // Verify the group exists in MLS state.
+    if !state.mls_groups.is_member(&id) {
+        return Err(Error::App {
+            message: format!("Not a member of group {id}"),
+        });
+    }
+
+    // Collect KeyPackages: use provided ones first, then try P2P resolution.
+    let members = state.mls_groups.list_members(&id).map_err(|e| Error::App {
+        message: format!("Failed to list members: {e}"),
+    })?;
+
+    let mut key_packages = HashMap::new();
+
+    for member_did in &members {
+        if member_did == &state.local_did {
+            continue;
+        }
+
+        // Check if the caller provided a KeyPackage for this member.
+        if let Some(kp_hex) = req.key_packages.as_ref().and_then(|m| m.get(member_did)) {
+            let kp_bytes = hex::decode(kp_hex).map_err(|e| Error::App {
+                message: format!("Invalid hex KeyPackage for {member_did}: {e}"),
+            })?;
+            let kp_in =
+                MlsGroupHandler::deserialize_key_package(&kp_bytes).map_err(|e| Error::App {
+                    message: format!("Invalid KeyPackage for {member_did}: {e}"),
+                })?;
+            let kp = state
+                .mls_groups
+                .validate_key_package(kp_in)
+                .map_err(|e| Error::App {
+                    message: format!("KeyPackage validation failed for {member_did}: {e}"),
+                })?;
+            key_packages.insert(member_did.clone(), kp);
+            continue;
+        }
+
+        // Try P2P resolution to get the member's KeyPackage.
+        match state
+            .node_handle
+            .resolve_identity_by_did(member_did.clone())
+            .await
+        {
+            Ok(identity) => {
+                if let Some(kp_bytes) = identity.mls_key_package {
+                    match MlsGroupHandler::deserialize_key_package(&kp_bytes) {
+                        Ok(kp_in) => match state.mls_groups.validate_key_package(kp_in) {
+                            Ok(kp) => {
+                                key_packages.insert(member_did.clone(), kp);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "reinitialize: KeyPackage validation failed for {}: {}",
+                                    member_did,
+                                    e
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                "reinitialize: Failed to deserialize KeyPackage for {}: {}",
+                                member_did,
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "reinitialize: Failed to resolve identity for {}: {}",
+                    member_did,
+                    e
+                );
+            }
+        }
+    }
+
+    // Perform the reinitialize.
+    let result = state
+        .mls_groups
+        .reinitialize_group(&id, key_packages)
+        .map_err(|e| Error::App {
+            message: format!("Failed to reinitialize group: {e}"),
+        })?;
+
+    // Subscribe to the new group's GossipSub topic.
+    let new_topic = format!("/variance/group/{}", result.new_group_id);
+    if let Err(e) = state.node_handle.subscribe_to_topic(new_topic).await {
+        tracing::warn!("reinitialize: Failed to subscribe to new topic: {}", e);
+    }
+
+    // Copy group metadata from the old group to the new one (name, etc.).
+    if let Ok(Some(mut old_meta)) = state.storage.fetch_group_metadata(&id).await {
+        old_meta.id = result.new_group_id.clone();
+        if let Err(e) = state.storage.store_group_metadata(&old_meta).await {
+            tracing::warn!("reinitialize: Failed to copy group metadata: {}", e);
+        }
+    }
+
+    // Send Welcome messages to each re-invited member via Olm-encrypted DM,
+    // following the same pattern as mls_invite_to_group.
+    use super::helpers::ensure_olm_session;
+
+    let group_meta = state.storage.fetch_group_metadata(&id).await.ok().flatten();
+    let group_name = group_meta
+        .as_ref()
+        .map(|g| g.name.clone())
+        .unwrap_or_default();
+    let members_list = group_meta
+        .as_ref()
+        .map(|g| g.members.clone())
+        .unwrap_or_default();
+
+    let mut reinvited = Vec::new();
+    for (member_did, welcome) in &result.welcomes {
+        let welcome_bytes =
+            MlsGroupHandler::serialize_message(welcome).map_err(|e| Error::App {
+                message: format!("Failed to serialize Welcome for {member_did}: {e}"),
+            })?;
+
+        let invitation = variance_proto::messaging_proto::GroupInvitation {
+            group_id: result.new_group_id.clone(),
+            group_name: group_name.clone(),
+            inviter_did: state.local_did.clone(),
+            invitee_did: member_did.clone(),
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            members: members_list.clone(),
+            mls_welcome: welcome_bytes,
+            mls_commit: vec![],
+        };
+
+        let invitation_hex = hex::encode(prost::Message::encode_to_vec(&invitation));
+
+        if let Err(e) = ensure_olm_session(&state, member_did).await {
+            tracing::warn!(
+                "reinitialize: Could not establish Olm session with {} — \
+                 Welcome must be delivered manually: {}",
+                member_did,
+                e
+            );
+            continue;
+        }
+
+        let mut metadata = HashMap::new();
+        metadata.insert("type".to_string(), "mls_group_invitation".to_string());
+        metadata.insert("group_id".to_string(), result.new_group_id.clone());
+        metadata.insert("invitation".to_string(), invitation_hex);
+
+        let content = MessageContent {
+            text: String::new(),
+            attachments: vec![],
+            mentions: vec![],
+            reply_to: None,
+            metadata,
+        };
+
+        match state
+            .direct_messaging
+            .send_message(member_did.clone(), content)
+            .await
+        {
+            Ok(_) => {
+                reinvited.push(member_did.clone());
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "reinitialize: Failed to send Welcome to {}: {}",
+                    member_did,
+                    e
+                );
+            }
+        }
+    }
+
+    // Persist the new MLS state.
+    persist_mls_state(&state).await;
+
+    // Notify all connected WebSocket clients.
+    state
+        .ws_manager
+        .broadcast(crate::websocket::WsMessage::GroupReinitialized {
+            old_group_id: id.clone(),
+            new_group_id: result.new_group_id.clone(),
+        });
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "old_group_id": id,
+        "new_group_id": result.new_group_id,
+        "reinvited_members": reinvited,
+        "total_members": result.members.len(),
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReinitializeGroupRequest {
+    /// Optional pre-provided KeyPackages by member DID (hex-encoded TLS-serialized).
+    /// If not provided, the server attempts P2P resolution.
+    #[serde(default)]
+    pub key_packages: Option<HashMap<String, String>>,
+}
+
+// ===== Group receipt handlers =====
+
+/// POST /groups/{group_id}/receipts/read
+///
+/// Send READ receipts for specific message IDs (or all recent messages) in a
+/// group. Each receipt is MLS-encrypted and published to the group's GossipSub
+/// topic so all members see it.
+pub(super) async fn send_group_read_receipts(
+    State(state): State<AppState>,
+    Path(group_id): Path<String>,
+    axum::Json(req): axum::Json<super::types::SendGroupReadReceiptRequest>,
+) -> Result<Json<super::types::GroupReceiptsResponse>> {
+    let message_ids = req.message_ids.unwrap_or_default();
+    if message_ids.is_empty() {
+        return Err(Error::BadRequest {
+            message: "message_ids must not be empty".to_string(),
+        });
+    }
+
+    let mut responses = Vec::with_capacity(message_ids.len());
+
+    for message_id in &message_ids {
+        let receipt = state
+            .receipts
+            .send_group_read(&group_id, message_id)
+            .await
+            .map_err(|e| Error::App {
+                message: format!("Failed to create group read receipt: {}", e),
+            })?;
+
+        // Best-effort publish to GossipSub. If it fails we still stored the
+        // receipt locally, which is fine — receipts are best-effort.
+        if let Err(e) = publish_group_receipt(&state, &group_id, receipt.clone()).await {
+            tracing::debug!(
+                "Failed to publish group READ receipt for {} in {}: {}",
+                message_id,
+                group_id,
+                e
+            );
+        }
+
+        responses.push(super::types::GroupReceiptResponse {
+            message_id: receipt.message_id,
+            reader_did: receipt.reader_did,
+            status: super::helpers::receipt_status_to_string(receipt.status),
+            timestamp: receipt.timestamp,
+        });
+    }
+
+    Ok(Json(super::types::GroupReceiptsResponse {
+        receipts: responses,
+    }))
+}
+
+/// GET /groups/{group_id}/messages/{message_id}/receipts
+///
+/// Fetch the per-member receipt breakdown for a specific group message.
+pub(super) async fn get_group_message_receipts(
+    State(state): State<AppState>,
+    Path((group_id, message_id)): Path<(String, String)>,
+) -> Result<Json<super::types::GroupReceiptsResponse>> {
+    let receipts = state
+        .receipts
+        .get_group_receipts(&group_id, &message_id)
+        .await
+        .map_err(|e| Error::App {
+            message: format!("Failed to fetch group receipts: {}", e),
+        })?;
+
+    let responses: Vec<super::types::GroupReceiptResponse> = receipts
+        .into_iter()
+        .map(|r| super::types::GroupReceiptResponse {
+            message_id: r.message_id,
+            reader_did: r.reader_did,
+            status: super::helpers::receipt_status_to_string(r.status),
+            timestamp: r.timestamp,
+        })
+        .collect();
+
+    Ok(Json(super::types::GroupReceiptsResponse {
+        receipts: responses,
     }))
 }

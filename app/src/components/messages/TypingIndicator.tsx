@@ -27,16 +27,28 @@ function shortName(name: string): string {
   return name.split("#")[0];
 }
 
+/** Max users before we stop showing the indicator entirely. */
+const MAX_TYPING_USERS = 8;
+/** Max names listed explicitly before collapsing to "and N others". */
+const MAX_NAMED_USERS = 3;
+
 function formatTypingLabel(names: string[]): string {
-  if (names.length === 1) return `${shortName(names[0])} is typing`;
-  if (names.length === 2) return `${shortName(names[0])}, ${shortName(names[1])} typing`;
-  return `${names.length} people typing`;
+  const short = names.map(shortName);
+  if (short.length === 1) return `${short[0]} is typing`;
+  if (short.length === 2) return `${short[0]} and ${short[1]} are typing`;
+  if (short.length <= MAX_NAMED_USERS) {
+    const last = short.pop()!;
+    return `${short.join(", ")} and ${last} are typing`;
+  }
+  const shown = short.slice(0, MAX_NAMED_USERS);
+  const remaining = short.length - MAX_NAMED_USERS;
+  return `${shown.join(", ")} and ${remaining} ${remaining === 1 ? "other" : "others"} are typing`;
 }
 
 export function TypingIndicator({ users }: TypingIndicatorProps) {
   const peerNames = useMessagingStore((s) => s.peerNames);
 
-  if (users.length === 0) return null;
+  if (users.length === 0 || users.length > MAX_TYPING_USERS) return null;
 
   const displayNames = users.map((did) => peerNames.get(did) ?? did.slice(-8));
 

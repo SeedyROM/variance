@@ -68,6 +68,13 @@ pub enum Error {
     #[snafu(display("No pending commit to confirm or cancel for group {group_id}"))]
     MlsNoPendingCommit { group_id: String },
 
+    #[snafu(display("MLS group {group_id} is desynced after {failed_count} consecutive failures (local epoch {local_epoch})"))]
+    MlsDesync {
+        group_id: String,
+        failed_count: u32,
+        local_epoch: u64,
+    },
+
     #[snafu(display("Internal lock poisoned: {message}"))]
     LockPoisoned { message: String },
 }
