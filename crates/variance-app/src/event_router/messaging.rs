@@ -33,7 +33,7 @@ pub(super) fn spawn_messaging_listeners(deps: MessagingDeps, events: EventChanne
         deps.node_handle.clone(),
         deps.storage.clone(),
         deps.local_did.clone(),
-        deps.receipts,
+        deps.receipts.clone(),
         deps.username_registry,
         events.clone(),
     );
@@ -43,6 +43,7 @@ pub(super) fn spawn_messaging_listeners(deps: MessagingDeps, events: EventChanne
         deps.storage.clone(),
         deps.local_did.clone(),
         deps.node_handle.clone(),
+        deps.receipts.clone(),
         events.clone(),
     );
     spawn_group_sync_listener(
@@ -525,12 +526,172 @@ fn spawn_invite_timeout_sweep(
     });
 }
 
+/// Handle a decoded `MessageContent` from a group message (both GroupPayload-wrapped
+/// and legacy bare format). Handles role changes, regular messages, reactions, and
+/// sends auto-DELIVERED receipts for regular messages from other members.
+#[allow(clippy::too_many_arguments)]
+async fn handle_group_message_content(
+    content: &variance_proto::messaging_proto::MessageContent,
+    message: &variance_proto::messaging_proto::GroupMessage,
+    group_id: &str,
+    from: &str,
+    message_id: &str,
+    timestamp: i64,
+    ws_manager: &WebSocketManager,
+    mls_groups: &Arc<MlsGroupHandler>,
+    storage: &Arc<LocalMessageStorage>,
+    local_did: &str,
+    receipts: &Arc<ReceiptHandler>,
+    node_handle: &NodeHandle,
+) {
+    let is_role_change = content.metadata.get("type").map(String::as_str) == Some("role_change");
+
+    // Role changes are control signals — apply them but don't store as chat
+    // history or notify the frontend of a new "message".
+    if is_role_change {
+        if let (Some(target_did), Some(new_role)) = (
+            content.metadata.get("target_did"),
+            content.metadata.get("new_role"),
+        ) {
+            let new_role_i32 = match new_role.as_str() {
+                "moderator" => variance_proto::messaging_proto::GroupRole::Moderator as i32,
+                _ => variance_proto::messaging_proto::GroupRole::Member as i32,
+            };
+            if let Err(e) = storage
+                .update_member_role(group_id, target_did, new_role_i32)
+                .await
+            {
+                warn!(
+                    "EventRouter: Failed to apply role change for {} in {}: {}",
+                    target_did, group_id, e
+                );
+            }
+
+            let role_msg = WsMessage::RoleChanged {
+                group_id: group_id.to_string(),
+                target_did: target_did.clone(),
+                new_role: new_role.clone(),
+                changed_by: from.to_string(),
+            };
+            ws_manager.broadcast(role_msg);
+        }
+    } else {
+        // Regular message or reaction — store for history.
+        if let Err(e) = storage.store_group(message).await {
+            warn!(
+                "EventRouter: Failed to store group message {}: {}",
+                message_id, e
+            );
+        }
+
+        // Cache the plaintext (at-rest encrypted) for history.
+        // MLS forward secrecy means we can't re-decrypt later.
+        if let Err(e) = mls_groups
+            .persist_group_plaintext(storage, message_id, content)
+            .await
+        {
+            warn!(
+                "EventRouter: Failed to cache group plaintext {}: {}",
+                message_id, e
+            );
+        }
+
+        let msg = WsMessage::GroupMessageReceived {
+            group_id: group_id.to_string(),
+            from: from.to_string(),
+            message_id: message_id.to_string(),
+            timestamp,
+        };
+        ws_manager.broadcast(msg);
+
+        // Auto-DELIVERED: send a delivery receipt back to the group for
+        // messages from other members (mirrors DM auto-delivered pattern).
+        if from != local_did {
+            match receipts.send_group_delivered(group_id, message_id).await {
+                Ok(receipt) => {
+                    if let Err(e) = publish_group_receipt_from_event_router(
+                        mls_groups,
+                        storage,
+                        node_handle,
+                        local_did,
+                        group_id,
+                        receipt,
+                    )
+                    .await
+                    {
+                        debug!(
+                            "EventRouter: Failed to publish auto-DELIVERED for {} in {}: {}",
+                            message_id, group_id, e
+                        );
+                    }
+                }
+                Err(e) => {
+                    debug!(
+                        "EventRouter: Failed to create DELIVERED receipt for {} in {}: {}",
+                        message_id, group_id, e
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Encrypt and publish a group receipt from the event router context.
+///
+/// This mirrors `crate::api::groups::publish_group_receipt` but operates on
+/// individual `Arc` references rather than `AppState`, since the event router
+/// doesn't have access to the full `AppState`.
+async fn publish_group_receipt_from_event_router(
+    mls_groups: &Arc<MlsGroupHandler>,
+    storage: &Arc<LocalMessageStorage>,
+    node_handle: &NodeHandle,
+    local_did: &str,
+    group_id: &str,
+    receipt: variance_proto::messaging_proto::GroupReadReceipt,
+) -> std::result::Result<(), String> {
+    use variance_proto::messaging_proto::{group_payload, GroupPayload};
+
+    let payload = GroupPayload {
+        payload: Some(group_payload::Payload::Receipt(receipt)),
+    };
+    let plaintext = prost::Message::encode_to_vec(&payload);
+
+    let mls_msg = mls_groups
+        .encrypt_message(group_id, &plaintext)
+        .map_err(|e| format!("MLS encrypt receipt: {}", e))?;
+
+    let mls_bytes = MlsGroupHandler::serialize_message(&mls_msg)
+        .map_err(|e| format!("MLS serialize receipt: {}", e))?;
+
+    let wire_msg = variance_proto::messaging_proto::GroupMessage {
+        id: ulid::Ulid::new().to_string(),
+        sender_did: local_did.to_string(),
+        group_id: group_id.to_string(),
+        timestamp: chrono::Utc::now().timestamp_millis(),
+        r#type: variance_proto::messaging_proto::MessageType::Unspecified.into(),
+        reply_to: None,
+        mls_ciphertext: mls_bytes,
+    };
+
+    let topic = format!("/variance/group/{}", group_id);
+    node_handle
+        .publish_group_message(topic, wire_msg)
+        .await
+        .map_err(|e| format!("GossipSub publish receipt: {}", e))?;
+
+    // Persist MLS state — encryption advanced the ratchet.
+    super::persist_mls_state_async(mls_groups, storage, local_did).await;
+
+    Ok(())
+}
+
 fn spawn_group_message_listener(
     ws_manager: WebSocketManager,
     mls_groups: Arc<MlsGroupHandler>,
     storage: Arc<LocalMessageStorage>,
     local_did: String,
     node_handle: NodeHandle,
+    receipts: Arc<ReceiptHandler>,
     events: EventChannels,
 ) {
     tokio::spawn(async move {
@@ -563,100 +724,109 @@ fn spawn_group_message_listener(
                     ) {
                         Ok(mls_msg) => match mls_groups.process_message(&group_id, mls_msg) {
                             Ok(Some(decrypted)) => {
-                                // Decode the plaintext to inspect metadata before
-                                // deciding whether to store / display this message.
+                                mls_groups.record_processing_success(&group_id);
+                                // Decode the plaintext: try GroupPayload envelope
+                                // first, fall back to bare MessageContent for
+                                // backward compatibility with pre-envelope messages.
                                 #[allow(unused_imports)]
                                 use prost::Message as _;
-                                let content =
-                                    variance_proto::messaging_proto::MessageContent::decode(
-                                        decrypted.plaintext.as_slice(),
-                                    )
-                                    .ok();
+                                use variance_proto::messaging_proto::{
+                                    group_payload, GroupPayload,
+                                };
 
-                                let is_role_change = content
-                                    .as_ref()
-                                    .and_then(|c| c.metadata.get("type"))
-                                    .map(String::as_str)
-                                    == Some("role_change");
+                                let payload = GroupPayload::decode(decrypted.plaintext.as_slice())
+                                    .ok()
+                                    .and_then(|p| p.payload);
 
-                                // Role changes are control signals — apply them but
-                                // don't store as chat history or notify the frontend
-                                // of a new "message".
-                                if is_role_change {
-                                    if let Some(ref content) = content {
-                                        if let (Some(target_did), Some(new_role)) = (
-                                            content.metadata.get("target_did"),
-                                            content.metadata.get("new_role"),
-                                        ) {
-                                            let new_role_i32 = match new_role.as_str() {
-                                                "moderator" => {
-                                                    variance_proto::messaging_proto::GroupRole::Moderator
-                                                        as i32
-                                                }
-                                                _ => {
-                                                    variance_proto::messaging_proto::GroupRole::Member
-                                                        as i32
-                                                }
-                                            };
-                                            if let Err(e) = storage
-                                                .update_member_role(
-                                                    &group_id,
-                                                    target_did,
-                                                    new_role_i32,
-                                                )
+                                match payload {
+                                    Some(group_payload::Payload::Receipt(receipt)) => {
+                                        // Inbound group receipt — store and notify.
+                                        // Ignore receipts from ourselves.
+                                        if receipt.reader_did != local_did {
+                                            if let Err(e) = receipts
+                                                .receive_group_receipt(receipt.clone())
                                                 .await
                                             {
                                                 warn!(
-                                                    "EventRouter: Failed to apply role change for {} in {}: {}",
-                                                    target_did, group_id, e
+                                                    "EventRouter: Failed to store group receipt for {} in {}: {}",
+                                                    receipt.message_id, group_id, e
                                                 );
+                                            } else {
+                                                use variance_proto::messaging_proto::ReceiptStatus;
+                                                let ws_msg = if receipt.status
+                                                    == ReceiptStatus::Read as i32
+                                                {
+                                                    WsMessage::GroupReceiptRead {
+                                                        group_id: group_id.clone(),
+                                                        message_id: receipt.message_id.clone(),
+                                                        member_did: receipt.reader_did.clone(),
+                                                    }
+                                                } else {
+                                                    WsMessage::GroupReceiptDelivered {
+                                                        group_id: group_id.clone(),
+                                                        message_id: receipt.message_id.clone(),
+                                                        member_did: receipt.reader_did.clone(),
+                                                    }
+                                                };
+                                                ws_manager.broadcast(ws_msg);
                                             }
-
-                                            let role_msg = WsMessage::RoleChanged {
-                                                group_id: group_id.clone(),
-                                                target_did: target_did.clone(),
-                                                new_role: new_role.clone(),
-                                                changed_by: from.clone(),
-                                            };
-                                            ws_manager.broadcast(role_msg);
                                         }
                                     }
-                                } else {
-                                    // Regular message or reaction — store for history.
-                                    if let Err(e) = storage.store_group(&message).await {
-                                        warn!(
-                                            "EventRouter: Failed to store group message {}: {}",
-                                            message_id, e
-                                        );
+                                    Some(group_payload::Payload::Message(ref content)) => {
+                                        handle_group_message_content(
+                                            content,
+                                            &message,
+                                            &group_id,
+                                            &from,
+                                            &message_id,
+                                            timestamp,
+                                            &ws_manager,
+                                            &mls_groups,
+                                            &storage,
+                                            &local_did,
+                                            &receipts,
+                                            &node_handle,
+                                        )
+                                        .await;
                                     }
-
-                                    // Cache the plaintext (at-rest encrypted) for history.
-                                    // MLS forward secrecy means we can't re-decrypt later.
-                                    if let Some(ref content) = content {
-                                        if let Err(e) = mls_groups
-                                            .persist_group_plaintext(&storage, &message_id, content)
-                                            .await
-                                        {
+                                    None => {
+                                        // Legacy fallback: bare MessageContent
+                                        // (pre-GroupPayload messages).
+                                        let content =
+                                            variance_proto::messaging_proto::MessageContent::decode(
+                                                decrypted.plaintext.as_slice(),
+                                            )
+                                            .ok();
+                                        if let Some(ref content) = content {
+                                            handle_group_message_content(
+                                                content,
+                                                &message,
+                                                &group_id,
+                                                &from,
+                                                &message_id,
+                                                timestamp,
+                                                &ws_manager,
+                                                &mls_groups,
+                                                &storage,
+                                                &local_did,
+                                                &receipts,
+                                                &node_handle,
+                                            )
+                                            .await;
+                                        } else {
                                             warn!(
-                                                "EventRouter: Failed to cache group plaintext {}: {}",
-                                                message_id, e
+                                                "EventRouter: Failed to decode group plaintext for {} (neither GroupPayload nor MessageContent)",
+                                                message_id,
                                             );
                                         }
                                     }
-
-                                    let msg = WsMessage::GroupMessageReceived {
-                                        group_id: group_id.clone(),
-                                        from,
-                                        message_id,
-                                        timestamp,
-                                    };
-                                    ws_manager.broadcast(msg);
                                 }
 
                                 // Decrypt advanced the ratchet — persist the new state.
                                 persist_mls_state_async(&mls_groups, &storage, &local_did).await;
                             }
                             Ok(None) => {
+                                mls_groups.record_processing_success(&group_id);
                                 // Commit or proposal processed — epoch or tree changed.
                                 persist_mls_state_async(&mls_groups, &storage, &local_did).await;
 
@@ -836,6 +1006,18 @@ fn spawn_group_message_listener(
                             }
                             Err(e) => {
                                 warn!("EventRouter: MLS decrypt failed for {}: {}", message_id, e);
+                                if let Some(info) = mls_groups.record_processing_failure(&group_id)
+                                {
+                                    warn!(
+                                        "EventRouter: Group {} flagged as desynced after {} consecutive failures (local epoch {})",
+                                        info.group_id, info.failed_count, info.local_epoch
+                                    );
+                                    ws_manager.broadcast(WsMessage::GroupDesyncDetected {
+                                        group_id: info.group_id,
+                                        failed_count: info.failed_count,
+                                        local_epoch: info.local_epoch,
+                                    });
+                                }
                             }
                         },
                         Err(e) => {
@@ -843,6 +1025,19 @@ fn spawn_group_message_listener(
                                 "EventRouter: Failed to deserialize MLS message {}: {}",
                                 message_id, e
                             );
+                            // Deserialization failures also count toward desync detection,
+                            // since a corrupt wire format is often a symptom of epoch mismatch.
+                            if let Some(info) = mls_groups.record_processing_failure(&group_id) {
+                                warn!(
+                                    "EventRouter: Group {} flagged as desynced after {} consecutive failures (local epoch {})",
+                                    info.group_id, info.failed_count, info.local_epoch
+                                );
+                                ws_manager.broadcast(WsMessage::GroupDesyncDetected {
+                                    group_id: info.group_id,
+                                    failed_count: info.failed_count,
+                                    local_epoch: info.local_epoch,
+                                });
+                            }
                         }
                     }
                 }
@@ -949,6 +1144,7 @@ fn spawn_group_sync_listener(
                             Ok(mls_msg) => {
                                 match mls_groups.process_message(&group_id, mls_msg) {
                                     Ok(Some(decrypted)) => {
+                                        mls_groups.record_processing_success(&group_id);
                                         if let Err(e) = storage.store_group(&message).await {
                                             warn!(
                                                 "EventRouter: Failed to store synced group message {}: {}",
@@ -987,6 +1183,7 @@ fn spawn_group_sync_listener(
                                         });
                                     }
                                     Ok(None) => {
+                                        mls_groups.record_processing_success(&group_id);
                                         // Commit/proposal processed
                                     }
                                     Err(e) => {
@@ -994,6 +1191,10 @@ fn spawn_group_sync_listener(
                                             "EventRouter: MLS decrypt failed for synced {}: {}",
                                             message_id, e
                                         );
+                                        // Don't flag desync during sync — these are
+                                        // historical messages and failures are expected
+                                        // for epochs we've already advanced past.
+                                        let _ = mls_groups.record_processing_failure(&group_id);
                                     }
                                 }
                             }

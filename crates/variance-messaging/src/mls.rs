@@ -20,6 +20,7 @@
 //! encrypt/decrypt calls.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::RwLock;
 
@@ -89,6 +90,9 @@ pub struct MlsGroupHandler {
     /// from the DM storage key so the two keys never alias. This ensures a stolen
     /// sled database is unreadable without the identity file.
     storage_key: [u8; 32],
+
+    /// Per-group failure counters for desync detection.
+    desync_counters: DashMap<String, DesyncCounter>,
 }
 
 /// The output of an `add_member` operation.
@@ -121,6 +125,52 @@ pub struct DecryptedMessage {
     pub plaintext: Vec<u8>,
     /// The credential of the sender.
     pub sender_credential: Credential,
+}
+
+/// Number of consecutive `process_message` failures before a group is flagged as desynced.
+const DESYNC_THRESHOLD: u32 = 3;
+
+/// Per-group failure counter for desync detection.
+///
+/// Uses atomics so callers don't need mutable access to the handler.
+/// Stored in a DashMap keyed by group ID (same pattern as `groups`).
+struct DesyncCounter {
+    /// Consecutive failures. Reset to 0 on any successful `process_message`.
+    consecutive_failures: AtomicU32,
+    /// Set to `true` once the threshold is crossed. Stays `true` until
+    /// explicitly cleared by `clear_desync` (i.e. after recovery).
+    flagged: AtomicU32, // 0 = not desynced, 1 = desynced
+}
+
+impl DesyncCounter {
+    fn new() -> Self {
+        Self {
+            consecutive_failures: AtomicU32::new(0),
+            flagged: AtomicU32::new(0),
+        }
+    }
+}
+
+/// Information about a group desync event, returned when the threshold is first crossed.
+#[derive(Debug, Clone)]
+pub struct DesyncInfo {
+    pub group_id: String,
+    pub failed_count: u32,
+    pub local_epoch: u64,
+}
+
+/// The outcome of a `reinitialize_group` call.
+///
+/// The admin creates a brand-new MLS group under a new ID derived from the old one,
+/// and generates Welcome messages for each member who needs to be re-invited.
+pub struct ReinitResult {
+    /// The new group ID (old ID with `-reinit-{epoch}` suffix).
+    pub new_group_id: String,
+    /// Welcome messages keyed by member DID. Each Welcome must be sent
+    /// to the corresponding member so they can join the new group.
+    pub welcomes: Vec<(String, MlsMessageOut)>,
+    /// The member DIDs that were included in the reinitialized group.
+    pub members: Vec<String>,
 }
 
 impl MlsGroupHandler {
@@ -171,6 +221,7 @@ impl MlsGroupHandler {
             credential_with_key,
             groups: DashMap::new(),
             storage_key,
+            desync_counters: DashMap::new(),
         })
     }
 
@@ -724,6 +775,139 @@ impl MlsGroupHandler {
     /// Access the local DID.
     pub fn local_did(&self) -> &str {
         &self.local_did
+    }
+
+    // ── Desync detection ─────────────────────────────────────────────────
+
+    /// Record a successful `process_message` call, resetting the failure counter.
+    pub fn record_processing_success(&self, group_id: &str) {
+        if let Some(counter) = self.desync_counters.get(group_id) {
+            counter.consecutive_failures.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// Record a `process_message` failure and check if the group is now desynced.
+    ///
+    /// Returns `Some(DesyncInfo)` the **first time** the threshold is crossed (the
+    /// transition from non-desynced to desynced). Subsequent failures while already
+    /// flagged return `None` — callers only need to act on the transition.
+    pub fn record_processing_failure(&self, group_id: &str) -> Option<DesyncInfo> {
+        let counter = self
+            .desync_counters
+            .entry(group_id.to_string())
+            .or_insert_with(DesyncCounter::new);
+
+        let prev = counter.consecutive_failures.fetch_add(1, Ordering::Relaxed);
+        let new_count = prev + 1;
+
+        if new_count >= DESYNC_THRESHOLD
+            && counter
+                .flagged
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        {
+            let local_epoch = self.epoch(group_id).unwrap_or(0);
+            Some(DesyncInfo {
+                group_id: group_id.to_string(),
+                failed_count: new_count,
+                local_epoch,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Check whether a group is currently flagged as desynced.
+    pub fn is_desynced(&self, group_id: &str) -> bool {
+        self.desync_counters
+            .get(group_id)
+            .map(|c| c.flagged.load(Ordering::Acquire) == 1)
+            .unwrap_or(false)
+    }
+
+    /// Clear the desync flag for a group after successful recovery.
+    pub fn clear_desync(&self, group_id: &str) {
+        if let Some(counter) = self.desync_counters.get(group_id) {
+            counter.consecutive_failures.store(0, Ordering::Relaxed);
+            counter.flagged.store(0, Ordering::Release);
+        }
+    }
+
+    /// Get the consecutive failure count for a group.
+    pub fn failure_count(&self, group_id: &str) -> u32 {
+        self.desync_counters
+            .get(group_id)
+            .map(|c| c.consecutive_failures.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    // ── Group recovery ───────────────────────────────────────────────────
+
+    /// Reinitialize a desynced group by creating a fresh MLS group and generating
+    /// Welcome messages for all known members.
+    ///
+    /// This is the admin-side recovery operation. The flow:
+    /// 1. Snapshot the current member list from the old group
+    /// 2. Remove the old group from local state
+    /// 3. Create a fresh group under a new ID (`{old_id}-reinit-{epoch}`)
+    /// 4. Add each member (except self) using the provided KeyPackages
+    /// 5. Return the Welcomes so the caller can distribute them
+    ///
+    /// `key_packages` is a map from member DID → serialized KeyPackage. Members
+    /// whose KeyPackage is missing are excluded (they'll need to be invited separately).
+    pub fn reinitialize_group(
+        &self,
+        group_id: &str,
+        key_packages: HashMap<String, KeyPackage>,
+    ) -> Result<ReinitResult> {
+        // Snapshot the old epoch for the new group ID suffix.
+        let old_epoch = self.epoch(group_id).unwrap_or(0);
+        let old_members = self.list_members(group_id).unwrap_or_default();
+
+        // Remove the old group's MLS state.
+        self.remove_group(group_id);
+        self.clear_desync(group_id);
+
+        // Create fresh group under a new ID.
+        let new_group_id = format!("{group_id}-reinit-{old_epoch}");
+        self.create_group(&new_group_id)?;
+
+        // Add each member who provided a KeyPackage.
+        let mut welcomes = Vec::new();
+        let mut added_members = vec![self.local_did.clone()];
+
+        for member_did in &old_members {
+            if member_did == &self.local_did {
+                continue;
+            }
+            if let Some(kp) = key_packages.get(member_did.as_str()) {
+                match self.add_member(&new_group_id, kp.clone()) {
+                    Ok(result) => {
+                        welcomes.push((member_did.clone(), result.welcome));
+                        added_members.push(member_did.clone());
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "reinitialize_group: failed to add {} to {}: {}",
+                            member_did,
+                            new_group_id,
+                            e
+                        );
+                    }
+                }
+            } else {
+                tracing::info!(
+                    "reinitialize_group: no KeyPackage for {}, skipping",
+                    member_did
+                );
+            }
+        }
+
+        Ok(ReinitResult {
+            new_group_id,
+            welcomes,
+            members: added_members,
+        })
     }
 
     /// Encrypt and persist the plaintext of a group message for later retrieval.
@@ -1612,5 +1796,276 @@ mod tests {
 
         let result = handler.commit_pending_proposals("no-proposals").unwrap();
         assert!(result.is_none());
+    }
+
+    // ===== Desync tracker tests =====
+
+    #[test]
+    fn desync_not_flagged_below_threshold() {
+        let sk = test_signing_key();
+        let handler = MlsGroupHandler::new("did:key:test".to_string(), &sk).unwrap();
+
+        // Failures below threshold should not trigger desync.
+        for _ in 0..(DESYNC_THRESHOLD - 1) {
+            assert!(handler.record_processing_failure("g1").is_none());
+        }
+        assert!(!handler.is_desynced("g1"));
+        assert_eq!(handler.failure_count("g1"), DESYNC_THRESHOLD - 1);
+    }
+
+    #[test]
+    fn desync_flagged_at_threshold() {
+        let sk = test_signing_key();
+        let handler = MlsGroupHandler::new("did:key:test".to_string(), &sk).unwrap();
+
+        for _ in 0..(DESYNC_THRESHOLD - 1) {
+            assert!(handler.record_processing_failure("g1").is_none());
+        }
+
+        // The threshold-th failure should return DesyncInfo.
+        let info = handler.record_processing_failure("g1");
+        assert!(info.is_some());
+        let info = info.unwrap();
+        assert_eq!(info.group_id, "g1");
+        assert_eq!(info.failed_count, DESYNC_THRESHOLD);
+        assert!(handler.is_desynced("g1"));
+    }
+
+    #[test]
+    fn desync_fires_only_once() {
+        let sk = test_signing_key();
+        let handler = MlsGroupHandler::new("did:key:test".to_string(), &sk).unwrap();
+
+        // Cross the threshold.
+        for _ in 0..DESYNC_THRESHOLD {
+            handler.record_processing_failure("g1");
+        }
+        assert!(handler.is_desynced("g1"));
+
+        // Further failures should NOT return DesyncInfo again.
+        for _ in 0..5 {
+            assert!(handler.record_processing_failure("g1").is_none());
+        }
+        // Still flagged though.
+        assert!(handler.is_desynced("g1"));
+    }
+
+    #[test]
+    fn success_resets_failure_count() {
+        let sk = test_signing_key();
+        let handler = MlsGroupHandler::new("did:key:test".to_string(), &sk).unwrap();
+
+        // Accumulate some failures (but below threshold).
+        handler.record_processing_failure("g1");
+        handler.record_processing_failure("g1");
+        assert_eq!(handler.failure_count("g1"), 2);
+
+        // A success resets the counter.
+        handler.record_processing_success("g1");
+        assert_eq!(handler.failure_count("g1"), 0);
+        assert!(!handler.is_desynced("g1"));
+    }
+
+    #[test]
+    fn clear_desync_resets_flag_and_counter() {
+        let sk = test_signing_key();
+        let handler = MlsGroupHandler::new("did:key:test".to_string(), &sk).unwrap();
+
+        // Cross the threshold.
+        for _ in 0..DESYNC_THRESHOLD {
+            handler.record_processing_failure("g1");
+        }
+        assert!(handler.is_desynced("g1"));
+
+        handler.clear_desync("g1");
+        assert!(!handler.is_desynced("g1"));
+        assert_eq!(handler.failure_count("g1"), 0);
+
+        // After clearing, the next threshold crossing fires again.
+        for _ in 0..DESYNC_THRESHOLD {
+            handler.record_processing_failure("g1");
+        }
+        // The transition should fire once more.
+        // (We already hit threshold above; let's verify via is_desynced.)
+        assert!(handler.is_desynced("g1"));
+    }
+
+    #[test]
+    fn desync_independent_per_group() {
+        let sk = test_signing_key();
+        let handler = MlsGroupHandler::new("did:key:test".to_string(), &sk).unwrap();
+
+        for _ in 0..DESYNC_THRESHOLD {
+            handler.record_processing_failure("g1");
+        }
+        assert!(handler.is_desynced("g1"));
+        assert!(!handler.is_desynced("g2"));
+        assert_eq!(handler.failure_count("g2"), 0);
+    }
+
+    #[test]
+    fn no_desync_for_unknown_group() {
+        let sk = test_signing_key();
+        let handler = MlsGroupHandler::new("did:key:test".to_string(), &sk).unwrap();
+
+        assert!(!handler.is_desynced("nonexistent"));
+        assert_eq!(handler.failure_count("nonexistent"), 0);
+    }
+
+    // ===== Reinitialize group tests =====
+
+    #[test]
+    fn reinitialize_creates_new_group_with_members() {
+        let alice_sk = test_signing_key();
+        let alice = MlsGroupHandler::new("did:key:alice".to_string(), &alice_sk).unwrap();
+        alice.create_group("reinit-group").unwrap();
+
+        let bob_sk = test_signing_key();
+        let bob = MlsGroupHandler::new("did:key:bob".to_string(), &bob_sk).unwrap();
+        let bob_kp = bob.generate_key_package().unwrap();
+        alice.add_member("reinit-group", bob_kp).unwrap();
+
+        // Generate fresh KeyPackages for reinitialize (the old ones were consumed).
+        let bob_kp2 = bob.generate_key_package().unwrap();
+        let mut kps = HashMap::new();
+        kps.insert("did:key:bob".to_string(), bob_kp2);
+
+        let result = alice.reinitialize_group("reinit-group", kps).unwrap();
+
+        // Old group should be gone.
+        assert!(!alice.is_member("reinit-group"));
+
+        // New group exists and contains both Alice and Bob.
+        assert!(result.new_group_id.starts_with("reinit-group-reinit-"));
+        assert!(alice.is_member(&result.new_group_id));
+        let members = alice.list_members(&result.new_group_id).unwrap();
+        assert_eq!(members.len(), 2);
+        assert!(members.contains(&"did:key:alice".to_string()));
+        assert!(members.contains(&"did:key:bob".to_string()));
+
+        // Welcome was generated for Bob.
+        assert_eq!(result.welcomes.len(), 1);
+        assert_eq!(result.welcomes[0].0, "did:key:bob");
+    }
+
+    #[test]
+    fn reinitialize_welcome_lets_member_join() {
+        let alice_sk = test_signing_key();
+        let alice = MlsGroupHandler::new("did:key:alice".to_string(), &alice_sk).unwrap();
+        alice.create_group("rejoin-group").unwrap();
+
+        let bob_sk = test_signing_key();
+        let bob = MlsGroupHandler::new("did:key:bob".to_string(), &bob_sk).unwrap();
+        let bob_kp = bob.generate_key_package().unwrap();
+        alice.add_member("rejoin-group", bob_kp).unwrap();
+
+        // Reinitialize with a fresh KeyPackage for Bob.
+        let bob_kp2 = bob.generate_key_package().unwrap();
+        let mut kps = HashMap::new();
+        kps.insert("did:key:bob".to_string(), bob_kp2);
+        let result = alice.reinitialize_group("rejoin-group", kps).unwrap();
+
+        // Bob joins the new group via Welcome.
+        let welcome_bytes = MlsGroupHandler::serialize_message(&result.welcomes[0].1).unwrap();
+        let welcome_in = MlsGroupHandler::deserialize_message(&welcome_bytes).unwrap();
+        let joined_id = bob.join_group_from_welcome(welcome_in).unwrap();
+        assert_eq!(joined_id, result.new_group_id);
+
+        // Both can list members.
+        let alice_members = alice.list_members(&result.new_group_id).unwrap();
+        let bob_members = bob.list_members(&result.new_group_id).unwrap();
+        assert_eq!(alice_members.len(), 2);
+        assert_eq!(bob_members.len(), 2);
+    }
+
+    #[test]
+    fn reinitialize_skips_members_without_key_package() {
+        let alice_sk = test_signing_key();
+        let alice = MlsGroupHandler::new("did:key:alice".to_string(), &alice_sk).unwrap();
+        alice.create_group("partial-reinit").unwrap();
+
+        let bob_sk = test_signing_key();
+        let bob = MlsGroupHandler::new("did:key:bob".to_string(), &bob_sk).unwrap();
+        let bob_kp = bob.generate_key_package().unwrap();
+        alice.add_member("partial-reinit", bob_kp).unwrap();
+
+        let carol_sk = test_signing_key();
+        let carol = MlsGroupHandler::new("did:key:carol".to_string(), &carol_sk).unwrap();
+        let carol_kp = carol.generate_key_package().unwrap();
+        alice.add_member("partial-reinit", carol_kp).unwrap();
+
+        // Only provide Bob's KeyPackage — Carol is missing.
+        let bob_kp2 = bob.generate_key_package().unwrap();
+        let mut kps = HashMap::new();
+        kps.insert("did:key:bob".to_string(), bob_kp2);
+
+        let result = alice.reinitialize_group("partial-reinit", kps).unwrap();
+
+        // Only Alice + Bob in the new group (Carol was skipped).
+        assert_eq!(result.members.len(), 2);
+        assert!(result.members.contains(&"did:key:alice".to_string()));
+        assert!(result.members.contains(&"did:key:bob".to_string()));
+        assert_eq!(result.welcomes.len(), 1);
+    }
+
+    #[test]
+    fn reinitialize_clears_desync_flag() {
+        let sk = test_signing_key();
+        let handler = MlsGroupHandler::new("did:key:alice".to_string(), &sk).unwrap();
+        handler.create_group("desync-reinit").unwrap();
+
+        // Flag the group as desynced.
+        for _ in 0..DESYNC_THRESHOLD {
+            handler.record_processing_failure("desync-reinit");
+        }
+        assert!(handler.is_desynced("desync-reinit"));
+
+        // Reinitialize with no extra members (empty key_packages).
+        let result = handler
+            .reinitialize_group("desync-reinit", HashMap::new())
+            .unwrap();
+
+        // Desync flag on the old group ID should be cleared.
+        assert!(!handler.is_desynced("desync-reinit"));
+        // New group is healthy.
+        assert!(handler.is_member(&result.new_group_id));
+        assert!(!handler.is_desynced(&result.new_group_id));
+    }
+
+    #[test]
+    fn reinitialize_messaging_works_in_new_group() {
+        let alice_sk = test_signing_key();
+        let alice = MlsGroupHandler::new("did:key:alice".to_string(), &alice_sk).unwrap();
+        alice.create_group("msg-reinit").unwrap();
+
+        let bob_sk = test_signing_key();
+        let bob = MlsGroupHandler::new("did:key:bob".to_string(), &bob_sk).unwrap();
+        let bob_kp = bob.generate_key_package().unwrap();
+        alice.add_member("msg-reinit", bob_kp).unwrap();
+
+        // Reinitialize.
+        let bob_kp2 = bob.generate_key_package().unwrap();
+        let mut kps = HashMap::new();
+        kps.insert("did:key:bob".to_string(), bob_kp2);
+        let result = alice.reinitialize_group("msg-reinit", kps).unwrap();
+
+        // Bob joins new group.
+        let welcome_bytes = MlsGroupHandler::serialize_message(&result.welcomes[0].1).unwrap();
+        let welcome_in = MlsGroupHandler::deserialize_message(&welcome_bytes).unwrap();
+        bob.join_group_from_welcome(welcome_in).unwrap();
+
+        // Alice sends a message in the new group — Bob can decrypt it.
+        let encrypted = alice
+            .encrypt_message(&result.new_group_id, b"hello after reinit")
+            .unwrap();
+        let enc_bytes = MlsGroupHandler::serialize_message(&encrypted).unwrap();
+        let enc_in = MlsGroupHandler::deserialize_message(&enc_bytes).unwrap();
+        let decrypted = bob
+            .process_message(&result.new_group_id, enc_in)
+            .unwrap()
+            .expect("should decrypt");
+        let sender_did = String::from_utf8_lossy(decrypted.sender_credential.serialized_content());
+        assert_eq!(sender_did, "did:key:alice");
+        assert_eq!(decrypted.plaintext, b"hello after reinit");
     }
 }

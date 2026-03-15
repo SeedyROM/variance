@@ -4,6 +4,7 @@ import type {
   DirectMessage,
   GroupMemberInfo,
   GroupMessage,
+  GroupReceiptResponse,
   HealthResponse,
   IdentityStatus,
   MessageResponse,
@@ -258,6 +259,26 @@ export const receiptsApi = {
       method: "POST",
       body: JSON.stringify({ message_id: messageId, sender_did: senderDid }),
     }),
+};
+
+// ===== Group Receipts =====
+
+export const groupReceiptsApi = {
+  /** Mark specific messages (or all) as read in a group. */
+  sendRead: (groupId: string, messageIds?: string[]) =>
+    request<{ receipts: GroupReceiptResponse[] }>(
+      `/groups/${encodeURIComponent(groupId)}/receipts/read`,
+      {
+        method: "POST",
+        body: JSON.stringify({ message_ids: messageIds ?? null }),
+      }
+    ),
+
+  /** Get per-member receipt breakdown for a specific group message. */
+  getMessageReceipts: (groupId: string, messageId: string) =>
+    request<{ receipts: GroupReceiptResponse[] }>(
+      `/groups/${encodeURIComponent(groupId)}/messages/${encodeURIComponent(messageId)}/receipts`
+    ),
 };
 
 // ===== Presence =====

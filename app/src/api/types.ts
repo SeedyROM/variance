@@ -69,6 +69,8 @@ export interface GroupMessage {
   reply_to?: string;
   sender_username?: string;
   metadata?: Record<string, string>;
+  /** Receipt status for own sent messages: "sent", "delivered", or "read". */
+  status?: "sent" | "delivered" | "read";
 }
 
 export interface MlsGroupInfo {
@@ -113,6 +115,15 @@ export interface MessageResponse {
   message_id: string;
   success: boolean;
   message: string;
+}
+
+// ===== Group Receipts =====
+
+export interface GroupReceiptResponse {
+  message_id: string;
+  reader_did: string;
+  status: string;
+  timestamp: number;
 }
 
 // ===== Typing =====
@@ -188,6 +199,18 @@ export type WsEvent =
   | { type: "TypingStopped"; from: string; recipient: string }
   | { type: "ReceiptDelivered"; message_id: string }
   | { type: "ReceiptRead"; message_id: string }
+  | {
+      type: "GroupReceiptDelivered";
+      group_id: string;
+      message_id: string;
+      member_did: string;
+    }
+  | {
+      type: "GroupReceiptRead";
+      group_id: string;
+      message_id: string;
+      member_did: string;
+    }
   | { type: "CallIncoming"; call_id: string; from: string; call_type: string }
   | { type: "CallEnded"; call_id: string }
   | { type: "PresenceUpdated"; did: string; online: boolean; display_name?: string }

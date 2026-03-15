@@ -9,7 +9,7 @@ import { ScrollArea } from "../ui/ScrollArea";
 import { Avatar } from "../ui/Avatar";
 import { StatusDot } from "../ui/StatusIndicator";
 import { MessageEditor } from "./MessageEditor";
-import { messagesApi, groupsApi, reactionsApi } from "../../api/client";
+import { messagesApi, groupsApi, reactionsApi, groupReceiptsApi } from "../../api/client";
 import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { isDifferentDay } from "../../utils/time";
@@ -175,6 +175,28 @@ export function GroupView({ groupId }: GroupViewProps) {
     prevCountRef.current = messages.length;
   }, [messages.length]);
 
+  // Send read receipts for incoming group messages from other members.
+  // Track which IDs we've already receipted to avoid re-firing on refetch.
+  const receiptedIds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!localDid) return;
+    const unread = messages.filter(
+      (m) =>
+        m.sender_did !== localDid &&
+        m.metadata?.type !== "reaction" &&
+        m.metadata?.type !== "role_change" &&
+        !receiptedIds.current.has(m.id)
+    );
+    if (unread.length === 0) return;
+    for (const m of unread) receiptedIds.current.add(m.id);
+    void groupReceiptsApi
+      .sendRead(
+        groupId,
+        unread.map((m) => m.id)
+      )
+      .catch(() => {});
+  }, [messages, localDid, groupId]);
+
   // Split reaction messages from regular messages and aggregate.
   const reactionMessages = messages.filter((m) => m.metadata?.type === "reaction");
   const sortedMessages = messages.filter(
@@ -216,9 +238,9 @@ export function GroupView({ groupId }: GroupViewProps) {
         <div className="flex flex-1 flex-col min-w-0">
           <ScrollArea className="flex-1 px-4 py-4">
             {sortedMessages.length === 0 ? (
-              <div className="flex h-40 items-center justify-center">
+              <div className="flex items-center justify-center px-8 py-8">
                 <p className="text-sm text-surface-400">
-                  {members.length > 1
+                  {group.your_role !== "admin" && members.length > 1
                     ? "You joined this group. Messages sent before you joined are not available."
                     : "No messages yet. Say something!"}
                 </p>
