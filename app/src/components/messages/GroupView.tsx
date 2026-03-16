@@ -14,6 +14,7 @@ import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { isDifferentDay } from "../../utils/time";
 import { cn } from "../../utils/cn";
+import { Snowflake } from "lucide-react";
 import type { GroupMessage, GroupMemberInfo, ReactionSummary } from "../../api/types";
 
 export type BubblePosition = "solo" | "first" | "middle" | "last";
@@ -279,7 +280,16 @@ export function GroupView({ groupId }: GroupViewProps) {
           </ScrollArea>
 
           <TypingIndicator users={typingUsers} />
-          <GroupMessageInput groupId={groupId} />
+          {group.is_frozen ? (
+            <div className="flex items-center justify-center gap-2 border-t border-surface-200 dark:border-surface-800 px-4 py-3 bg-surface-100 dark:bg-surface-900/60">
+              <Snowflake className="h-4 w-4 text-sky-500" />
+              <span className="text-sm text-surface-500">
+                This group is frozen. The admin left without transferring ownership.
+              </span>
+            </div>
+          ) : (
+            <GroupMessageInput groupId={groupId} />
+          )}
         </div>
 
         {/* Member sidebar — overlays on narrow screens, inline on wide */}

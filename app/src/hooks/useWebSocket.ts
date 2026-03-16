@@ -443,6 +443,15 @@ export function useWebSocket() {
             break;
           }
 
+          case "GroupFrozen": {
+            void queryClient.invalidateQueries({ queryKey: ["groups"] });
+            void queryClient.invalidateQueries({ queryKey: ["group-members", event.group_id] });
+            useToastStore
+              .getState()
+              .addToast("The group admin left. This group is now frozen.", "info");
+            break;
+          }
+
           default:
             break;
         }

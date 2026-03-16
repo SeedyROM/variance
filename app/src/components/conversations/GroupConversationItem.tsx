@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Users } from "lucide-react";
+import { Snowflake, Users } from "lucide-react";
 import { TypingDots } from "../messages/TypingIndicator";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { cn } from "../../utils/cn";
@@ -44,6 +44,11 @@ export function GroupConversationItem({
       >
         <div className="relative shrink-0 flex h-9 w-9 items-center justify-center rounded-full bg-surface-200 dark:bg-surface-700 text-surface-600 dark:text-surface-300">
           <Users className="h-4 w-4" />
+          {group.is_frozen && (
+            <div className="absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-sky-100 dark:bg-sky-900 border border-sky-300 dark:border-sky-700">
+              <Snowflake className="h-2 w-2 text-sky-500" />
+            </div>
+          )}
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">

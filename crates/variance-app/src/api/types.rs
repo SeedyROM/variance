@@ -194,6 +194,9 @@ pub struct MlsGroupInfo {
     pub admin_did: Option<String>,
     /// The local user's role in this group: `"admin"`, `"moderator"`, or `"member"`.
     pub your_role: String,
+    /// `true` when the sole admin abandoned the group without transferring the
+    /// role. Frozen groups cannot send messages, invite, kick, or change roles.
+    pub is_frozen: bool,
 }
 
 #[derive(Deserialize)]

@@ -187,6 +187,11 @@ export const groupsApi = {
 
   listOutboundInvitations: (groupId: string) =>
     request<OutboundInvitation[]>(`/mls/groups/${encodeURIComponent(groupId)}/invitations`),
+
+  abandon: (groupId: string) =>
+    request<{ success: boolean }>(`/mls/groups/${encodeURIComponent(groupId)}/abandon`, {
+      method: "POST",
+    }),
 };
 
 // ===== Invitations =====

@@ -545,15 +545,36 @@ async fn handle_group_message_content(
     node_handle: &NodeHandle,
 ) {
     let is_role_change = content.metadata.get("type").map(String::as_str) == Some("role_change");
+    let is_admin_abandoned =
+        content.metadata.get("type").map(String::as_str) == Some("admin_abandoned");
 
-    // Role changes are control signals — apply them but don't store as chat
-    // history or notify the frontend of a new "message".
-    if is_role_change {
+    // Admin abandoned: the sole admin left without transferring the role.
+    // Mark the group as frozen so the frontend can disable inputs.
+    if is_admin_abandoned {
+        if let Ok(Some(mut group_meta)) = storage.fetch_group_metadata(group_id).await {
+            group_meta.frozen = true;
+            // Remove the departed admin from the member list.
+            if let Some(admin_did) = content.metadata.get("admin_did") {
+                group_meta.members.retain(|m| m.did != *admin_did);
+            }
+            if let Err(e) = storage.store_group_metadata(&group_meta).await {
+                warn!(
+                    "EventRouter: Failed to mark group {} as frozen: {}",
+                    group_id, e
+                );
+            }
+        }
+
+        ws_manager.broadcast(WsMessage::GroupFrozen {
+            group_id: group_id.to_string(),
+        });
+    } else if is_role_change {
         if let (Some(target_did), Some(new_role)) = (
             content.metadata.get("target_did"),
             content.metadata.get("new_role"),
         ) {
             let new_role_i32 = match new_role.as_str() {
+                "admin" => variance_proto::messaging_proto::GroupRole::Admin as i32,
                 "moderator" => variance_proto::messaging_proto::GroupRole::Moderator as i32,
                 _ => variance_proto::messaging_proto::GroupRole::Member as i32,
             };

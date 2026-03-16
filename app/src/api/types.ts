@@ -81,6 +81,7 @@ export interface MlsGroupInfo {
   has_unread?: boolean;
   admin_did?: string;
   your_role: string;
+  is_frozen?: boolean;
 }
 
 export interface GroupMemberInfo {
@@ -217,6 +218,7 @@ export type WsEvent =
   | { type: "OfflineMessagesReceived"; count: number }
   | { type: "PeerRenamed"; did: string; display_name: string }
   | { type: "DirectMessageStatusChanged"; message_id: string; status: string }
+  | { type: "GroupFrozen"; group_id: string }
   | { type: "WsConnected" }
   | { type: "WsDisconnected" };
 

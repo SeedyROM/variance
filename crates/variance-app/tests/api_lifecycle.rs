@@ -1616,3 +1616,571 @@ async fn test_role_change_does_not_create_message() {
         "Demote should not add a message either"
     );
 }
+
+// ===== Admin Succession & Frozen Group Tests =====
+
+/// Helper: create a group with Alice as admin and optionally other members.
+/// Returns (AppState, group_id).
+async fn seed_group_with_members(alice_did: &str, members: &[(&str, i32)]) -> (AppState, String) {
+    use variance_messaging::storage::MessageStorage;
+    use variance_proto::messaging_proto::{Group, GroupMember, GroupRole};
+
+    let state = fresh_state(alice_did);
+    let group_id = "admin-test-group";
+    state
+        .mls_groups
+        .create_group(group_id)
+        .expect("create MLS group");
+
+    let mut proto_members: Vec<GroupMember> = vec![GroupMember {
+        did: alice_did.to_string(),
+        role: GroupRole::Admin as i32,
+        joined_at: 1000,
+        nickname: None,
+    }];
+    for &(did, role) in members {
+        proto_members.push(GroupMember {
+            did: did.to_string(),
+            role,
+            joined_at: 2000,
+            nickname: None,
+        });
+    }
+
+    let group = Group {
+        id: group_id.to_string(),
+        name: "Admin Test".to_string(),
+        admin_did: alice_did.to_string(),
+        members: proto_members,
+        ..Default::default()
+    };
+    state
+        .storage
+        .store_group_metadata(&group)
+        .await
+        .expect("store metadata");
+
+    (state, group_id.to_string())
+}
+
+/// Sole admin with other members CANNOT leave via normal leave endpoint.
+#[tokio::test]
+async fn test_sole_admin_leave_blocked_with_other_members() {
+    use variance_proto::messaging_proto::GroupRole;
+
+    let (state, group_id) = seed_group_with_members(
+        "did:variance:alice",
+        &[("did:variance:bob", GroupRole::Member as i32)],
+    )
+    .await;
+    let app = create_router(state);
+
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            &format!("/mls/groups/{group_id}/leave"),
+            &serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "Sole admin with other members should not be able to leave normally"
+    );
+    let json = body_json(resp).await;
+    let err = json["error"].as_str().unwrap();
+    assert!(
+        err.contains("only admin"),
+        "Error message should mention being sole admin, got: {err}"
+    );
+}
+
+/// A non-admin member can always leave, even when an admin exists.
+#[tokio::test]
+async fn test_non_admin_can_leave() {
+    // Create group where Alice is admin. We use Alice's DID as the local_did,
+    // but to test a non-admin leaving we need the local_did to be a member.
+    // Easier: create a group where Bob is the local user with role=member.
+    use variance_messaging::storage::MessageStorage;
+    use variance_proto::messaging_proto::GroupRole;
+
+    let state = fresh_state("did:variance:bob");
+    let group_id = "nonadmin-leave-test";
+    state
+        .mls_groups
+        .create_group(group_id)
+        .expect("create MLS group");
+
+    let group = variance_proto::messaging_proto::Group {
+        id: group_id.to_string(),
+        name: "Non-Admin Leave".to_string(),
+        admin_did: "did:variance:alice".to_string(),
+        members: vec![
+            variance_proto::messaging_proto::GroupMember {
+                did: "did:variance:alice".to_string(),
+                role: GroupRole::Admin as i32,
+                joined_at: 1000,
+                nickname: None,
+            },
+            variance_proto::messaging_proto::GroupMember {
+                did: "did:variance:bob".to_string(),
+                role: GroupRole::Member as i32,
+                joined_at: 2000,
+                nickname: None,
+            },
+        ],
+        ..Default::default()
+    };
+    state
+        .storage
+        .store_group_metadata(&group)
+        .await
+        .expect("store metadata");
+
+    let app = create_router(state);
+
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            &format!("/mls/groups/{group_id}/leave"),
+            &serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "Non-admin member should be able to leave"
+    );
+    let json = body_json(resp).await;
+    assert!(json["success"].as_bool().unwrap());
+
+    // Group should be gone from local state.
+    let resp = app.oneshot(get("/mls/groups")).await.unwrap();
+    let json = body_json(resp).await;
+    assert!(json.as_array().unwrap().is_empty());
+}
+
+/// Admin can promote a member to admin (ownership transfer).
+#[tokio::test]
+async fn test_admin_promotion_via_role_change() {
+    use variance_messaging::storage::MessageStorage;
+    use variance_proto::messaging_proto::GroupRole;
+
+    let (state, group_id) = seed_group_with_members(
+        "did:variance:alice",
+        &[("did:variance:bob", GroupRole::Member as i32)],
+    )
+    .await;
+    let state_ref = state.clone();
+    let app = create_router(state);
+
+    // Promote Bob to admin.
+    let resp = app
+        .clone()
+        .oneshot(put_json(
+            &format!("/mls/groups/{group_id}/members/did:variance:bob/role"),
+            &serde_json::json!({ "new_role": "admin" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["new_role"], "admin");
+
+    // Verify Bob is now admin in storage.
+    let meta = state_ref
+        .storage
+        .fetch_group_metadata(&group_id)
+        .await
+        .unwrap()
+        .expect("group metadata should exist");
+    let bob = meta
+        .members
+        .iter()
+        .find(|m| m.did == "did:variance:bob")
+        .expect("Bob should be in metadata");
+    assert_eq!(bob.role, GroupRole::Admin as i32);
+
+    // Now Alice can leave because Bob is also admin (not sole admin anymore).
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            &format!("/mls/groups/{group_id}/leave"),
+            &serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "Alice should be able to leave after promoting Bob to admin"
+    );
+}
+
+/// Abandon endpoint requires admin role — a regular member gets 403 Forbidden.
+#[tokio::test]
+async fn test_abandon_requires_admin() {
+    use variance_messaging::storage::MessageStorage;
+    use variance_proto::messaging_proto::GroupRole;
+
+    // Bob is a regular member (local_did = bob).
+    let state = fresh_state("did:variance:bob");
+    let group_id = "abandon-perm-test";
+    state
+        .mls_groups
+        .create_group(group_id)
+        .expect("create MLS group");
+
+    let group = variance_proto::messaging_proto::Group {
+        id: group_id.to_string(),
+        name: "Abandon Perm".to_string(),
+        admin_did: "did:variance:alice".to_string(),
+        members: vec![
+            variance_proto::messaging_proto::GroupMember {
+                did: "did:variance:alice".to_string(),
+                role: GroupRole::Admin as i32,
+                joined_at: 1000,
+                nickname: None,
+            },
+            variance_proto::messaging_proto::GroupMember {
+                did: "did:variance:bob".to_string(),
+                role: GroupRole::Member as i32,
+                joined_at: 2000,
+                nickname: None,
+            },
+        ],
+        ..Default::default()
+    };
+    state
+        .storage
+        .store_group_metadata(&group)
+        .await
+        .expect("store metadata");
+
+    let app = create_router(state);
+
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            &format!("/mls/groups/{group_id}/abandon"),
+            &serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "Non-admin should not be able to abandon a group"
+    );
+}
+
+/// Admin can abandon a group. Local state is purged.
+#[tokio::test]
+async fn test_abandon_purges_local_state() {
+    use variance_proto::messaging_proto::GroupRole;
+
+    let (state, group_id) = seed_group_with_members(
+        "did:variance:alice",
+        &[("did:variance:bob", GroupRole::Member as i32)],
+    )
+    .await;
+    let app = create_router(state);
+
+    // Send a message first so there's data to purge.
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            "/messages/group",
+            &serde_json::json!({ "group_id": group_id, "text": "Before abandon" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Abandon.
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            &format!("/mls/groups/{group_id}/abandon"),
+            &serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert!(json["success"].as_bool().unwrap());
+    assert_eq!(json["abandoned"], true);
+
+    // Group should be gone from list.
+    let resp = app.clone().oneshot(get("/mls/groups")).await.unwrap();
+    let json = body_json(resp).await;
+    assert!(
+        json.as_array().unwrap().is_empty(),
+        "Group list should be empty after abandon"
+    );
+
+    // Group messages should be gone.
+    let resp = app
+        .oneshot(get(&format!("/messages/group/{group_id}")))
+        .await
+        .unwrap();
+    let json = body_json(resp).await;
+    assert!(
+        json.as_array().unwrap().is_empty(),
+        "Group messages should be empty after abandon"
+    );
+}
+
+/// Frozen group blocks mutations: send message, role change.
+#[tokio::test]
+async fn test_frozen_group_blocks_mutations() {
+    use variance_messaging::storage::MessageStorage;
+    use variance_proto::messaging_proto::{Group, GroupMember, GroupRole};
+
+    let state = fresh_state("did:variance:alice");
+    let group_id = "frozen-test-group";
+    state
+        .mls_groups
+        .create_group(group_id)
+        .expect("create MLS group");
+
+    // Store a frozen group.
+    let group = Group {
+        id: group_id.to_string(),
+        name: "Frozen Group".to_string(),
+        admin_did: "did:variance:alice".to_string(),
+        frozen: true,
+        members: vec![
+            GroupMember {
+                did: "did:variance:alice".to_string(),
+                role: GroupRole::Admin as i32,
+                joined_at: 1000,
+                nickname: None,
+            },
+            GroupMember {
+                did: "did:variance:bob".to_string(),
+                role: GroupRole::Member as i32,
+                joined_at: 2000,
+                nickname: None,
+            },
+        ],
+        ..Default::default()
+    };
+    state
+        .storage
+        .store_group_metadata(&group)
+        .await
+        .expect("store metadata");
+
+    let app = create_router(state);
+
+    // 1. Sending a message should be blocked.
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            "/messages/group",
+            &serde_json::json!({ "group_id": group_id, "text": "Should fail" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "Sending to frozen group should be forbidden"
+    );
+    let json = body_json(resp).await;
+    assert!(json["error"].as_str().unwrap().contains("frozen"));
+
+    // 2. Role change should be blocked.
+    let resp = app
+        .clone()
+        .oneshot(put_json(
+            &format!("/mls/groups/{group_id}/members/did:variance:bob/role"),
+            &serde_json::json!({ "new_role": "moderator" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "Role change in frozen group should be forbidden"
+    );
+
+    // 3. Remove member should be blocked.
+    let resp = app
+        .clone()
+        .oneshot(delete(&format!(
+            "/mls/groups/{group_id}/members/did:variance:bob"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "Removing member from frozen group should be forbidden"
+    );
+}
+
+/// is_frozen flag appears in the group list response.
+#[tokio::test]
+async fn test_is_frozen_in_group_list() {
+    use variance_messaging::storage::MessageStorage;
+    use variance_proto::messaging_proto::{Group, GroupMember, GroupRole};
+
+    let state = fresh_state("did:variance:alice");
+
+    // Create two groups: one normal, one frozen.
+    for (id, name, frozen) in [
+        ("group-normal", "Normal", false),
+        ("group-frozen", "Frozen", true),
+    ] {
+        state.mls_groups.create_group(id).expect("create group");
+        let group = Group {
+            id: id.to_string(),
+            name: name.to_string(),
+            admin_did: "did:variance:alice".to_string(),
+            frozen,
+            members: vec![GroupMember {
+                did: "did:variance:alice".to_string(),
+                role: GroupRole::Admin as i32,
+                joined_at: 1000,
+                nickname: None,
+            }],
+            ..Default::default()
+        };
+        state
+            .storage
+            .store_group_metadata(&group)
+            .await
+            .expect("store metadata");
+    }
+
+    let app = create_router(state);
+
+    let resp = app.oneshot(get("/mls/groups")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    let groups = json.as_array().unwrap();
+    assert_eq!(groups.len(), 2);
+
+    let normal = groups.iter().find(|g| g["name"] == "Normal").unwrap();
+    let frozen = groups.iter().find(|g| g["name"] == "Frozen").unwrap();
+    assert_eq!(normal["is_frozen"], false);
+    assert_eq!(frozen["is_frozen"], true);
+}
+
+/// Admin sole-admin with NO other members can still leave normally
+/// (no one to transfer to — the group just dissolves).
+#[tokio::test]
+async fn test_sole_admin_alone_can_leave() {
+    let app = create_router(fresh_state("did:variance:alice"));
+
+    // Create group (Alice is the only member / admin).
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            "/mls/groups",
+            &serde_json::json!({ "name": "Solo Admin" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let gid = body_json(resp).await["group_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Leave should succeed — no other members to protect.
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            &format!("/mls/groups/{gid}/leave"),
+            &serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "Sole admin with no other members should be able to leave"
+    );
+
+    // Group list should be empty.
+    let resp = app.oneshot(get("/mls/groups")).await.unwrap();
+    let json = body_json(resp).await;
+    assert!(json.as_array().unwrap().is_empty());
+}
+
+/// After promoting another member to admin, the original admin (no longer
+/// sole admin) can leave normally via the leave endpoint.
+#[tokio::test]
+async fn test_admin_succession_then_leave() {
+    use variance_messaging::storage::MessageStorage;
+    use variance_proto::messaging_proto::GroupRole;
+
+    let (state, group_id) = seed_group_with_members(
+        "did:variance:alice",
+        &[("did:variance:bob", GroupRole::Member as i32)],
+    )
+    .await;
+    let state_ref = state.clone();
+    let app = create_router(state);
+
+    // 1. First verify Alice can't leave (sole admin with other members).
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            &format!("/mls/groups/{group_id}/leave"),
+            &serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // 2. Promote Bob to admin.
+    let resp = app
+        .clone()
+        .oneshot(put_json(
+            &format!("/mls/groups/{group_id}/members/did:variance:bob/role"),
+            &serde_json::json!({ "new_role": "admin" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 3. Verify is_sole_admin is now false — Bob is also admin.
+    let meta = state_ref
+        .storage
+        .fetch_group_metadata(&group_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let admin_count = meta
+        .members
+        .iter()
+        .filter(|m| m.role == GroupRole::Admin as i32)
+        .count();
+    assert_eq!(admin_count, 2, "Both Alice and Bob should be admin");
+
+    // 4. Now Alice can leave.
+    let resp = app
+        .clone()
+        .oneshot(post_json(
+            &format!("/mls/groups/{group_id}/leave"),
+            &serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "Alice should be able to leave after promoting Bob"
+    );
+
+    // 5. Group should be gone from Alice's local state.
+    let resp = app.oneshot(get("/mls/groups")).await.unwrap();
+    let json = body_json(resp).await;
+    assert!(json.as_array().unwrap().is_empty());
+}

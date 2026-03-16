@@ -7,6 +7,7 @@ import {
   LogOut,
   Mail,
   Shield,
+  Snowflake,
   Trash2,
   User,
   UserMinus,
@@ -95,6 +96,7 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
   const [invitee, setInvitee] = useState("");
   const [confirmLeave, setConfirmLeave] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmAbandon, setConfirmAbandon] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("members");
   const queryClient = useQueryClient();
   const localDid = useIdentityStore((s) => s.did);
@@ -104,6 +106,8 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
   const isAdmin = group.your_role === "admin";
 
   const isModerator = group.your_role === "moderator";
+
+  const isFrozen = group.is_frozen === true;
 
   const { data: members = [] } = useQuery({
     queryKey: ["group-members", group.id],
@@ -168,6 +172,16 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
     onError: (e) => addToast(String(e), "error"),
   });
 
+  const abandonMutation = useMutation({
+    mutationFn: () => groupsApi.abandon(group.id),
+    onSuccess: () => {
+      markRead(group.id);
+      void queryClient.invalidateQueries({ queryKey: ["groups"] });
+      onLeave();
+    },
+    onError: (e) => addToast(String(e), "error"),
+  });
+
   const canInvite = invitee.trim().length > 0;
 
   return (
@@ -222,18 +236,20 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
                 const isMe = m.did === localDid;
                 // Admins can kick anyone below them; moderators can kick members.
                 const canKick =
+                  !isFrozen &&
                   !isMe &&
                   m.role !== "admin" &&
                   ((isAdmin && m.role !== "admin") || (isModerator && m.role === "member"));
-                // Only admins can promote/demote, and only for non-self, non-admin members.
-                const canPromote = isAdmin && !isMe && m.role === "member";
-                const canDemote = isAdmin && !isMe && m.role === "moderator";
+                // Admins can promote members → moderator or moderator/member → admin.
+                const canPromoteToMod = !isFrozen && isAdmin && !isMe && m.role === "member";
+                const canPromoteToAdmin = !isFrozen && isAdmin && !isMe && m.role !== "admin";
+                const canDemote = !isFrozen && isAdmin && !isMe && m.role === "moderator";
                 return (
                   <div
                     key={m.did}
                     className={cn(
                       "flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-surface-900 dark:text-surface-50",
-                      (canKick || canPromote || canDemote) && "group"
+                      (canKick || canPromoteToMod || canPromoteToAdmin || canDemote) && "group"
                     )}
                   >
                     <User className="h-3.5 w-3.5 shrink-0 text-surface-400" />
@@ -242,7 +258,19 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
                       {isMe && <span className="ml-1.5 text-xs text-surface-400">(you)</span>}
                     </span>
                     <RoleBadge role={m.role} />
-                    {canPromote && (
+                    {canPromoteToAdmin && (
+                      <button
+                        onClick={() =>
+                          changeRoleMutation.mutate({ memberDid: m.did, newRole: "admin" })
+                        }
+                        disabled={changeRoleMutation.isPending}
+                        className="opacity-0 group-hover:opacity-100 p-1 rounded text-surface-400 hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-all"
+                        title={`Promote ${m.display_name ?? m.did.slice(-12)} to admin`}
+                      >
+                        <Shield className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                    {canPromoteToMod && (
                       <button
                         onClick={() =>
                           changeRoleMutation.mutate({ memberDid: m.did, newRole: "moderator" })
@@ -298,8 +326,8 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
           </div>
         )}
 
-        {/* Invite — admin only */}
-        {isAdmin && (
+        {/* Invite — admin only, not frozen */}
+        {isAdmin && !isFrozen && (
           <div className="flex flex-col gap-2">
             <p className="text-xs font-medium text-surface-500 uppercase tracking-wide">
               Invite member
@@ -327,17 +355,40 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
           </div>
         )}
 
-        {/* Leave / Delete */}
+        {/* Frozen banner */}
+        {isFrozen && (
+          <div className="flex items-center gap-2 rounded-lg bg-sky-50 dark:bg-sky-900/20 px-3 py-2.5 border border-sky-200 dark:border-sky-800">
+            <Snowflake className="h-4 w-4 shrink-0 text-sky-500" />
+            <p className="text-xs text-sky-700 dark:text-sky-300">
+              This group is frozen. The admin left without transferring ownership. No messages can be sent, and no members can be invited or removed.
+            </p>
+          </div>
+        )}
+
+        {/* Leave / Delete / Abandon */}
         <div className="border-t border-surface-200 dark:border-surface-700 pt-4 flex flex-col gap-3">
-          {!confirmLeave && !confirmDelete ? (
+          {!confirmLeave && !confirmDelete && !confirmAbandon ? (
             <div className="flex flex-col gap-2">
-              <button
-                onClick={() => setConfirmLeave(true)}
-                className="flex items-center gap-2 text-sm text-surface-500 hover:text-surface-700 dark:hover:text-surface-300"
-              >
-                <LogOut className="h-4 w-4" />
-                Leave group
-              </button>
+              {/* Normal leave — hidden for sole admins with other members (backend blocks it) */}
+              {!(isAdmin && members.filter((m) => m.did !== localDid).length > 0 && members.filter((m) => m.role === "admin").length <= 1) && (
+                <button
+                  onClick={() => setConfirmLeave(true)}
+                  className="flex items-center gap-2 text-sm text-surface-500 hover:text-surface-700 dark:hover:text-surface-300"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Leave group
+                </button>
+              )}
+              {/* Abandon — sole admin with other members, not already frozen */}
+              {isAdmin && !isFrozen && members.filter((m) => m.did !== localDid).length > 0 && members.filter((m) => m.role === "admin").length <= 1 && (
+                <button
+                  onClick={() => setConfirmAbandon(true)}
+                  className="flex items-center gap-2 text-sm text-orange-500 hover:text-orange-600"
+                >
+                  <Snowflake className="h-4 w-4" />
+                  Abandon group (freezes it)
+                </button>
+              )}
               {isAdmin && (
                 <button
                   onClick={() => setConfirmDelete(true)}
@@ -368,6 +419,32 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
                   loading={leaveMutation.isPending}
                 >
                   Leave
+                </Button>
+              </div>
+            </div>
+          ) : confirmAbandon ? (
+            <div className="flex flex-col gap-2">
+              <p className="text-sm text-surface-700 dark:text-surface-300">
+                Are you sure? Abandoning this group will <strong>freeze</strong> it for all remaining members. No one will be able to send messages or invite new members.
+              </p>
+              <p className="text-xs text-surface-500">
+                Consider promoting another member to admin first.
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => setConfirmAbandon(false)}
+                  disabled={abandonMutation.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="danger"
+                  onClick={() => abandonMutation.mutate()}
+                  disabled={abandonMutation.isPending}
+                  loading={abandonMutation.isPending}
+                >
+                  Abandon
                 </Button>
               </div>
             </div>
