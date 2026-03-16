@@ -368,7 +368,8 @@ mod tests {
 
         // Create sender's DID and media handler
         let sender_peer_id = libp2p::PeerId::random();
-        let sender_did = variance_identity::did::Did::new(&sender_peer_id).unwrap();
+        let sender_did =
+            variance_identity::did::Did::new("did:variance:sig_sender", &sender_peer_id).unwrap();
         let sender_signing_key = sender_did.signing_key.clone().unwrap();
         identity_handler
             .cache_did(sender_did.clone())
@@ -442,7 +443,8 @@ mod tests {
 
         // Create sender's DID and media handler
         let sender_peer_id = libp2p::PeerId::random();
-        let sender_did = variance_identity::did::Did::new(&sender_peer_id).unwrap();
+        let sender_did =
+            variance_identity::did::Did::new("did:variance:sig_sender", &sender_peer_id).unwrap();
         let sender_signing_key = sender_did.signing_key.clone().unwrap();
         identity_handler
             .cache_did(sender_did.clone())

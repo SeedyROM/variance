@@ -434,15 +434,15 @@ async fn register_with_network(
     }
 
     // Build a signed Did struct to pass to the identity handler for authenticated responses.
+    // Derive the PeerId from the signing key (same derivation used in build_p2p_config).
     let did_struct = {
-        let peer_id_str = state
-            .local_did
-            .strip_prefix("did:peer:")
-            .and_then(|s| s.parse::<libp2p_identity::PeerId>().ok());
+        let peer_id = variance_p2p::keypair_from_ed25519(state.signing_key.to_bytes().to_vec())
+            .map(|kp| kp.public().to_peer_id());
 
-        match peer_id_str {
+        match peer_id {
             Some(peer_id) => {
                 match variance_identity::did::Did::from_signing_key(
+                    state.local_did.clone(),
                     state.signing_key.clone(),
                     &peer_id,
                 ) {
@@ -455,8 +455,7 @@ async fn register_with_network(
             }
             None => {
                 tracing::warn!(
-                    "Could not parse PeerId from DID '{}'; identity responses will be unsigned",
-                    state.local_did
+                    "Could not derive PeerId from signing key; identity responses will be unsigned"
                 );
                 None
             }

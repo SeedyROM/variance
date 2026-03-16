@@ -386,24 +386,9 @@ mod tests {
 
         let h = TestHarness::new().start();
 
-        // Pre-populate the identity cache with a minimal Did
-        let did = variance_identity::did::Did {
-            id: "did:variance:alice".to_string(),
-            document: variance_identity::did::DidDocument {
-                id: "did:variance:alice".to_string(),
-                authentication: vec![],
-                key_agreement: vec![],
-                service: vec![],
-                created_at: 0,
-                updated_at: 0,
-                display_name: None,
-                avatar_cid: None,
-                bio: None,
-            },
-            signing_key: None,
-            x25519_secret: None,
-            document_signature: None,
-        };
+        // Pre-populate the identity cache with a properly signed Did
+        let peer_id = libp2p_identity::PeerId::random();
+        let did = variance_identity::did::Did::new("did:variance:alice", &peer_id).unwrap();
         h.state
             .identity_cache
             .insert("did:variance:alice", did)

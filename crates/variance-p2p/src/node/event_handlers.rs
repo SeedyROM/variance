@@ -239,25 +239,12 @@ impl Node {
                         let did = group_msg.sender_did.clone();
                         let peer = propagation_source;
 
-                        // Validate: if it's a did:peer: DID, the embedded PeerId must match
-                        let peer_id_valid = did
-                            .strip_prefix("did:peer:")
-                            .and_then(|s| s.parse::<PeerId>().ok())
-                            .is_none_or(|embedded| embedded == peer);
-
-                        if peer_id_valid {
-                            let did_to_peer = self.did_to_peer.clone();
-                            let peer_store = self.peer_store.clone();
-                            tokio::spawn(async move {
-                                did_to_peer.write().await.insert(did.clone(), peer);
-                                peer_store.insert(&did, &peer);
-                            });
-                        } else {
-                            warn!(
-                                "Rejecting DID-to-PeerId mapping from GossipSub: {} claimed DID {} but PeerId does not match",
-                                peer, did
-                            );
-                        }
+                        let did_to_peer = self.did_to_peer.clone();
+                        let peer_store = self.peer_store.clone();
+                        tokio::spawn(async move {
+                            did_to_peer.write().await.insert(did.clone(), peer);
+                            peer_store.insert(&did, &peer);
+                        });
                     }
 
                     self.events
@@ -576,15 +563,6 @@ impl Node {
                         return;
                     }
 
-                    // Verify the DID's embedded PeerId matches the responding peer
-                    if let Err(e) = did.verify_peer_id(&peer_id) {
-                        warn!(
-                            "Rejecting identity response from {}: PeerId mismatch for DID {}: {}",
-                            peer_id, did_id, e
-                        );
-                        return;
-                    }
-
                     did_to_peer.write().await.insert(did_id.clone(), peer_id);
                     peer_store.insert(&did_id, &peer_id);
 
@@ -784,7 +762,15 @@ impl Node {
 
                     // .await the handler instead of block_on — see module docs
                     let handler = self.signaling_handler.clone();
-                    let peer_did = format!("did:peer:{}", peer);
+                    // Reverse-lookup the peer's DID from the did_to_peer map.
+                    // Falls back to the PeerId string if no mapping exists yet.
+                    let peer_did = {
+                        let map = self.did_to_peer.read().await;
+                        map.iter()
+                            .find(|(_, &pid)| pid == peer)
+                            .map(|(did, _)| did.clone())
+                            .unwrap_or_else(|| peer.to_string())
+                    };
                     match handler.handle_message(peer_did, request).await {
                         Ok(response) => {
                             debug!("Sending WebRTC signaling response for {:?}", request_id);
@@ -914,25 +900,13 @@ impl Node {
 
                     debug!("Received direct message {} from {}", request.id, peer);
 
-                    // Learn the sender's DID → PeerId mapping for future sends,
-                    // but only if the DID's embedded PeerId matches the actual sender.
-                    let peer_id_valid = request
-                        .sender_did
-                        .strip_prefix("did:peer:")
-                        .and_then(|s| s.parse::<PeerId>().ok())
-                        .is_none_or(|embedded| embedded == peer);
-
-                    if peer_id_valid {
+                    // Learn the sender's DID → PeerId mapping for future sends.
+                    if !request.sender_did.is_empty() {
                         {
                             let mut did_to_peer = self.did_to_peer.write().await;
                             did_to_peer.insert(request.sender_did.clone(), peer);
                         }
                         self.peer_store.insert(&request.sender_did, &peer);
-                    } else {
-                        warn!(
-                            "Rejecting DID-to-PeerId mapping from DM: {} claimed DID {} but PeerId does not match",
-                            peer, request.sender_did
-                        );
                     }
 
                     self.events
@@ -1126,19 +1100,6 @@ impl Node {
                         peer, drift
                     );
                     return;
-                }
-
-                // For did:peer: DIDs, verify the embedded PeerId matches the sender
-                if let Some(embedded_str) = request.did.strip_prefix("did:peer:") {
-                    if let Ok(embedded_peer) = embedded_str.parse::<PeerId>() {
-                        if embedded_peer != peer {
-                            warn!(
-                                "Rejecting UsernameChanged from {}: DID {} embeds different PeerId {}",
-                                peer, request.did, embedded_peer
-                            );
-                            return;
-                        }
-                    }
                 }
 
                 // Verify the Ed25519 signature using the DID's verifying key.

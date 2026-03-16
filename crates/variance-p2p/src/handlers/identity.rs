@@ -134,9 +134,12 @@ impl IdentityHandler {
                     drop(local);
                 }
 
-                // Otherwise try to resolve via did:peer format
-                let did = format!("did:peer:{}", peer_id);
-                self.resolve_did(&did).await
+                // PeerId queries without a local match cannot be resolved;
+                // the caller should query by DID instead.
+                Ok(create_not_found_response(
+                    &peer_id,
+                    "No DID known for this PeerId",
+                ))
             }
             None => Ok(create_error_response(
                 "Invalid request",
@@ -307,7 +310,7 @@ mod tests {
         let request = IdentityRequest {
             query: Some(
                 variance_proto::identity_proto::identity_request::Query::Did(
-                    "did:peer:unknown".to_string(),
+                    "did:variance:unknown".to_string(),
                 ),
             ),
             requester_did: None,
@@ -328,7 +331,7 @@ mod tests {
         let handler = IdentityHandler::new(peer_id);
 
         // Create and cache a DID
-        let did = Did::new(&peer_id).unwrap();
+        let did = Did::new("did:variance:resolve_test", &peer_id).unwrap();
         let did_id = did.id.clone();
         handler.cache_did(did).await.unwrap();
 
@@ -353,7 +356,7 @@ mod tests {
         let handler = IdentityHandler::new(peer_id);
 
         // Create a DID with a display name
-        let mut did = Did::new(&peer_id).unwrap();
+        let mut did = Did::new("did:variance:profile_test", &peer_id).unwrap();
         did.update_profile(Some("alice".to_string()), None, None);
         handler.cache_did(did).await.unwrap();
 
@@ -692,7 +695,7 @@ mod tests {
         };
 
         let response = handler.handle_request(request).await.unwrap();
-        // Falls through to did:peer:{peer_id} lookup which is not cached → NotFound
+        // No local identity set — PeerId query returns NotFound
         assert!(matches!(
             response.result,
             Some(variance_proto::identity_proto::identity_response::Result::NotFound(_))
@@ -700,7 +703,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peer_id_query_foreign_peer_falls_to_did_peer() {
+    async fn peer_id_query_foreign_peer_returns_not_found() {
         let peer_id = PeerId::random();
         let handler = IdentityHandler::new(peer_id);
 
@@ -717,7 +720,7 @@ mod tests {
         };
 
         let response = handler.handle_request(request).await.unwrap();
-        // Should try did:peer:{foreign_peer} and get NotFound
+        // Foreign PeerId query without a known DID mapping returns NotFound
         assert!(matches!(
             response.result,
             Some(variance_proto::identity_proto::identity_response::Result::NotFound(_))
@@ -732,7 +735,7 @@ mod tests {
         let my_did = "did:variance:me".to_string();
 
         // Cache a DID with same ID but different data
-        let mut cached = Did::new(&peer_id).unwrap();
+        let mut cached = Did::new("did:variance:me", &peer_id).unwrap();
         // Overwrite the DID id to match our local identity
         cached.id = my_did.clone();
         cached.update_profile(Some("cached_name".to_string()), None, None);
@@ -819,7 +822,7 @@ mod tests {
         let peer_id = PeerId::random();
         let handler = IdentityHandler::new(peer_id);
 
-        let mut did = Did::new(&peer_id).unwrap();
+        let mut did = Did::new("did:variance:index_test", &peer_id).unwrap();
         let did_id = did.id.clone();
         did.update_profile(Some("bob".to_string()), None, None);
         handler.cache_did(did).await.unwrap();

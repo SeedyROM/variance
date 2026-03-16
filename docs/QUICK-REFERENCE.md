@@ -139,7 +139,7 @@ stream.write_all(&bytes).await?;
 ```rust
 // Create DID document
 let did_doc = DIDDocument {
-    id: "did:peer:123...".into(),
+    id: "did:variance:abcdef01".into(),
     authentication: vec![...],
     key_agreement: vec![...],
     created_at: now(),

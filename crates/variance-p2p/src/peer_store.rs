@@ -34,31 +34,7 @@ impl PeerStore {
     }
 
     /// Persist a DID → PeerId mapping.
-    ///
-    /// For `did:peer:` DIDs, the embedded PeerId must match the provided `peer_id`.
-    /// If validation fails, the mapping is rejected and the method returns `false`.
     pub fn insert(&self, did: &str, peer_id: &PeerId) -> bool {
-        // Defense-in-depth: validate that did:peer: DIDs embed the correct PeerId
-        if let Some(embedded_str) = did.strip_prefix("did:peer:") {
-            match embedded_str.parse::<PeerId>() {
-                Ok(embedded) if embedded == *peer_id => {} // valid
-                Ok(embedded) => {
-                    warn!(
-                        "PeerStore rejecting DID→PeerId mapping: DID {} embeds PeerId {} but caller provided {}",
-                        did, embedded, peer_id
-                    );
-                    return false;
-                }
-                Err(e) => {
-                    warn!(
-                        "PeerStore rejecting DID→PeerId mapping: DID {} has unparseable PeerId: {}",
-                        did, e
-                    );
-                    return false;
-                }
-            }
-        }
-
         if let Err(e) = self
             .tree
             .insert(did.as_bytes(), peer_id.to_bytes().as_slice())
@@ -189,37 +165,29 @@ mod tests {
     }
 
     #[test]
-    fn test_did_peer_matching_peer_id_accepted() {
+    fn test_did_variance_insert_and_get() {
         let dir = tempfile::tempdir().unwrap();
         let store = PeerStore::open(dir.path()).unwrap();
         let peer_id = PeerId::random();
-        let did = format!("did:peer:{}", peer_id);
+        let did = "did:variance:abc123".to_string();
 
         assert!(store.insert(&did, &peer_id));
         assert_eq!(store.get(&did), Some(peer_id));
     }
 
     #[test]
-    fn test_did_peer_mismatched_peer_id_rejected() {
+    fn test_insert_overwrites_previous_mapping() {
         let dir = tempfile::tempdir().unwrap();
         let store = PeerStore::open(dir.path()).unwrap();
-        let real_peer = PeerId::random();
-        let fake_peer = PeerId::random();
-        let did = format!("did:peer:{}", real_peer);
+        let peer_a = PeerId::random();
+        let peer_b = PeerId::random();
+        let did = "did:variance:alice".to_string();
 
-        // Trying to map a did:peer: DID to a different PeerId should fail
-        assert!(!store.insert(&did, &fake_peer));
-        assert_eq!(store.get(&did), None);
-    }
+        assert!(store.insert(&did, &peer_a));
+        assert_eq!(store.get(&did), Some(peer_a));
 
-    #[test]
-    fn test_non_peer_did_accepts_any_peer_id() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = PeerStore::open(dir.path()).unwrap();
-        let peer_id = PeerId::random();
-
-        // Non did:peer: DIDs skip the PeerId binding check
-        assert!(store.insert("did:variance:alice", &peer_id));
-        assert_eq!(store.get("did:variance:alice"), Some(peer_id));
+        // Overwriting with a new PeerId should succeed
+        assert!(store.insert(&did, &peer_b));
+        assert_eq!(store.get(&did), Some(peer_b));
     }
 }

@@ -47,11 +47,4 @@ pub enum Error {
 
     #[snafu(display("Missing document signature for {did}"))]
     MissingSignature { did: String },
-
-    #[snafu(display("PeerId mismatch for {did}: expected {expected}, got {actual}"))]
-    PeerIdMismatch {
-        did: String,
-        expected: String,
-        actual: String,
-    },
 }

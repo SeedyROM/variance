@@ -82,15 +82,21 @@ pub struct Service {
 
 impl Did {
     /// Create a new DID with a fresh signing key
-    pub fn new(peer_id: &PeerId) -> Result<Self> {
+    pub fn new(did_id: &str, peer_id: &PeerId) -> Result<Self> {
         let signing_key = SigningKey::generate(&mut OsRng);
-        Self::from_signing_key(signing_key, peer_id)
+        Self::from_signing_key(did_id.to_string(), signing_key, peer_id)
     }
 
-    /// Create a DID from an existing signing key
-    pub fn from_signing_key(signing_key: SigningKey, peer_id: &PeerId) -> Result<Self> {
+    /// Create a DID from an existing signing key.
+    ///
+    /// `did_id` is the DID string (e.g. `"did:variance:abcdef01"`).
+    /// `peer_id` is used only for the libp2p service endpoint in the DID document.
+    pub fn from_signing_key(
+        did_id: String,
+        signing_key: SigningKey,
+        peer_id: &PeerId,
+    ) -> Result<Self> {
         let verifying_key = signing_key.verifying_key();
-        let did_id = format!("did:peer:{}", peer_id);
 
         let now = Utc::now().timestamp();
 
@@ -270,30 +276,6 @@ impl Did {
             })
     }
 
-    /// Verify that the PeerId embedded in the DID string (`did:peer:<PeerId>`)
-    /// matches the expected PeerId. Prevents DID-to-PeerId mapping forgery.
-    pub fn verify_peer_id(&self, expected_peer_id: &PeerId) -> Result<()> {
-        let embedded = self
-            .id
-            .strip_prefix("did:peer:")
-            .ok_or_else(|| Error::InvalidDid {
-                did: format!("{}: not a did:peer: DID", self.id),
-            })?;
-
-        let parsed: PeerId = embedded.parse().map_err(|e| Error::InvalidDid {
-            did: format!("{}: invalid PeerId in DID: {e}", self.id),
-        })?;
-
-        if parsed != *expected_peer_id {
-            return Err(Error::PeerIdMismatch {
-                did: self.id.clone(),
-                expected: expected_peer_id.to_string(),
-                actual: parsed.to_string(),
-            });
-        }
-        Ok(())
-    }
-
     /// Convert the DidDocument (only) to protobuf. Used for signing payload
     /// and by `to_proto()`.
     fn to_proto_document(&self) -> identity_proto::DidDocument {
@@ -417,8 +399,8 @@ mod tests {
     #[test]
     fn test_did_creation() {
         let peer_id = PeerId::random();
-        let did = Did::new(&peer_id).unwrap();
-        assert!(did.id.starts_with("did:peer:"));
+        let did = Did::new("did:variance:abcdef01", &peer_id).unwrap();
+        assert!(did.id.starts_with("did:variance:"));
         assert_eq!(did.document.authentication.len(), 1);
         assert_eq!(did.document.key_agreement.len(), 1);
         assert_eq!(did.document.service.len(), 1);
@@ -428,7 +410,7 @@ mod tests {
     #[test]
     fn test_get_x25519_public_key() {
         let peer_id = PeerId::random();
-        let did = Did::new(&peer_id).unwrap();
+        let did = Did::new("did:variance:abcdef01", &peer_id).unwrap();
 
         let public_key = did.get_x25519_public_key().unwrap();
 
@@ -444,7 +426,7 @@ mod tests {
     #[test]
     fn test_did_profile_update() {
         let peer_id = PeerId::random();
-        let mut did = Did::new(&peer_id).unwrap();
+        let mut did = Did::new("did:variance:abcdef01", &peer_id).unwrap();
 
         did.update_profile(
             Some("Alice".to_string()),
@@ -460,7 +442,7 @@ mod tests {
     #[test]
     fn test_did_proto_conversion() {
         let peer_id = PeerId::random();
-        let did = Did::new(&peer_id).unwrap();
+        let did = Did::new("did:variance:abcdef01", &peer_id).unwrap();
 
         let proto = did.to_proto();
         let recovered = Did::from_proto(proto).unwrap();
@@ -472,7 +454,7 @@ mod tests {
     #[test]
     fn test_get_verifying_key() {
         let peer_id = PeerId::random();
-        let did = Did::new(&peer_id).unwrap();
+        let did = Did::new("did:variance:abcdef01", &peer_id).unwrap();
 
         // Should successfully extract key
         let verifying_key = did.get_verifying_key().unwrap();

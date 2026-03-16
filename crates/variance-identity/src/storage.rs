@@ -364,7 +364,7 @@ mod tests {
         let storage = LocalStorage::new(dir.path()).unwrap();
 
         let peer_id = PeerId::random();
-        let did = Did::new(&peer_id).unwrap();
+        let did = Did::new("did:variance:store_test", &peer_id).unwrap();
 
         // Store DID
         let cid = storage.store(&did).await.unwrap();
@@ -381,7 +381,7 @@ mod tests {
         let storage = LocalStorage::new(dir.path()).unwrap();
 
         let peer_id = PeerId::random();
-        let did = Did::new(&peer_id).unwrap();
+        let did = Did::new("did:variance:name_test", &peer_id).unwrap();
 
         // Store and get CID
         let cid = storage.store(&did).await.unwrap();
@@ -405,8 +405,8 @@ mod tests {
 
         let peer_id1 = PeerId::random();
         let peer_id2 = PeerId::random();
-        let did1 = Did::new(&peer_id1).unwrap();
-        let mut did2 = Did::new(&peer_id2).unwrap();
+        let did1 = Did::new("did:variance:update_test1", &peer_id1).unwrap();
+        let mut did2 = Did::new("did:variance:update_test2", &peer_id2).unwrap();
         did2.id = did1.id.clone(); // Same DID, updated
 
         // Store first version
@@ -442,8 +442,8 @@ mod tests {
         let storage = LocalStorage::new(dir.path()).unwrap();
 
         let peer_id = PeerId::random();
-        let did1 = Did::new(&peer_id).unwrap();
-        let did2 = Did::new(&peer_id).unwrap();
+        let did1 = Did::new("did:variance:dedup1", &peer_id).unwrap();
+        let did2 = Did::new("did:variance:dedup2", &peer_id).unwrap();
 
         // Same content should produce same CID
         let cid1 = storage.store(&did1).await.unwrap();
@@ -482,7 +482,7 @@ mod tests {
         let storage = IpfsStorage::new("http://127.0.0.1:5001").unwrap();
 
         let peer_id = PeerId::random();
-        let did = Did::new(&peer_id).unwrap();
+        let did = Did::new("did:variance:ipfs_test", &peer_id).unwrap();
 
         // Store in IPFS
         let cid = storage.store(&did).await.unwrap();
@@ -512,7 +512,7 @@ mod tests {
         let storage = IpfsStorage::new("http://127.0.0.1:5001").unwrap();
 
         let peer_id = PeerId::random();
-        let did = Did::new(&peer_id).unwrap();
+        let did = Did::new("did:variance:ipns_test", &peer_id).unwrap();
 
         // Use a unique name to avoid conflicts with other tests
         let username = format!("test-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap());
@@ -536,8 +536,8 @@ mod tests {
         let storage = IpfsStorage::new("http://127.0.0.1:5001").unwrap();
 
         let peer_id = PeerId::random();
-        let did1 = Did::new(&peer_id).unwrap();
-        let mut did2 = Did::new(&peer_id).unwrap();
+        let did1 = Did::new("did:variance:ipns_upd1", &peer_id).unwrap();
+        let mut did2 = Did::new("did:variance:ipns_upd2", &peer_id).unwrap();
 
         // Use a unique name to avoid conflicts with other tests
         let username = format!(

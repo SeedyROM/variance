@@ -4,7 +4,7 @@ package variance.identity.v1;
 
 // W3C DID Document representation
 message DIDDocument {
-  // DID identifier (e.g., "did:peer:...")
+  // DID identifier (e.g., "did:variance:abcdef01")
   string id = 1;
 
   // Authentication keys

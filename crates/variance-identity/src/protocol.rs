@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn test_create_did_request() {
-        let did = "did:peer:12D3KooW...";
+        let did = "did:variance:12D3KooW...";
         let request = create_did_request(did, None);
         assert!(matches!(
             request.query,
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn test_create_success_response() {
         let peer_id = PeerId::random();
-        let did = Did::new(&peer_id).unwrap();
+        let did = Did::new("did:variance:proto_test", &peer_id).unwrap();
         let response = create_success_response(&did);
         assert!(matches!(
             response.result,

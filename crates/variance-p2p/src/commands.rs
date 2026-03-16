@@ -658,7 +658,7 @@ mod tests {
         let request = IdentityRequest {
             query: Some(
                 variance_proto::identity_proto::identity_request::Query::Did(
-                    "did:peer:test".to_string(),
+                    "did:variance:test".to_string(),
                 ),
             ),
             requester_did: None,
@@ -782,7 +782,7 @@ mod tests {
         let request = IdentityRequest {
             query: Some(
                 variance_proto::identity_proto::identity_request::Query::Did(
-                    "did:peer:test".to_string(),
+                    "did:variance:test".to_string(),
                 ),
             ),
             requester_did: None,

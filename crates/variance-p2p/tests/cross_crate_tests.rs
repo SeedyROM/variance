@@ -59,8 +59,8 @@ impl CryptoTestNode {
     /// Create and spawn a test node with full crypto capabilities.
     ///
     /// The `_label` parameter is kept for backward-compatibility with callers but
-    /// is no longer used; the DID is now always `did:peer:<PeerId>` derived from
-    /// the signing key so identity responses carry valid document signatures.
+    /// is no longer used; the DID is derived as `did:variance:<hex>` from the
+    /// signing key's verifying key (matching the app layer's identity generation).
     async fn spawn(_label: &str) -> Self {
         let dir = tempdir().unwrap();
 
@@ -70,7 +70,9 @@ impl CryptoTestNode {
         let libp2p_keypair = variance_p2p::keypair_from_ed25519(signing_key.to_bytes().to_vec())
             .expect("signing key bytes should be valid");
         let peer_id = libp2p_keypair.public().to_peer_id();
-        let did = format!("did:peer:{}", peer_id);
+        // Use a monotonic counter to generate unique DIDs for each test node.
+        let counter = DID_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let did = format!("did:variance:test{}", counter);
 
         let config = Config {
             storage_path: dir.path().to_path_buf(),
@@ -143,8 +145,9 @@ impl CryptoTestNode {
         let olm_ik_bytes = olm_ik.to_bytes().to_vec();
 
         // Build a signed Did struct so identity responses carry valid signatures
-        let did_struct = Did::from_signing_key(self.signing_key.clone(), &self.peer_id)
-            .expect("Did construction should succeed");
+        let did_struct =
+            Did::from_signing_key(self.did.clone(), self.signing_key.clone(), &self.peer_id)
+                .expect("Did construction should succeed");
 
         self.handle
             .set_local_identity(

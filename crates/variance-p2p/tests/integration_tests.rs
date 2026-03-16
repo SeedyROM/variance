@@ -28,7 +28,7 @@ async fn test_identity_protocol_event_flow() {
 
     // Create a test DID and cache it
     let peer_id = PeerId::random();
-    let did = variance_identity::did::Did::new(&peer_id).unwrap();
+    let did = variance_identity::did::Did::new("did:variance:integ_test1", &peer_id).unwrap();
     let did_id = did.id.clone();
 
     // Cache the DID (this should trigger a DidCached event)
@@ -149,7 +149,7 @@ async fn test_multiple_subscribers_receive_same_event() {
     let mut rx3 = node.events().subscribe_identity();
 
     // Send an event
-    let did = "did:peer:test123".to_string();
+    let did = "did:variance:test123".to_string();
     node.events()
         .send_identity(IdentityEvent::DidCached { did: did.clone() });
 
@@ -204,7 +204,7 @@ async fn test_identity_handler_cache_and_resolve() {
 
     // Create and cache a DID via the identity handler
     let peer_id = PeerId::random();
-    let mut did = variance_identity::did::Did::new(&peer_id).unwrap();
+    let mut did = variance_identity::did::Did::new("did:variance:integ_test2", &peer_id).unwrap();
     did.update_profile(Some("alice".to_string()), None, None);
     let _did_id = did.id.clone();
 

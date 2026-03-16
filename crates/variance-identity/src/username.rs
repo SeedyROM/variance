@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn test_username_registration_with_discriminator() {
         let registry = UsernameRegistry::new();
-        let did = "did:peer:12D3KooWtest".to_string();
+        let did = "did:variance:12D3KooWtest".to_string();
 
         let (name, disc) = registry
             .register_local("alice".to_string(), did.clone())
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn test_did_can_change_username() {
         let registry = UsernameRegistry::new();
-        let did = "did:peer:12D3KooWtest".to_string();
+        let did = "did:variance:12D3KooWtest".to_string();
 
         let (_, disc1) = registry
             .register_local("alice".to_string(), did.clone())
@@ -262,8 +262,8 @@ mod tests {
     #[test]
     fn test_same_name_different_discriminators() {
         let registry = UsernameRegistry::new();
-        let did1 = "did:peer:12D3KooWtest1".to_string();
-        let did2 = "did:peer:12D3KooWtest2".to_string();
+        let did1 = "did:variance:12D3KooWtest1".to_string();
+        let did2 = "did:variance:12D3KooWtest2".to_string();
 
         let (_, disc1) = registry
             .register_local("alice".to_string(), did1.clone())
@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn test_register_with_specific_discriminator() {
         let registry = UsernameRegistry::new();
-        let did = "did:peer:12D3KooWtest".to_string();
+        let did = "did:variance:12D3KooWtest".to_string();
 
         registry
             .register_with_discriminator("alice".to_string(), 42, did.clone())
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn test_cache_mapping() {
         let registry = UsernameRegistry::new();
-        let did = "did:peer:12D3KooWtest".to_string();
+        let did = "did:variance:12D3KooWtest".to_string();
 
         registry.cache_mapping("bob".to_string(), 1234, did.clone());
 
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn test_cache_mapping_evicts_stale_entry_on_rename() {
         let registry = UsernameRegistry::new();
-        let did = "did:peer:12D3KooWtest".to_string();
+        let did = "did:variance:12D3KooWtest".to_string();
 
         // Initial name
         registry.cache_mapping("alice".to_string(), 42, did.clone());
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn test_case_insensitive_lookup() {
         let registry = UsernameRegistry::new();
-        let did = "did:peer:12D3KooWtest".to_string();
+        let did = "did:variance:12D3KooWtest".to_string();
 
         registry.cache_mapping("Alice".to_string(), 42, did.clone());
 

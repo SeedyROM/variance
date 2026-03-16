@@ -356,7 +356,7 @@ mod tests {
         let mut rx = channels.subscribe_identity();
 
         let event = IdentityEvent::DidCached {
-            did: "did:peer:123".to_string(),
+            did: "did:variance:123".to_string(),
         };
 
         channels.send_identity(event.clone());
@@ -364,7 +364,7 @@ mod tests {
         let received = rx.recv().await.unwrap();
         match received {
             IdentityEvent::DidCached { did } => {
-                assert_eq!(did, "did:peer:123");
+                assert_eq!(did, "did:variance:123");
             }
             _ => panic!("Wrong event type"),
         }
@@ -377,7 +377,7 @@ mod tests {
 
         let event = OfflineMessageEvent::MessageStored {
             message_id: "msg123".to_string(),
-            recipient: "did:peer:bob".to_string(),
+            recipient: "did:variance:bob".to_string(),
         };
 
         channels.send_offline_message(event);
@@ -389,7 +389,7 @@ mod tests {
                 recipient,
             } => {
                 assert_eq!(message_id, "msg123");
-                assert_eq!(recipient, "did:peer:bob");
+                assert_eq!(recipient, "did:variance:bob");
             }
             _ => panic!("Wrong event type"),
         }
@@ -424,7 +424,7 @@ mod tests {
         let mut rx2 = channels.subscribe_identity();
 
         let event = IdentityEvent::DidCached {
-            did: "did:peer:123".to_string(),
+            did: "did:variance:123".to_string(),
         };
 
         channels.send_identity(event);
@@ -655,7 +655,7 @@ mod tests {
             request: IdentityRequest {
                 query: Some(
                     variance_proto::identity_proto::identity_request::Query::Did(
-                        "did:peer:xyz".to_string(),
+                        "did:variance:xyz".to_string(),
                     ),
                 ),
                 requester_did: None,
@@ -816,7 +816,7 @@ mod tests {
         let channels = EventChannels::new(10);
         // No subscribers — send should silently drop
         channels.send_identity(IdentityEvent::DidCached {
-            did: "did:peer:orphan".to_string(),
+            did: "did:variance:orphan".to_string(),
         });
         channels.send_direct_message(DirectMessageEvent::DeliveryFailed {
             message_id: "x".to_string(),

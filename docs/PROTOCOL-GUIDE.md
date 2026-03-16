@@ -27,7 +27,7 @@ crates/variance-proto/proto/
 
 ```protobuf
 message DIDDocument {
-  string id = 1;                                    // did:peer:123...
+  string id = 1;                                    // did:variance:abcdef01
   repeated VerificationMethod authentication = 2;  // Signing keys
   repeated VerificationMethod key_agreement = 3;   // Encryption keys
   repeated Service service = 4;                     // libp2p endpoints
