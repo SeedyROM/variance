@@ -55,7 +55,10 @@ pub fn create_peer_id_request(
     }
 }
 
-/// Helper to create a success response
+/// Helper to create a success response.
+/// The `document_signature` field is left empty here; callers that need
+/// authenticated responses (e.g., the identity protocol handler) must populate
+/// it with the owner's Ed25519 signature.
 pub fn create_success_response(did: &Did) -> identity_proto::IdentityResponse {
     identity_proto::IdentityResponse {
         result: Some(identity_proto::identity_response::Result::Found(
@@ -69,6 +72,7 @@ pub fn create_success_response(did: &Did) -> identity_proto::IdentityResponse {
                 mls_key_package: None,
                 username: None,
                 mailbox_token: vec![],
+                document_signature: did.document_signature.clone().unwrap_or_default(),
             },
         )),
         timestamp: Utc::now().timestamp(),

@@ -92,6 +92,9 @@ message IdentityFound {
   // Opaque 32-byte relay mailbox token: SHA-256(signing_key || "variance-mailbox-v1").
   // Senders use this to address offline messages so the relay never sees DIDs.
   bytes mailbox_token = 9;
+  // Ed25519 signature over the serialized DIDDocument, produced by the document
+  // owner's signing key. Consumers MUST verify this before trusting the response.
+  bytes document_signature = 10;
 }
 
 message IdentityNotFound {
@@ -134,6 +137,10 @@ message UsernameChanged {
   string did         = 1;
   string username    = 2;
   uint32 discriminator = 3;
+  // Ed25519 signature over (did || username || discriminator_le_bytes || timestamp_le_bytes).
+  bytes signature    = 4;
+  // Millisecond timestamp; used in the signed payload to prevent replay.
+  int64 timestamp    = 5;
 }
 
 // Provider record for "who has this identity?"

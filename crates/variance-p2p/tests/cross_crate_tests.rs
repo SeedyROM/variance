@@ -23,21 +23,19 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 use vodozemac::olm::Account;
 
+use variance_identity::did::Did;
 use variance_messaging::direct::DirectMessageHandler;
 use variance_messaging::mls::MlsGroupHandler;
 use variance_messaging::storage::LocalMessageStorage;
 use variance_p2p::{Config, EventChannels, Node, NodeHandle};
 use variance_proto::messaging_proto::{self, MessageContent};
 
-/// Monotonic counter for generating unique DIDs across all tests in this process.
+/// Monotonic counter for generating unique IDs across all tests in this process.
 static DID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn unique_did(label: &str) -> String {
-    let id = DID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("did:variance:test-{label}-{id}")
-}
-
 // ===== Harness =====
+
+use libp2p_identity::PeerId;
 
 /// A test node bundling a P2P node with its crypto handlers.
 ///
@@ -46,6 +44,7 @@ fn unique_did(label: &str) -> String {
 #[allow(dead_code)]
 struct CryptoTestNode {
     did: String,
+    peer_id: PeerId,
     handle: NodeHandle,
     events: EventChannels,
     signing_key: SigningKey,
@@ -58,11 +57,25 @@ struct CryptoTestNode {
 
 impl CryptoTestNode {
     /// Create and spawn a test node with full crypto capabilities.
-    async fn spawn(did: &str) -> Self {
+    ///
+    /// The `_label` parameter is kept for backward-compatibility with callers but
+    /// is no longer used; the DID is now always `did:peer:<PeerId>` derived from
+    /// the signing key so identity responses carry valid document signatures.
+    async fn spawn(_label: &str) -> Self {
         let dir = tempdir().unwrap();
+
+        // Generate signing key first, then derive a libp2p keypair from the
+        // same secret bytes so PeerId is deterministically bound to the key.
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let libp2p_keypair = variance_p2p::keypair_from_ed25519(signing_key.to_bytes().to_vec())
+            .expect("signing key bytes should be valid");
+        let peer_id = libp2p_keypair.public().to_peer_id();
+        let did = format!("did:peer:{}", peer_id);
+
         let config = Config {
             storage_path: dir.path().to_path_buf(),
             bootstrap_peers: vec![],
+            keypair: Some(libp2p_keypair),
             ..Default::default()
         };
 
@@ -77,21 +90,21 @@ impl CryptoTestNode {
         });
 
         // Set up crypto
-        let signing_key = SigningKey::generate(&mut OsRng);
         let olm_account = Account::new();
         let storage = Arc::new(LocalMessageStorage::new(dir.path().join("messages.db")).unwrap());
 
         let dm_handler = Arc::new(DirectMessageHandler::new(
-            did.to_string(),
+            did.clone(),
             signing_key.clone(),
             olm_account,
             storage.clone(),
         ));
 
-        let mls_handler = Arc::new(MlsGroupHandler::new(did.to_string(), &signing_key).unwrap());
+        let mls_handler = Arc::new(MlsGroupHandler::new(did.clone(), &signing_key).unwrap());
 
         Self {
-            did: did.to_string(),
+            did,
+            peer_id,
             handle,
             events,
             signing_key,
@@ -129,6 +142,10 @@ impl CryptoTestNode {
         let olm_ik = self.dm_handler.identity_key();
         let olm_ik_bytes = olm_ik.to_bytes().to_vec();
 
+        // Build a signed Did struct so identity responses carry valid signatures
+        let did_struct = Did::from_signing_key(self.signing_key.clone(), &self.peer_id)
+            .expect("Did construction should succeed");
+
         self.handle
             .set_local_identity(
                 self.did.clone(),
@@ -136,6 +153,7 @@ impl CryptoTestNode {
                 otks_bytes,
                 Some(mls_kp_bytes),
                 vec![0u8; 32], // dummy mailbox token for tests
+                Some(did_struct),
             )
             .await
             .unwrap();
@@ -252,10 +270,9 @@ async fn resolve_identity_with_retry(
 /// resolution, send an encrypted DM through the network, and verify decryption.
 #[tokio::test]
 async fn test_e2e_encrypted_dm_delivery() {
-    let alice_did = unique_did("alice");
-    let bob_did = unique_did("bob");
-    let alice = CryptoTestNode::spawn(&alice_did).await;
-    let bob = CryptoTestNode::spawn(&bob_did).await;
+    let alice = CryptoTestNode::spawn("alice").await;
+    let bob = CryptoTestNode::spawn("bob").await;
+    let bob_did = bob.did.clone();
 
     // Register identities — capture Bob's Olm keys directly for session init
     alice.register_identity().await;
@@ -333,10 +350,10 @@ async fn test_e2e_encrypted_dm_delivery() {
 /// advancing the Olm ratchet in both directions.
 #[tokio::test]
 async fn test_e2e_dm_bidirectional_ratchet() {
-    let alice_did = unique_did("alice");
-    let bob_did = unique_did("bob");
-    let alice = CryptoTestNode::spawn(&alice_did).await;
-    let bob = CryptoTestNode::spawn(&bob_did).await;
+    let alice = CryptoTestNode::spawn("alice").await;
+    let bob = CryptoTestNode::spawn("bob").await;
+    let alice_did = alice.did.clone();
+    let bob_did = bob.did.clone();
 
     alice.register_identity().await;
     let (bob_ik, bob_otk) = bob.register_identity().await;
@@ -477,10 +494,9 @@ async fn test_e2e_dm_bidirectional_ratchet() {
 /// verify decryption across the network.
 #[tokio::test]
 async fn test_e2e_mls_group_message_via_gossipsub() {
-    let alice_did = unique_did("alice");
-    let bob_did = unique_did("bob");
-    let alice = CryptoTestNode::spawn(&alice_did).await;
-    let bob = CryptoTestNode::spawn(&bob_did).await;
+    let alice = CryptoTestNode::spawn("alice").await;
+    let bob = CryptoTestNode::spawn("bob").await;
+    let alice_did = alice.did.clone();
 
     alice.register_identity().await;
     bob.register_identity().await;
@@ -587,10 +603,10 @@ async fn test_e2e_mls_group_message_via_gossipsub() {
 /// not be decryptable by Bob (forward secrecy after removal).
 #[tokio::test]
 async fn test_e2e_mls_member_removal_forward_secrecy() {
-    let alice_did = unique_did("alice");
-    let bob_did = unique_did("bob");
-    let alice = CryptoTestNode::spawn(&alice_did).await;
-    let bob = CryptoTestNode::spawn(&bob_did).await;
+    let alice = CryptoTestNode::spawn("alice").await;
+    let bob = CryptoTestNode::spawn("bob").await;
+    let alice_did = alice.did.clone();
+    let bob_did = bob.did.clone();
 
     alice.register_identity().await;
     bob.register_identity().await;
@@ -662,10 +678,10 @@ async fn test_e2e_mls_member_removal_forward_secrecy() {
 /// disconnects between discovery and message send.
 #[tokio::test]
 async fn test_dm_delivery_failure_on_disconnect() {
-    let alice_did = unique_did("alice");
-    let bob_did = unique_did("bob");
-    let alice = CryptoTestNode::spawn(&alice_did).await;
-    let bob = CryptoTestNode::spawn(&bob_did).await;
+    let alice = CryptoTestNode::spawn("alice").await;
+    let bob = CryptoTestNode::spawn("bob").await;
+    let alice_did = alice.did.clone();
+    let bob_did = bob.did.clone();
 
     alice.register_identity().await;
     bob.register_identity().await;

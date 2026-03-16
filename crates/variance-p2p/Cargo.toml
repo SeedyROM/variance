@@ -57,3 +57,4 @@ ulid = { workspace = true }
 tempfile = { workspace = true }
 vodozemac = "0.9"
 chrono = { workspace = true }
+libp2p-identity = { workspace = true }

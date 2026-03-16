@@ -97,6 +97,7 @@ mod tests {
             mailbox_token: vec![0xb0u8; 32],
             since_timestamp: None,
             limit: 10,
+            ..Default::default()
         };
 
         let response = handler.handle_request(request).await.unwrap();
@@ -141,6 +142,7 @@ mod tests {
             mailbox_token: vec![0xb0u8; 32],
             since_timestamp: None,
             limit: 10,
+            ..Default::default()
         };
 
         let response = handler.handle_request(request).await.unwrap();
@@ -190,6 +192,7 @@ mod tests {
             mailbox_token: vec![0xb0u8; 32],
             since_timestamp: None,
             limit: 2,
+            ..Default::default()
         };
 
         let response = handler.handle_request(request).await.unwrap();

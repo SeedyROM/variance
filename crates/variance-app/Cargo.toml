@@ -40,6 +40,9 @@ tracing-subscriber = { workspace = true }
 # Config
 toml = "0.9.8"
 
+# P2P identity (for PeerId parsing)
+libp2p-identity = { workspace = true }
+
 # Crypto
 ed25519-dalek = { workspace = true }
 rand_core = { workspace = true }

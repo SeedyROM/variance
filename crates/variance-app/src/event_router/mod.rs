@@ -402,6 +402,7 @@ mod tests {
             },
             signing_key: None,
             x25519_secret: None,
+            document_signature: None,
         };
         h.state
             .identity_cache

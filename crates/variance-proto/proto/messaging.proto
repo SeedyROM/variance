@@ -217,10 +217,17 @@ message OfflineMessageEnvelope {
 }
 
 message OfflineMessageRequest {
-  // Opaque 32-byte mailbox token — SHA-256(signing_key || "variance-mailbox-v1").
+  // Opaque 32-byte mailbox token — SHA-256(verifying_key || "variance-mailbox-v1").
   bytes mailbox_token = 1;
   optional int64 since_timestamp = 2;  // Only messages after this
   uint32 limit = 3; // Max messages to fetch
+
+  // Authentication: prove ownership of the mailbox.
+  // verifying_key is the Ed25519 public key (32 bytes) whose SHA-256 produces the mailbox_token.
+  // auth_signature signs (mailbox_token || auth_timestamp) with the corresponding signing key.
+  bytes verifying_key = 4;        // 32-byte Ed25519 public key
+  bytes auth_signature = 5;       // 64-byte Ed25519 signature
+  int64 auth_timestamp = 6;       // Unix timestamp (seconds) for replay prevention
 }
 
 message OfflineMessageResponse {

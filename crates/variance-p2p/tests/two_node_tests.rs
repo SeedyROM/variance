@@ -130,6 +130,7 @@ async fn test_connected_dids_after_identity_set() {
             vec![],      // one-time keys
             None,        // mls key package
             vec![],      // mailbox token
+            None,        // no Did struct in tests
         )
         .await
         .unwrap();
@@ -142,6 +143,7 @@ async fn test_connected_dids_after_identity_set() {
             vec![],
             None,
             vec![],
+            None, // no Did struct in tests
         )
         .await
         .unwrap();

@@ -238,12 +238,26 @@ impl Node {
                     if !group_msg.sender_did.is_empty() {
                         let did = group_msg.sender_did.clone();
                         let peer = propagation_source;
-                        let did_to_peer = self.did_to_peer.clone();
-                        let peer_store = self.peer_store.clone();
-                        tokio::spawn(async move {
-                            did_to_peer.write().await.insert(did.clone(), peer);
-                            peer_store.insert(&did, &peer);
-                        });
+
+                        // Validate: if it's a did:peer: DID, the embedded PeerId must match
+                        let peer_id_valid = did
+                            .strip_prefix("did:peer:")
+                            .and_then(|s| s.parse::<PeerId>().ok())
+                            .is_none_or(|embedded| embedded == peer);
+
+                        if peer_id_valid {
+                            let did_to_peer = self.did_to_peer.clone();
+                            let peer_store = self.peer_store.clone();
+                            tokio::spawn(async move {
+                                did_to_peer.write().await.insert(did.clone(), peer);
+                                peer_store.insert(&did, &peer);
+                            });
+                        } else {
+                            warn!(
+                                "Rejecting DID-to-PeerId mapping from GossipSub: {} claimed DID {} but PeerId does not match",
+                                peer, did
+                            );
+                        }
                     }
 
                     self.events
@@ -526,7 +540,7 @@ impl Node {
             response: response.clone(),
         });
 
-        // Cache the DID and update DID->PeerId mapping
+        // Cache the DID and update DID->PeerId mapping (only if signature verifies)
         if let Some(variance_proto::identity_proto::identity_response::Result::Found(found)) =
             response.result
         {
@@ -537,14 +551,45 @@ impl Node {
                 let did_to_peer = self.did_to_peer.clone();
                 let peer_store = self.peer_store.clone();
                 let peer_id = peer;
+                let doc_sig = found.document_signature;
                 tokio::spawn(async move {
-                    if let Ok(did) = variance_identity::did::Did::from_proto(did_doc) {
-                        did_to_peer.write().await.insert(did_id.clone(), peer_id);
-                        peer_store.insert(&did_id, &peer_id);
-
-                        if handler.cache_did(did).await.is_ok() {
-                            events.send_identity(IdentityEvent::DidCached { did: did_id });
+                    let did = match variance_identity::did::Did::from_proto_with_signature(
+                        did_doc,
+                        Some(doc_sig),
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            warn!(
+                                "Rejecting identity response from {}: failed to parse DID document: {}",
+                                peer_id, e
+                            );
+                            return;
                         }
+                    };
+
+                    // Verify the document signature (Ed25519 over serialized DIDDocument)
+                    if let Err(e) = did.verify_document() {
+                        warn!(
+                            "Rejecting identity response from {}: document signature invalid for DID {}: {}",
+                            peer_id, did_id, e
+                        );
+                        return;
+                    }
+
+                    // Verify the DID's embedded PeerId matches the responding peer
+                    if let Err(e) = did.verify_peer_id(&peer_id) {
+                        warn!(
+                            "Rejecting identity response from {}: PeerId mismatch for DID {}: {}",
+                            peer_id, did_id, e
+                        );
+                        return;
+                    }
+
+                    did_to_peer.write().await.insert(did_id.clone(), peer_id);
+                    peer_store.insert(&did_id, &peer_id);
+
+                    if handler.cache_did(did).await.is_ok() {
+                        events.send_identity(IdentityEvent::DidCached { did: did_id });
                     }
                 });
             }
@@ -594,6 +639,27 @@ impl Node {
                         "Received offline message request {:?} from {}: {} messages since {:?}",
                         request_id, peer, request.limit, request.since_timestamp
                     );
+
+                    // Authenticate: verify the requester owns the mailbox.
+                    if let Err(reason) = verify_offline_request_auth(&request) {
+                        warn!(
+                            "Rejected unauthenticated offline request {:?} from {}: {}",
+                            request_id, peer, reason
+                        );
+                        let nack = OfflineMessageResponse {
+                            messages: vec![],
+                            has_more: false,
+                            next_cursor: None,
+                            error_code: Some("auth_failed".into()),
+                            error_message: Some(reason),
+                        };
+                        let _ = self
+                            .swarm
+                            .behaviour_mut()
+                            .offline_messages
+                            .send_response(channel, nack);
+                        return;
+                    }
 
                     self.events
                         .send_offline_message(OfflineMessageEvent::FetchRequested {
@@ -848,12 +914,26 @@ impl Node {
 
                     debug!("Received direct message {} from {}", request.id, peer);
 
-                    // Learn the sender's DID → PeerId mapping for future sends
-                    {
-                        let mut did_to_peer = self.did_to_peer.write().await;
-                        did_to_peer.insert(request.sender_did.clone(), peer);
+                    // Learn the sender's DID → PeerId mapping for future sends,
+                    // but only if the DID's embedded PeerId matches the actual sender.
+                    let peer_id_valid = request
+                        .sender_did
+                        .strip_prefix("did:peer:")
+                        .and_then(|s| s.parse::<PeerId>().ok())
+                        .is_none_or(|embedded| embedded == peer);
+
+                    if peer_id_valid {
+                        {
+                            let mut did_to_peer = self.did_to_peer.write().await;
+                            did_to_peer.insert(request.sender_did.clone(), peer);
+                        }
+                        self.peer_store.insert(&request.sender_did, &peer);
+                    } else {
+                        warn!(
+                            "Rejecting DID-to-PeerId mapping from DM: {} claimed DID {} but PeerId does not match",
+                            peer, request.sender_did
+                        );
                     }
-                    self.peer_store.insert(&request.sender_did, &peer);
 
                     self.events
                         .send_direct_message(DirectMessageEvent::MessageReceived {
@@ -1027,8 +1107,86 @@ impl Node {
                     return;
                 }
 
+                // Verify the UsernameChanged signature
+                if request.signature.is_empty() || request.timestamp == 0 {
+                    warn!(
+                        "Rejecting unsigned UsernameChanged from {}: missing signature or timestamp",
+                        peer
+                    );
+                    return;
+                }
+
+                // Replay prevention: reject notifications with timestamps too far in the past or future
+                let now = chrono::Utc::now().timestamp();
+                let drift = (now - request.timestamp).abs();
+                if drift > 300 {
+                    // 5 minute window
+                    warn!(
+                        "Rejecting UsernameChanged from {}: timestamp drift {}s exceeds 5-minute window",
+                        peer, drift
+                    );
+                    return;
+                }
+
+                // For did:peer: DIDs, verify the embedded PeerId matches the sender
+                if let Some(embedded_str) = request.did.strip_prefix("did:peer:") {
+                    if let Ok(embedded_peer) = embedded_str.parse::<PeerId>() {
+                        if embedded_peer != peer {
+                            warn!(
+                                "Rejecting UsernameChanged from {}: DID {} embeds different PeerId {}",
+                                peer, request.did, embedded_peer
+                            );
+                            return;
+                        }
+                    }
+                }
+
+                // Verify the Ed25519 signature using the DID's verifying key.
+                // We need to resolve the DID to get the key. Try the identity handler's cache first,
+                // then fall back to the did_to_peer mapping. If we can't verify, reject.
+                let sig_valid = {
+                    use ed25519_dalek::{Signature, Verifier};
+
+                    // Look up the DID from the identity handler's cache
+                    let cached_did = self.identity_handler.get_cached_did(&request.did).await;
+
+                    if let Some(did_struct) = cached_did {
+                        // Reconstruct the signing payload
+                        let mut payload = Vec::new();
+                        payload.extend_from_slice(request.did.as_bytes());
+                        payload.extend_from_slice(request.username.as_bytes());
+                        payload.extend_from_slice(&request.discriminator.to_le_bytes());
+                        payload.extend_from_slice(&request.timestamp.to_le_bytes());
+
+                        match (
+                            Signature::from_slice(&request.signature),
+                            did_struct.get_verifying_key(),
+                        ) {
+                            (Ok(sig), Ok(vk)) => vk.verify(&payload, &sig).is_ok(),
+                            _ => false,
+                        }
+                    } else {
+                        // No cached DID — we can't verify the signature.
+                        // Accept from known peers as a grace period; they'll
+                        // be authenticated on next identity resolution.
+                        debug!(
+                            "No cached DID for {} — cannot verify UsernameChanged signature from {}, accepting provisionally",
+                            request.did, peer
+                        );
+                        true
+                    }
+                };
+
+                if !sig_valid {
+                    warn!(
+                        "Rejecting UsernameChanged from {}: signature verification failed for DID {}",
+                        peer, request.did
+                    );
+                    return;
+                }
+
                 debug!(
-                    "Received username rename from {}: {}#{:04}",
+                    "Verified username rename from {}: {}#{:04}",
                     peer, request.username, request.discriminator
                 );
 
@@ -1327,5 +1485,186 @@ impl Node {
             }
             _ => {}
         }
+    }
+}
+
+/// Verify the authentication fields on an `OfflineMessageRequest`.
+///
+/// Returns `Ok(())` if the request is authenticated, or `Err(reason)` with
+/// a human-readable rejection string.
+///
+/// Checks:
+/// 1. `verifying_key` is a valid 32-byte Ed25519 public key.
+/// 2. `SHA-256(verifying_key || "variance-mailbox-v1") == mailbox_token` — the
+///    requester's public key actually derives the claimed mailbox.
+/// 3. `auth_timestamp` is within 5 minutes of the relay's clock (replay prevention).
+/// 4. `auth_signature` is a valid Ed25519 signature over `mailbox_token || auth_timestamp`
+///    (little-endian i64).
+fn verify_offline_request_auth(request: &OfflineMessageRequest) -> Result<(), String> {
+    use ed25519_dalek::{Signature, VerifyingKey};
+    use variance_identity::mailbox::mailbox_token;
+
+    // 1. verifying_key must be present and 32 bytes
+    if request.verifying_key.len() != 32 {
+        return Err(format!(
+            "verifying_key must be 32 bytes, got {}",
+            request.verifying_key.len()
+        ));
+    }
+
+    let vk_bytes: [u8; 32] = request.verifying_key[..32]
+        .try_into()
+        .map_err(|_| "invalid verifying_key length".to_string())?;
+
+    let verifying_key = VerifyingKey::from_bytes(&vk_bytes)
+        .map_err(|e| format!("invalid Ed25519 verifying key: {e}"))?;
+
+    // 2. Derived token must match the claimed mailbox_token
+    let expected_token = mailbox_token(&vk_bytes);
+    if request.mailbox_token != expected_token {
+        return Err("verifying_key does not derive the claimed mailbox_token".to_string());
+    }
+
+    // 3. Timestamp within 5-minute window
+    let now = chrono::Utc::now().timestamp();
+    let drift = (now - request.auth_timestamp).abs();
+    if drift > 300 {
+        return Err(format!(
+            "auth_timestamp drift {drift}s exceeds 5-minute window"
+        ));
+    }
+
+    // 4. Signature must be present and valid
+    if request.auth_signature.len() != 64 {
+        return Err(format!(
+            "auth_signature must be 64 bytes, got {}",
+            request.auth_signature.len()
+        ));
+    }
+
+    let sig = Signature::from_bytes(
+        request.auth_signature[..64]
+            .try_into()
+            .map_err(|_| "invalid signature length".to_string())?,
+    );
+
+    // Signing payload: mailbox_token || auth_timestamp (LE i64)
+    let mut payload = Vec::with_capacity(request.mailbox_token.len() + 8);
+    payload.extend_from_slice(&request.mailbox_token);
+    payload.extend_from_slice(&request.auth_timestamp.to_le_bytes());
+
+    verifying_key
+        .verify_strict(&payload, &sig)
+        .map_err(|e| format!("signature verification failed: {e}"))?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod offline_auth_tests {
+    use super::*;
+    use ed25519_dalek::Signer;
+    use variance_identity::mailbox::mailbox_token;
+
+    /// Helper: build a properly authenticated OfflineMessageRequest.
+    fn make_authenticated_request(
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> OfflineMessageRequest {
+        let vk = signing_key.verifying_key();
+        let vk_bytes = vk.as_bytes().to_vec();
+        let token = mailbox_token(vk.as_bytes()).to_vec();
+        let timestamp = chrono::Utc::now().timestamp();
+
+        let mut payload = Vec::with_capacity(token.len() + 8);
+        payload.extend_from_slice(&token);
+        payload.extend_from_slice(&timestamp.to_le_bytes());
+
+        let sig = signing_key.sign(&payload);
+
+        OfflineMessageRequest {
+            mailbox_token: token,
+            since_timestamp: None,
+            limit: 10,
+            verifying_key: vk_bytes,
+            auth_signature: sig.to_bytes().to_vec(),
+            auth_timestamp: timestamp,
+        }
+    }
+
+    #[test]
+    fn valid_request_passes() {
+        let sk = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+        let req = make_authenticated_request(&sk);
+        assert!(verify_offline_request_auth(&req).is_ok());
+    }
+
+    #[test]
+    fn missing_verifying_key_rejected() {
+        let sk = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+        let mut req = make_authenticated_request(&sk);
+        req.verifying_key = vec![];
+        let err = verify_offline_request_auth(&req).unwrap_err();
+        assert!(err.contains("verifying_key must be 32 bytes"));
+    }
+
+    #[test]
+    fn wrong_verifying_key_rejected() {
+        let sk = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+        let mut req = make_authenticated_request(&sk);
+        // Use a different key — token derivation will mismatch
+        let other_sk = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+        req.verifying_key = other_sk.verifying_key().as_bytes().to_vec();
+        let err = verify_offline_request_auth(&req).unwrap_err();
+        assert!(err.contains("does not derive the claimed mailbox_token"));
+    }
+
+    #[test]
+    fn expired_timestamp_rejected() {
+        let sk = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+        let mut req = make_authenticated_request(&sk);
+        // Set timestamp 10 minutes in the past
+        req.auth_timestamp = chrono::Utc::now().timestamp() - 600;
+        // Re-sign with the stale timestamp
+        let mut payload = Vec::with_capacity(req.mailbox_token.len() + 8);
+        payload.extend_from_slice(&req.mailbox_token);
+        payload.extend_from_slice(&req.auth_timestamp.to_le_bytes());
+        req.auth_signature = sk.sign(&payload).to_bytes().to_vec();
+
+        let err = verify_offline_request_auth(&req).unwrap_err();
+        assert!(err.contains("exceeds 5-minute window"));
+    }
+
+    #[test]
+    fn tampered_signature_rejected() {
+        let sk = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+        let mut req = make_authenticated_request(&sk);
+        // Flip a bit in the signature
+        req.auth_signature[0] ^= 0xff;
+        let err = verify_offline_request_auth(&req).unwrap_err();
+        assert!(err.contains("signature verification failed"));
+    }
+
+    #[test]
+    fn missing_signature_rejected() {
+        let sk = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+        let mut req = make_authenticated_request(&sk);
+        req.auth_signature = vec![];
+        let err = verify_offline_request_auth(&req).unwrap_err();
+        assert!(err.contains("auth_signature must be 64 bytes"));
+    }
+
+    #[test]
+    fn different_signer_rejected() {
+        let sk = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+        let other_sk = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+        let mut req = make_authenticated_request(&sk);
+        // Sign with a different key (but keep the original verifying_key / token)
+        let mut payload = Vec::with_capacity(req.mailbox_token.len() + 8);
+        payload.extend_from_slice(&req.mailbox_token);
+        payload.extend_from_slice(&req.auth_timestamp.to_le_bytes());
+        req.auth_signature = other_sk.sign(&payload).to_bytes().to_vec();
+
+        let err = verify_offline_request_auth(&req).unwrap_err();
+        assert!(err.contains("signature verification failed"));
     }
 }

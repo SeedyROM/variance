@@ -207,8 +207,23 @@ impl MultiLayerCache {
         Ok(None)
     }
 
-    /// Insert a DID into all cache layers
+    /// Insert a DID into all cache layers.
+    ///
+    /// For `did:peer:` DIDs, the document signature must be present and valid.
+    /// Unsigned or tampered documents are rejected to prevent cache poisoning.
     pub fn insert(&self, key: &str, value: Did) -> Result<()> {
+        // Validate document signature for did:peer: DIDs before caching
+        if key.starts_with("did:peer:") {
+            if let Err(e) = value.verify_document() {
+                tracing::warn!(
+                    "Cache rejecting DID {}: document signature verification failed: {}",
+                    key,
+                    e
+                );
+                return Err(e);
+            }
+        }
+
         self.l1.insert(key.to_string(), value.clone());
         self.l2.insert(key.to_string(), value.clone());
         self.l3.insert(key, &value)?;
@@ -296,5 +311,58 @@ mod tests {
 
         // Verify it's now in L1
         assert!(cache.l1.get(&key).is_some());
+    }
+
+    #[test]
+    fn test_cache_rejects_unsigned_did_peer() {
+        let dir = tempdir().unwrap();
+        let cache = MultiLayerCache::new(dir.path().to_str().unwrap()).unwrap();
+
+        let peer_id = PeerId::random();
+        // Create a DID normally (signed), then strip the signature
+        let mut did = Did::new(&peer_id).unwrap();
+        let key = did.id.clone();
+        did.document_signature = None;
+
+        // Inserting an unsigned did:peer: DID should fail
+        assert!(cache.insert(&key, did).is_err());
+        // Should not be in cache
+        assert!(cache.get(&key).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_cache_rejects_tampered_did_peer() {
+        let dir = tempdir().unwrap();
+        let cache = MultiLayerCache::new(dir.path().to_str().unwrap()).unwrap();
+
+        let peer_id = PeerId::random();
+        let mut did = Did::new(&peer_id).unwrap();
+        let key = did.id.clone();
+
+        // Tamper with the document after signing
+        did.document.display_name = Some("tampered".to_string());
+
+        // Inserting a tampered did:peer: DID should fail
+        assert!(cache.insert(&key, did).is_err());
+        assert!(cache.get(&key).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_cache_accepts_non_peer_did_without_signature() {
+        let dir = tempdir().unwrap();
+        let cache = MultiLayerCache::new(dir.path().to_str().unwrap()).unwrap();
+
+        let peer_id = PeerId::random();
+        let mut did = Did::new(&peer_id).unwrap();
+        // Override with a non-peer DID scheme
+        did.id = "did:variance:alice".to_string();
+        did.document.id = "did:variance:alice".to_string();
+        did.document_signature = None;
+        let key = did.id.clone();
+
+        // Non did:peer: DIDs bypass signature check
+        cache.insert(&key, did.clone()).unwrap();
+        let retrieved = cache.get(&key).unwrap().unwrap();
+        assert_eq!(retrieved.id, "did:variance:alice");
     }
 }

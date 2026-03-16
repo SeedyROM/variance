@@ -1,7 +1,8 @@
 use crate::error::*;
 use chrono::Utc;
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier};
 use libp2p::PeerId;
+use prost::Message;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -36,6 +37,11 @@ pub struct Did {
     /// None when the DID is loaded from the network (only the owner holds the secret).
     #[serde(skip)]
     pub x25519_secret: Option<X25519SecretWrap>,
+    /// Ed25519 signature over the canonical protobuf-encoded DIDDocument.
+    /// Produced by `sign_document()` and verified by `verify_document()`.
+    /// None only for self-owned DIDs that haven't been signed yet (transient state).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_signature: Option<Vec<u8>>,
 }
 
 /// DID Document following W3C spec
@@ -124,15 +130,17 @@ impl Did {
             bio: None,
         };
 
-        Ok(Did {
+        Did {
             id: did_id,
             document,
             signing_key: Some(signing_key),
             x25519_secret: Some(X25519SecretWrap(Arc::new(x25519_secret))),
-        })
+            document_signature: None,
+        }
+        .signed()
     }
 
-    /// Update display metadata
+    /// Update display metadata. Re-signs the document if a signing key is present.
     pub fn update_profile(
         &mut self,
         display_name: Option<String>,
@@ -143,6 +151,10 @@ impl Did {
         self.document.avatar_cid = avatar_cid;
         self.document.bio = bio;
         self.document.updated_at = Utc::now().timestamp();
+        // Re-sign if we own the signing key; ignore error (callers can check signature)
+        if self.signing_key.is_some() {
+            let _ = self.sign_document();
+        }
     }
 
     /// Extract Ed25519 verifying key from DID document's authentication method
@@ -207,8 +219,84 @@ impl Did {
         Ok(X25519PublicKey::from(*key_bytes))
     }
 
-    /// Convert to protobuf DIDDocument
-    pub fn to_proto(&self) -> identity_proto::DidDocument {
+    /// Canonical bytes used as the signing payload for document signatures.
+    /// This is the deterministic protobuf encoding of the DIDDocument.
+    pub fn document_signing_bytes(&self) -> Vec<u8> {
+        self.to_proto_document().encode_to_vec()
+    }
+
+    /// Sign the DID document in-place using the owner's signing key.
+    /// Returns an error if no signing key is available.
+    pub fn sign_document(&mut self) -> Result<()> {
+        let signing_key = self.signing_key.as_ref().ok_or_else(|| Error::Crypto {
+            message: format!("{}: cannot sign without signing key", self.id),
+        })?;
+        let payload = self.document_signing_bytes();
+        let signature = signing_key.sign(&payload);
+        self.document_signature = Some(signature.to_bytes().to_vec());
+        Ok(())
+    }
+
+    /// Consume self and return a signed copy (convenience for chaining after construction).
+    fn signed(mut self) -> Result<Self> {
+        self.sign_document()?;
+        Ok(self)
+    }
+
+    /// Verify the document signature against the embedded Ed25519 public key.
+    /// Returns `Ok(())` if the signature is present and valid.
+    pub fn verify_document(&self) -> Result<()> {
+        let sig_bytes =
+            self.document_signature
+                .as_ref()
+                .ok_or_else(|| Error::MissingSignature {
+                    did: self.id.clone(),
+                })?;
+
+        let signature =
+            Signature::from_slice(sig_bytes).map_err(|e| Error::SignatureVerification {
+                did: self.id.clone(),
+                reason: format!("malformed signature: {e}"),
+            })?;
+
+        let verifying_key = self.get_verifying_key()?;
+
+        let payload = self.document_signing_bytes();
+        verifying_key
+            .verify(&payload, &signature)
+            .map_err(|e| Error::SignatureVerification {
+                did: self.id.clone(),
+                reason: format!("Ed25519 verification failed: {e}"),
+            })
+    }
+
+    /// Verify that the PeerId embedded in the DID string (`did:peer:<PeerId>`)
+    /// matches the expected PeerId. Prevents DID-to-PeerId mapping forgery.
+    pub fn verify_peer_id(&self, expected_peer_id: &PeerId) -> Result<()> {
+        let embedded = self
+            .id
+            .strip_prefix("did:peer:")
+            .ok_or_else(|| Error::InvalidDid {
+                did: format!("{}: not a did:peer: DID", self.id),
+            })?;
+
+        let parsed: PeerId = embedded.parse().map_err(|e| Error::InvalidDid {
+            did: format!("{}: invalid PeerId in DID: {e}", self.id),
+        })?;
+
+        if parsed != *expected_peer_id {
+            return Err(Error::PeerIdMismatch {
+                did: self.id.clone(),
+                expected: expected_peer_id.to_string(),
+                actual: parsed.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Convert the DidDocument (only) to protobuf. Used for signing payload
+    /// and by `to_proto()`.
+    fn to_proto_document(&self) -> identity_proto::DidDocument {
         identity_proto::DidDocument {
             id: self.document.id.clone(),
             authentication: self
@@ -252,8 +340,18 @@ impl Did {
         }
     }
 
-    /// Create from protobuf DIDDocument
-    pub fn from_proto(proto: identity_proto::DidDocument) -> Result<Self> {
+    /// Convert to protobuf DIDDocument (public API).
+    pub fn to_proto(&self) -> identity_proto::DidDocument {
+        self.to_proto_document()
+    }
+
+    /// Create from protobuf DIDDocument with an optional document signature.
+    /// When `signature` is `Some`, it is stored but **not** automatically verified
+    /// — call `verify_document()` explicitly when you need to enforce trust.
+    pub fn from_proto_with_signature(
+        proto: identity_proto::DidDocument,
+        signature: Option<Vec<u8>>,
+    ) -> Result<Self> {
         let document = DidDocument {
             id: proto.id.clone(),
             authentication: proto
@@ -293,12 +391,22 @@ impl Did {
             bio: proto.bio,
         };
 
+        // Filter out empty signature bytes (protobuf default)
+        let sig = signature.filter(|s| !s.is_empty());
+
         Ok(Did {
             id: proto.id,
             document,
             signing_key: None,
             x25519_secret: None,
+            document_signature: sig,
         })
+    }
+
+    /// Create from protobuf DIDDocument without a signature.
+    /// The resulting `Did` will have `document_signature: None`.
+    pub fn from_proto(proto: identity_proto::DidDocument) -> Result<Self> {
+        Self::from_proto_with_signature(proto, None)
     }
 }
 

@@ -134,7 +134,12 @@ pub(super) async fn register_username(
     // Notify connected peers of the rename so they update their cached display names
     if let Err(e) = state
         .node_handle
-        .broadcast_username_change(state.local_did.clone(), req.username.clone(), discriminator)
+        .broadcast_username_change(
+            state.local_did.clone(),
+            req.username.clone(),
+            discriminator,
+            state.signing_key.to_bytes().to_vec(),
+        )
         .await
     {
         tracing::warn!("Failed to broadcast username change: {}", e);
@@ -161,6 +166,7 @@ pub(super) async fn register_username(
             },
             signing_key: None,
             x25519_secret: None,
+            document_signature: None,
         };
         if let Ok(cid) = state.ipfs_storage.store(&did_doc).await {
             let did_hex = hex::encode(did_str.as_bytes());

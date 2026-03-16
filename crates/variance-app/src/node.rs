@@ -433,6 +433,36 @@ async fn register_with_network(
         }
     }
 
+    // Build a signed Did struct to pass to the identity handler for authenticated responses.
+    let did_struct = {
+        let peer_id_str = state
+            .local_did
+            .strip_prefix("did:peer:")
+            .and_then(|s| s.parse::<libp2p_identity::PeerId>().ok());
+
+        match peer_id_str {
+            Some(peer_id) => {
+                match variance_identity::did::Did::from_signing_key(
+                    state.signing_key.clone(),
+                    &peer_id,
+                ) {
+                    Ok(did) => Some(did),
+                    Err(e) => {
+                        tracing::warn!("Failed to create Did for identity handler: {}", e);
+                        None
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(
+                    "Could not parse PeerId from DID '{}'; identity responses will be unsigned",
+                    state.local_did
+                );
+                None
+            }
+        }
+    };
+
     if let Err(e) = state
         .node_handle
         .set_local_identity(
@@ -441,6 +471,7 @@ async fn register_with_network(
             one_time_keys,
             mls_key_package,
             state.mailbox_token.to_vec(),
+            did_struct,
         )
         .await
     {
@@ -533,6 +564,7 @@ async fn publish_local_identity_to_ipfs(
         },
         signing_key: None,
         x25519_secret: None,
+        document_signature: None,
     };
 
     let cid = match app_state.ipfs_storage.store(&did).await {

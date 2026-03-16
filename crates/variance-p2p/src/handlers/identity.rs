@@ -24,6 +24,8 @@ struct LocalIdentity {
     discriminator: Option<u32>,
     /// Opaque relay mailbox token (SHA-256 of signing key).
     mailbox_token: Vec<u8>,
+    /// Full DID with signing key for producing signed identity responses.
+    did_struct: Option<Did>,
 }
 
 /// Identity resolution handler
@@ -61,6 +63,7 @@ impl IdentityHandler {
     /// `one_time_keys` should be all available unpublished keys; the full list is
     /// returned in every response so the requester can pick one.
     /// `mls_key_package` is a TLS-serialized MLS KeyPackage for group invitations.
+    /// `did_struct` should be the full `Did` with signing key so self-responses are signed.
     pub async fn set_local_identity(
         &self,
         did: String,
@@ -68,6 +71,7 @@ impl IdentityHandler {
         one_time_keys: Vec<Vec<u8>>,
         mls_key_package: Option<Vec<u8>>,
         mailbox_token: Vec<u8>,
+        did_struct: Option<Did>,
     ) {
         *self.local_identity.write().await = Some(LocalIdentity {
             did,
@@ -77,6 +81,7 @@ impl IdentityHandler {
             username: None,
             discriminator: None,
             mailbox_token,
+            did_struct,
         });
     }
 
@@ -157,16 +162,26 @@ impl IdentityHandler {
                     _ => None,
                 };
 
-                let did_doc = variance_proto::identity_proto::DidDocument {
-                    id: local_id.did.clone(),
-                    authentication: vec![],
-                    key_agreement: vec![],
-                    service: vec![],
-                    created_at: 0,
-                    updated_at: 0,
-                    display_name,
-                    avatar_cid: None,
-                    bio: None,
+                // Use the real DID document (with auth keys) if available, so
+                // the response carries a valid document signature.
+                let (did_doc, doc_sig) = if let Some(ref did_s) = local_id.did_struct {
+                    let mut proto = did_s.to_proto();
+                    proto.display_name = display_name;
+                    let sig = did_s.document_signature.clone().unwrap_or_default();
+                    (proto, sig)
+                } else {
+                    let doc = variance_proto::identity_proto::DidDocument {
+                        id: local_id.did.clone(),
+                        authentication: vec![],
+                        key_agreement: vec![],
+                        service: vec![],
+                        created_at: 0,
+                        updated_at: 0,
+                        display_name,
+                        avatar_cid: None,
+                        bio: None,
+                    };
+                    (doc, vec![])
                 };
 
                 let found = IdentityFound {
@@ -177,6 +192,7 @@ impl IdentityHandler {
                     mls_key_package: local_id.mls_key_package.clone(),
                     username: local_id.username.clone(),
                     mailbox_token: local_id.mailbox_token.clone(),
+                    document_signature: doc_sig,
                     ..Default::default()
                 };
                 return Ok(IdentityResponse {
@@ -402,6 +418,7 @@ mod tests {
                 otks.clone(),
                 None,
                 mailbox.clone(),
+                None,
             )
             .await;
 
@@ -447,6 +464,7 @@ mod tests {
                 vec![],
                 Some(mls_pkg.clone()),
                 vec![2],
+                None,
             )
             .await;
 
@@ -481,6 +499,7 @@ mod tests {
                 vec![],
                 None,
                 vec![2],
+                None,
             )
             .await;
 
@@ -534,6 +553,7 @@ mod tests {
                 vec![vec![10], vec![20]],
                 None,
                 vec![2],
+                None,
             )
             .await;
 
@@ -582,6 +602,7 @@ mod tests {
                 vec![],
                 Some(vec![0xAA]),
                 vec![2],
+                None,
             )
             .await;
 
@@ -628,6 +649,7 @@ mod tests {
                 vec![vec![4]],
                 None,
                 vec![5],
+                None,
             )
             .await;
 
@@ -724,6 +746,7 @@ mod tests {
                 vec![vec![0xAA]],
                 None,
                 vec![0xBB],
+                None,
             )
             .await;
 
@@ -756,6 +779,7 @@ mod tests {
                 vec![],
                 None,
                 vec![2],
+                None,
             )
             .await;
 
@@ -844,6 +868,7 @@ mod tests {
                 vec![],
                 None,
                 vec![2],
+                None,
             )
             .await;
 

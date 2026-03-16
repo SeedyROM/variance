@@ -263,6 +263,7 @@ mod tests {
             mailbox_token: vec![0xb0u8; 32],
             since_timestamp: None,
             limit: 10,
+            ..Default::default()
         };
 
         let response = handler.fetch_messages(request).await.unwrap();
@@ -310,6 +311,7 @@ mod tests {
             mailbox_token: vec![0xb0u8; 32],
             since_timestamp: None,
             limit: 2,
+            ..Default::default()
         };
 
         let response = handler.fetch_messages(request).await.unwrap();
@@ -379,6 +381,7 @@ mod tests {
             mailbox_token: vec![0xb0u8; 32],
             since_timestamp: Some(base_time),
             limit: 10,
+            ..Default::default()
         };
 
         let response = handler.fetch_messages(request).await.unwrap();
@@ -433,6 +436,7 @@ mod tests {
             mailbox_token: vec![0xb0u8; 32],
             since_timestamp: None,
             limit: 10,
+            ..Default::default()
         };
 
         let response = handler.fetch_messages(request.clone()).await.unwrap();
@@ -490,6 +494,7 @@ mod tests {
             mailbox_token: vec![0xb0u8; 32],
             since_timestamp: None,
             limit: 10,
+            ..Default::default()
         };
 
         let response = handler.fetch_messages(request).await.unwrap();
@@ -527,6 +532,7 @@ mod tests {
             mailbox_token: vec![0xb0u8; 32],
             since_timestamp: None,
             limit: 0, // Invalid - must be > 0
+            ..Default::default()
         };
 
         let result = handler.fetch_messages(request).await;

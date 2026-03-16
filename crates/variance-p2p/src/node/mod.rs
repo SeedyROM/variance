@@ -577,6 +577,7 @@ impl Node {
                 one_time_keys,
                 mls_key_package,
                 mailbox_token,
+                did_struct,
             } => {
                 // Store local DID for self-messaging support
                 *self.local_did.write().await = Some(did.clone());
@@ -590,6 +591,7 @@ impl Node {
                             one_time_keys,
                             mls_key_package,
                             mailbox_token,
+                            *did_struct,
                         )
                         .await;
                 });
@@ -753,15 +755,45 @@ impl Node {
                 did,
                 username,
                 discriminator,
+                signing_key_bytes,
             } => {
+                // Sign the UsernameChanged notification
+                let timestamp = chrono::Utc::now().timestamp();
+                let (signature_bytes, signed) = match signing_key_bytes.as_slice().try_into() {
+                    Ok(key_bytes) => {
+                        use ed25519_dalek::{Signer, SigningKey};
+                        let key = SigningKey::from_bytes(&key_bytes);
+                        let mut payload = Vec::new();
+                        payload.extend_from_slice(did.as_bytes());
+                        payload.extend_from_slice(username.as_bytes());
+                        payload.extend_from_slice(&discriminator.to_le_bytes());
+                        payload.extend_from_slice(&timestamp.to_le_bytes());
+                        let sig = key.sign(&payload);
+                        (sig.to_bytes().to_vec(), true)
+                    }
+                    Err(_) => {
+                        warn!(
+                            "Invalid signing key for username change broadcast, sending unsigned"
+                        );
+                        (vec![], false)
+                    }
+                };
+
+                if !signed {
+                    warn!("Skipping unsigned username change broadcast");
+                    return;
+                }
+
                 let notification = variance_proto::identity_proto::UsernameChanged {
                     did,
                     username,
                     discriminator,
+                    signature: signature_bytes,
+                    timestamp,
                 };
                 let peers: Vec<PeerId> = self.swarm.connected_peers().cloned().collect();
                 debug!(
-                    "Broadcasting username change to {} connected peer(s)",
+                    "Broadcasting signed username change to {} connected peer(s)",
                     peers.len()
                 );
                 for peer in peers {

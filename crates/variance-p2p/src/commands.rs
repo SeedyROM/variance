@@ -89,6 +89,8 @@ pub enum NodeCommand {
         one_time_keys: Vec<Vec<u8>>,
         mls_key_package: Option<Vec<u8>>,
         mailbox_token: Vec<u8>,
+        /// Full DID with signing key for producing signed identity responses.
+        did_struct: Box<Option<variance_identity::did::Did>>,
     },
 
     /// Update the one-time keys list in the identity handler.
@@ -140,6 +142,8 @@ pub enum NodeCommand {
         did: String,
         username: String,
         discriminator: u32,
+        /// Ed25519 signing key bytes (32 bytes) for signing the notification.
+        signing_key_bytes: Vec<u8>,
     },
 
     /// Request group message history from a specific peer since a given timestamp.
@@ -356,6 +360,7 @@ impl NodeHandle {
     ///
     /// After this call, inbound identity requests for our own DID will be answered
     /// with our Olm keys so peers can establish sessions with us.
+    /// `did_struct` should be the full `Did` with signing key for signed responses.
     pub async fn set_local_identity(
         &self,
         did: String,
@@ -363,6 +368,7 @@ impl NodeHandle {
         one_time_keys: Vec<Vec<u8>>,
         mls_key_package: Option<Vec<u8>>,
         mailbox_token: Vec<u8>,
+        did_struct: Option<variance_identity::did::Did>,
     ) -> Result<()> {
         self.command_tx
             .send(NodeCommand::SetLocalIdentity {
@@ -371,6 +377,7 @@ impl NodeHandle {
                 one_time_keys,
                 mls_key_package,
                 mailbox_token,
+                did_struct: Box::new(did_struct),
             })
             .await
             .map_err(|_| crate::error::Error::Protocol {
@@ -497,12 +504,14 @@ impl NodeHandle {
         did: String,
         username: String,
         discriminator: u32,
+        signing_key_bytes: Vec<u8>,
     ) -> Result<()> {
         self.command_tx
             .send(NodeCommand::BroadcastUsernameChange {
                 did,
                 username,
                 discriminator,
+                signing_key_bytes,
             })
             .await
             .map_err(|_| crate::error::Error::Protocol {
@@ -728,6 +737,7 @@ mod tests {
                 vec![vec![4, 5]],
                 None,
                 vec![6, 7, 8],
+                None,
             )
             .await
             .unwrap_err();
@@ -804,7 +814,12 @@ mod tests {
             .unwrap();
 
         handle
-            .broadcast_username_change("did:variance:me".to_string(), "alice".to_string(), 42)
+            .broadcast_username_change(
+                "did:variance:me".to_string(),
+                "alice".to_string(),
+                42,
+                vec![0u8; 32],
+            )
             .await
             .unwrap();
 

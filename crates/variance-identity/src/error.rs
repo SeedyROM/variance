@@ -41,4 +41,17 @@ pub enum Error {
 
     #[snafu(display("Crypto error: {message}"))]
     Crypto { message: String },
+
+    #[snafu(display("Signature verification failed for {did}: {reason}"))]
+    SignatureVerification { did: String, reason: String },
+
+    #[snafu(display("Missing document signature for {did}"))]
+    MissingSignature { did: String },
+
+    #[snafu(display("PeerId mismatch for {did}: expected {expected}, got {actual}"))]
+    PeerIdMismatch {
+        did: String,
+        expected: String,
+        actual: String,
+    },
 }
