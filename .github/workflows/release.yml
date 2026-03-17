@@ -104,14 +104,14 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: macos-dmg
-          path: app/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          path: target/universal-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
       - name: Upload macOS .app (zipped)
         uses: actions/upload-artifact@v6
         with:
           name: macos-app
-          path: app/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+          path: target/universal-apple-darwin/release/bundle/macos/*.app
           if-no-files-found: error
 
   build-windows:
@@ -175,14 +175,14 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: windows-nsis
-          path: app/src-tauri/target/release/bundle/nsis/*.exe
+          path: target/release/bundle/nsis/*.exe
           if-no-files-found: error
 
       - name: Upload Windows MSI
         uses: actions/upload-artifact@v6
         with:
           name: windows-msi
-          path: app/src-tauri/target/release/bundle/msi/*.msi
+          path: target/release/bundle/msi/*.msi
           if-no-files-found: warn
 
   build-linux:
@@ -252,14 +252,14 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: linux-deb
-          path: app/src-tauri/target/release/bundle/deb/*.deb
+          path: target/release/bundle/deb/*.deb
           if-no-files-found: error
 
       - name: Upload Linux AppImage
         uses: actions/upload-artifact@v6
         with:
           name: linux-appimage
-          path: app/src-tauri/target/release/bundle/appimage/*.AppImage
+          path: target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
   # ──────────────────────────────────────────────
