@@ -4,6 +4,7 @@ mod state;
 use commands::*;
 use state::NodeState;
 use tauri::Manager;
+#[cfg(target_os = "macos")]
 use tauri_plugin_decorum::WebviewWindowExt;
 use tracing::info;
 
@@ -24,10 +25,10 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .setup(|app| {
+        .setup(|_app| {
             #[cfg(target_os = "macos")]
             {
-                let win = app.get_webview_window("main").unwrap();
+                let win = _app.get_webview_window("main").unwrap();
                 win.set_traffic_lights_inset(12.0, 16.0).unwrap();
             }
             Ok(())
