@@ -26,8 +26,6 @@ env:
   CARGO_INCREMENTAL: 0
   SCCACHE_GHA_ENABLED: true
   RUSTC_WRAPPER: sccache
-  # sccache-action v0.0.9 still uses Node 20; opt into Node 24 runtime
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
   contents: write # needed for creating releases and uploading assets
@@ -49,7 +47,7 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: SeedyROM/sccache-action@v0.0.10
 
       - name: Cargo registry cache
         uses: actions/cache@v5
@@ -122,7 +120,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: SeedyROM/sccache-action@v0.0.10
 
       - name: Cargo registry cache
         uses: actions/cache@v5
@@ -202,7 +200,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: SeedyROM/sccache-action@v0.0.10
 
       - name: Cargo registry cache
         uses: actions/cache@v5
