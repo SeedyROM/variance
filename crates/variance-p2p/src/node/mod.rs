@@ -75,6 +75,9 @@ pub struct Node {
     pending_resolve_requests: HashMap<OutboundRequestId, String>,
     /// Auto-discovery requests sent when peers connect: request_id → peer_id
     pending_auto_discovery: HashMap<OutboundRequestId, libp2p::PeerId>,
+    /// Peers for which we already attempted a reciprocal identity query (to
+    /// prevent infinite request/response loops when DID caching fails).
+    reciprocal_attempted: HashSet<PeerId>,
     /// Per-peer, per-protocol inbound rate limiter
     rate_limiter: PeerRateLimiter,
     /// Tracks in-flight direct message sends: OutboundRequestId → (message_id, recipient_did).
@@ -269,6 +272,7 @@ impl Node {
             pending_did_broadcasts: HashMap::new(),
             pending_resolve_requests: HashMap::new(),
             pending_auto_discovery: HashMap::new(),
+            reciprocal_attempted: HashSet::new(),
             rate_limiter: PeerRateLimiter::new(),
             pending_dm_sends: HashMap::new(),
             known_peers: HashMap::new(),
@@ -582,19 +586,45 @@ impl Node {
                 // Store local DID for self-messaging support
                 *self.local_did.write().await = Some(did.clone());
 
-                let handler = self.identity_handler.clone();
-                tokio::spawn(async move {
-                    handler
-                        .set_local_identity(
-                            did,
-                            olm_identity_key,
-                            one_time_keys,
-                            mls_key_package,
-                            mailbox_token,
-                            *did_struct,
-                        )
-                        .await;
-                });
+                // Await directly (not spawned) so the identity is guaranteed
+                // to be set before we re-query connected peers below. This
+                // ensures inbound reciprocal queries find our local identity.
+                self.identity_handler
+                    .set_local_identity(
+                        did,
+                        olm_identity_key,
+                        one_time_keys,
+                        mls_key_package,
+                        mailbox_token,
+                        *did_struct,
+                    )
+                    .await;
+
+                // Re-query any connected peers that don't have a DID mapping yet.
+                // This fixes a race where mDNS discovers peers before
+                // set_local_identity is called: their initial PeerId identity
+                // query returns "not found" because local_identity is None,
+                // so DidCached never fires and presence stays offline.
+                let known_dids: HashSet<PeerId> =
+                    self.did_to_peer.read().await.values().copied().collect();
+                for peer_id in self.swarm.connected_peers().copied().collect::<Vec<_>>() {
+                    if !known_dids.contains(&peer_id) {
+                        debug!(
+                            "Re-querying identity for {} (connected before local identity was set)",
+                            peer_id
+                        );
+                        let request = variance_identity::protocol::create_peer_id_request(
+                            &peer_id.to_string(),
+                            None,
+                        );
+                        let request_id = self
+                            .swarm
+                            .behaviour_mut()
+                            .identity
+                            .send_request(&peer_id, request);
+                        self.pending_auto_discovery.insert(request_id, peer_id);
+                    }
+                }
             }
             NodeCommand::UpdateOneTimeKeys { one_time_keys } => {
                 let handler = self.identity_handler.clone();

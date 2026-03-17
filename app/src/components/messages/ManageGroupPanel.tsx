@@ -360,7 +360,8 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
           <div className="flex items-center gap-2 rounded-lg bg-sky-50 dark:bg-sky-900/20 px-3 py-2.5 border border-sky-200 dark:border-sky-800">
             <Snowflake className="h-4 w-4 shrink-0 text-sky-500" />
             <p className="text-xs text-sky-700 dark:text-sky-300">
-              This group is frozen. The admin left without transferring ownership. No messages can be sent, and no members can be invited or removed.
+              This group is frozen. The admin left without transferring ownership. No messages can
+              be sent, and no members can be invited or removed.
             </p>
           </div>
         )}
@@ -370,7 +371,11 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
           {!confirmLeave && !confirmDelete && !confirmAbandon ? (
             <div className="flex flex-col gap-2">
               {/* Normal leave — hidden for sole admins with other members (backend blocks it) */}
-              {!(isAdmin && members.filter((m) => m.did !== localDid).length > 0 && members.filter((m) => m.role === "admin").length <= 1) && (
+              {!(
+                isAdmin &&
+                members.filter((m) => m.did !== localDid).length > 0 &&
+                members.filter((m) => m.role === "admin").length <= 1
+              ) && (
                 <button
                   onClick={() => setConfirmLeave(true)}
                   className="flex items-center gap-2 text-sm text-surface-500 hover:text-surface-700 dark:hover:text-surface-300"
@@ -380,15 +385,18 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
                 </button>
               )}
               {/* Abandon — sole admin with other members, not already frozen */}
-              {isAdmin && !isFrozen && members.filter((m) => m.did !== localDid).length > 0 && members.filter((m) => m.role === "admin").length <= 1 && (
-                <button
-                  onClick={() => setConfirmAbandon(true)}
-                  className="flex items-center gap-2 text-sm text-orange-500 hover:text-orange-600"
-                >
-                  <Snowflake className="h-4 w-4" />
-                  Abandon group (freezes it)
-                </button>
-              )}
+              {isAdmin &&
+                !isFrozen &&
+                members.filter((m) => m.did !== localDid).length > 0 &&
+                members.filter((m) => m.role === "admin").length <= 1 && (
+                  <button
+                    onClick={() => setConfirmAbandon(true)}
+                    className="flex items-center gap-2 text-sm text-orange-500 hover:text-orange-600"
+                  >
+                    <Snowflake className="h-4 w-4" />
+                    Abandon group (freezes it)
+                  </button>
+                )}
               {isAdmin && (
                 <button
                   onClick={() => setConfirmDelete(true)}
@@ -425,7 +433,8 @@ export function ManageGroupPanel({ group, onClose, onLeave }: ManageGroupPanelPr
           ) : confirmAbandon ? (
             <div className="flex flex-col gap-2">
               <p className="text-sm text-surface-700 dark:text-surface-300">
-                Are you sure? Abandoning this group will <strong>freeze</strong> it for all remaining members. No one will be able to send messages or invite new members.
+                Are you sure? Abandoning this group will <strong>freeze</strong> it for all
+                remaining members. No one will be able to send messages or invite new members.
               </p>
               <p className="text-xs text-surface-500">
                 Consider promoting another member to admin first.

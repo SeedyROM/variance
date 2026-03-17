@@ -166,10 +166,14 @@ impl IdentityHandler {
                 };
 
                 // Use the real DID document (with auth keys) if available, so
-                // the response carries a valid document signature.
+                // the response carries a valid document signature.  Do NOT
+                // mutate the proto after extracting the signature — the
+                // document_signature covers the exact bytes produced by
+                // `to_proto().encode_to_vec()`.  The username/discriminator
+                // are conveyed via the dedicated `IdentityFound` fields
+                // (set below), not via `display_name` in the DID document.
                 let (did_doc, doc_sig) = if let Some(ref did_s) = local_id.did_struct {
-                    let mut proto = did_s.to_proto();
-                    proto.display_name = display_name;
+                    let proto = did_s.to_proto();
                     let sig = did_s.document_signature.clone().unwrap_or_default();
                     (proto, sig)
                 } else {

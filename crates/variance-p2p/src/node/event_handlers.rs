@@ -241,9 +241,17 @@ impl Node {
 
                         let did_to_peer = self.did_to_peer.clone();
                         let peer_store = self.peer_store.clone();
+                        let events = self.events.clone();
                         tokio::spawn(async move {
-                            did_to_peer.write().await.insert(did.clone(), peer);
+                            let is_new = {
+                                let mut map = did_to_peer.write().await;
+                                let prev = map.insert(did.clone(), peer);
+                                prev != Some(peer)
+                            };
                             peer_store.insert(&did, &peer);
+                            if is_new {
+                                events.send_identity(IdentityEvent::DidCached { did });
+                            }
                         });
                     }
 
@@ -399,6 +407,31 @@ impl Node {
                         }
                         Err(e) => {
                             warn!("Failed to handle identity request: {}", e);
+                        }
+                    }
+
+                    // Reciprocal discovery: if we don't already have a DID mapping
+                    // for the requesting peer, query them back.  Only attempt once
+                    // per peer per connection to prevent infinite request/response
+                    // loops (e.g. when the peer's DID signature fails verification).
+                    if !self.reciprocal_attempted.contains(&peer)
+                        && !self.pending_auto_discovery.values().any(|p| *p == peer)
+                    {
+                        let has_mapping =
+                            self.did_to_peer.read().await.values().any(|&p| p == peer);
+                        if !has_mapping {
+                            self.reciprocal_attempted.insert(peer);
+                            debug!(
+                                "Reciprocal identity query for {} (no DID mapping yet)",
+                                peer
+                            );
+                            let req = variance_identity::protocol::create_peer_id_request(
+                                &peer.to_string(),
+                                None,
+                            );
+                            let req_id =
+                                self.swarm.behaviour_mut().identity.send_request(&peer, req);
+                            self.pending_auto_discovery.insert(req_id, peer);
                         }
                     }
                 }
@@ -566,9 +599,13 @@ impl Node {
                     did_to_peer.write().await.insert(did_id.clone(), peer_id);
                     peer_store.insert(&did_id, &peer_id);
 
-                    if handler.cache_did(did).await.is_ok() {
-                        events.send_identity(IdentityEvent::DidCached { did: did_id });
+                    // Fire DidCached unconditionally — presence should reflect
+                    // connectivity regardless of whether the DID document was
+                    // successfully persisted to the local cache.
+                    if let Err(e) = handler.cache_did(did).await {
+                        warn!("Failed to cache DID document for {}: {}", did_id, e);
                     }
+                    events.send_identity(IdentityEvent::DidCached { did: did_id });
                 });
             }
         }
@@ -901,12 +938,20 @@ impl Node {
                     debug!("Received direct message {} from {}", request.id, peer);
 
                     // Learn the sender's DID → PeerId mapping for future sends.
+                    // Also fire DidCached when this is a new mapping so the app
+                    // layer broadcasts a PresenceUpdated event to the frontend.
                     if !request.sender_did.is_empty() {
-                        {
+                        let is_new = {
                             let mut did_to_peer = self.did_to_peer.write().await;
-                            did_to_peer.insert(request.sender_did.clone(), peer);
-                        }
+                            let prev = did_to_peer.insert(request.sender_did.clone(), peer);
+                            prev != Some(peer)
+                        };
                         self.peer_store.insert(&request.sender_did, &peer);
+                        if is_new {
+                            self.events.send_identity(IdentityEvent::DidCached {
+                                did: request.sender_did.clone(),
+                            });
+                        }
                     }
 
                     self.events
@@ -1357,6 +1402,9 @@ impl Node {
 
         // Free rate-limiter state for this peer
         self.rate_limiter.remove_peer(&peer_id);
+
+        // Allow fresh reciprocal discovery on reconnection.
+        self.reciprocal_attempted.remove(&peer_id);
 
         // Remove stale DID→PeerId mappings so future sends are correctly
         // detected as offline and queued rather than silently dropped.
