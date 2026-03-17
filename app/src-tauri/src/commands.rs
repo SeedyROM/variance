@@ -114,15 +114,22 @@ pub async fn recover_identity(
 ///
 ///   VARIANCE_DATA_DIR=/tmp/peer-b ./variance-app
 ///
-/// Falls back to the platform default (`~/Library/Application Support/variance`
-/// on macOS, `~/.local/share/variance` on Linux) when the variable is not set.
+/// Falls back to the platform default. In debug builds, uses `variance-dev`
+/// to keep dev data separate from the installed release app:
+///   - Release: `~/Library/Application Support/variance` (macOS)
+///   - Debug:   `~/Library/Application Support/variance-dev` (macOS)
 fn data_dir() -> std::path::PathBuf {
     if let Ok(dir) = std::env::var("VARIANCE_DATA_DIR") {
         std::path::PathBuf::from(dir)
     } else {
+        let dir_name = if cfg!(debug_assertions) {
+            "variance-dev"
+        } else {
+            "variance"
+        };
         dirs::data_local_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("variance")
+            .join(dir_name)
     }
 }
 

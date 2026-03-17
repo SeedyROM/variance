@@ -6,9 +6,14 @@ fn variance_data_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("VARIANCE_DATA_DIR") {
         return PathBuf::from(dir);
     }
+    let dir_name = if cfg!(debug_assertions) {
+        "variance-dev"
+    } else {
+        "variance"
+    };
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("variance")
+        .join(dir_name)
 }
 
 /// Application configuration

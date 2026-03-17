@@ -50,9 +50,14 @@ fn default_relay_discovery_interval_secs() -> u64 {
 }
 
 fn default_storage_path() -> PathBuf {
+    let dir_name = if cfg!(debug_assertions) {
+        "variance-dev"
+    } else {
+        "variance"
+    };
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("variance")
+        .join(dir_name)
 }
 
 impl Default for Config {
