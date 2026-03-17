@@ -144,6 +144,15 @@ export function useWebSocket() {
   const incrementPendingInvitations = useMessagingStore((s) => s.incrementPendingInvitations);
   const setWsConnected = useAppStore((s) => s.setWsConnected);
 
+  // --- Dock badge count ---
+  // Reflect total unread (conversations + pending invitations) on the app icon.
+  const unreadCount = useMessagingStore((s) => s.unreadConversations.size);
+  const pendingInvitationCount = useMessagingStore((s) => s.pendingInvitationCount);
+  useEffect(() => {
+    const total = unreadCount + pendingInvitationCount;
+    void getCurrentWindow().setBadgeCount(total > 0 ? total : undefined);
+  }, [unreadCount, pendingInvitationCount]);
+
   // Clear the conversation's OS notification when the user opens it.
   useEffect(() => {
     if (!activeConversation || !localDid) return;
@@ -440,6 +449,15 @@ export function useWebSocket() {
             void queryClient.invalidateQueries({
               queryKey: ["group-members", event.group_id],
             });
+            break;
+          }
+
+          case "GroupFrozen": {
+            void queryClient.invalidateQueries({ queryKey: ["groups"] });
+            void queryClient.invalidateQueries({ queryKey: ["group-members", event.group_id] });
+            useToastStore
+              .getState()
+              .addToast("The group admin left. This group is now frozen.", "info");
             break;
           }
 

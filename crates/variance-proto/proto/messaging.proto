@@ -146,6 +146,7 @@ message Group {
   int64 created_at = 6;
   optional string avatar_cid = 7;
   optional string description = 8;
+  bool frozen = 9;
 }
 
 message GroupMember {

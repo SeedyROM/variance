@@ -21,6 +21,8 @@ interface MessagingStore {
   setPeerName: (did: string, name: string) => void;
   // Unread tracking: Set of conversation/group IDs with unread messages
   unreadConversations: Set<string>;
+  /** Merge backend-reported unread IDs into the set (used on startup / refetch). */
+  seedUnread: (ids: string[]) => void;
   markUnread: (conversationId: string) => void;
   markRead: (conversationId: string) => void;
   // Typing indicators: Map from conversation key (peer DID or "group:{id}") to
@@ -87,6 +89,13 @@ export const useMessagingStore = create<MessagingStore>((set) => ({
       return { peerNames: newMap };
     }),
   unreadConversations: new Set(),
+  seedUnread: (ids) =>
+    set((s) => {
+      if (ids.length === 0) return s;
+      const newSet = new Set(s.unreadConversations);
+      for (const id of ids) newSet.add(id);
+      return { unreadConversations: newSet };
+    }),
   markUnread: (conversationId) =>
     set((s) => {
       const newSet = new Set(s.unreadConversations);

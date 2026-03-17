@@ -14,6 +14,8 @@ import { useIdentityStore } from "../../stores/identityStore";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { isDifferentDay } from "../../utils/time";
 import { cn } from "../../utils/cn";
+import { Snowflake, MessageSquare, Copy } from "lucide-react";
+import { ContextMenu, type ContextMenuItem } from "../ui/ContextMenu";
 import type { GroupMessage, GroupMemberInfo, ReactionSummary } from "../../api/types";
 
 export type BubblePosition = "solo" | "first" | "middle" | "last";
@@ -35,6 +37,9 @@ function useMediaQuery(maxWidth: number): boolean {
 
 interface GroupViewProps {
   groupId: string;
+  /** Width of the left conversation sidebar (px), used to decide when
+   *  the member sidebar should switch to overlay mode. */
+  sidebarWidth?: number;
 }
 
 function GroupMessageInput({ groupId }: { groupId: string }) {
@@ -118,7 +123,7 @@ function aggregateGroupReactions(
   return result;
 }
 
-export function GroupView({ groupId }: GroupViewProps) {
+export function GroupView({ groupId, sidebarWidth = 288 }: GroupViewProps) {
   const localDid = useIdentityStore((s) => s.did);
   const presenceMap = useMessagingStore((s) => s.presenceMap);
   const setActiveConversation = useMessagingStore((s) => s.setActiveConversation);
@@ -127,8 +132,10 @@ export function GroupView({ groupId }: GroupViewProps) {
   const queryClient = useQueryClient();
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Sidebar toggle — hidden by default on narrow windows (<768px)
-  const isNarrow = useMediaQuery(768);
+  // Sidebar toggle — hidden by default on narrow windows.
+  // Use a responsive check: if the main content area (window - left sidebar - resize handle)
+  // is < 500px, treat as narrow so the member sidebar overlays instead of eating chat space.
+  const isNarrow = useMediaQuery(sidebarWidth + 4 + 500); // 4px for resize handle
   const [sidebarOpen, setSidebarOpen] = useState(!isNarrow);
   // Auto-close sidebar when the window shrinks below the breakpoint
   useEffect(() => {
@@ -279,7 +286,16 @@ export function GroupView({ groupId }: GroupViewProps) {
           </ScrollArea>
 
           <TypingIndicator users={typingUsers} />
-          <GroupMessageInput groupId={groupId} />
+          {group.is_frozen ? (
+            <div className="flex items-center justify-center gap-2 border-t border-surface-200 dark:border-surface-800 px-4 py-3 bg-surface-100 dark:bg-surface-900/60">
+              <Snowflake className="h-4 w-4 text-sky-500" />
+              <span className="text-sm text-surface-500">
+                This group is frozen. The admin left without transferring ownership.
+              </span>
+            </div>
+          ) : (
+            <GroupMessageInput groupId={groupId} />
+          )}
         </div>
 
         {/* Member sidebar — overlays on narrow screens, inline on wide */}
@@ -371,6 +387,33 @@ function MemberSection({
   online: boolean;
   localDid: string | null;
 }) {
+  const setActiveConversation = useMessagingStore((s) => s.setActiveConversation);
+
+  const buildContextItems = useCallback(
+    (m: GroupMemberInfo): ContextMenuItem[] => {
+      const isMe = m.did === localDid;
+      const items: ContextMenuItem[] = [];
+
+      if (!isMe) {
+        items.push({
+          label: "Send Message",
+          icon: <MessageSquare size={14} />,
+          onClick: () => setActiveConversation({ type: "dm", peerId: m.did }),
+        });
+      }
+
+      items.push({
+        label: "Copy DID",
+        icon: <Copy size={14} />,
+        divider: items.length > 0,
+        onClick: () => navigator.clipboard.writeText(m.did),
+      });
+
+      return items;
+    },
+    [localDid, setActiveConversation]
+  );
+
   return (
     <div>
       <p className="text-[11px] font-semibold text-surface-500 dark:text-surface-400 uppercase tracking-wider px-1 mb-1.5">
@@ -382,41 +425,40 @@ function MemberSection({
           const displayName = m.display_name ?? m.did.slice(-12);
 
           return (
-            <div
-              key={m.did}
-              className="group flex items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface-200/60 dark:hover:bg-surface-800/60 transition-colors"
-            >
-              {/* Avatar with status dot overlay */}
-              <div className="relative shrink-0">
-                <Avatar
-                  did={m.did}
-                  name={m.display_name ?? undefined}
-                  size="sm"
-                  className={online ? "" : "opacity-40"}
-                />
-                <StatusDot
-                  online={online}
-                  size="md"
-                  className="absolute -bottom-0.5 -right-0.5 border-2 border-surface-50 dark:border-surface-900"
-                />
-              </div>
+            <ContextMenu key={m.did} items={buildContextItems(m)}>
+              <div className="group flex items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-surface-200/60 dark:hover:bg-surface-800/60 transition-colors">
+                {/* Avatar with status dot overlay */}
+                <div className="relative shrink-0">
+                  <Avatar
+                    did={m.did}
+                    name={m.display_name ?? undefined}
+                    size="sm"
+                    className={online ? "" : "opacity-40"}
+                  />
+                  <StatusDot
+                    online={online}
+                    size="md"
+                    className="absolute -bottom-0.5 -right-0.5 border-2 border-surface-50 dark:border-surface-900"
+                  />
+                </div>
 
-              {/* Name */}
-              <span
-                className={`truncate text-[13px] font-medium ${
-                  online
-                    ? "text-surface-800 dark:text-surface-200"
-                    : "text-surface-400 dark:text-surface-500"
-                }`}
-              >
-                {displayName}
-                {isMe && (
-                  <span className="ml-1 text-[11px] font-normal text-surface-400 dark:text-surface-500">
-                    (you)
-                  </span>
-                )}
-              </span>
-            </div>
+                {/* Name */}
+                <span
+                  className={`truncate text-[13px] font-medium ${
+                    online
+                      ? "text-surface-800 dark:text-surface-200"
+                      : "text-surface-400 dark:text-surface-500"
+                  }`}
+                >
+                  {displayName}
+                  {isMe && (
+                    <span className="ml-1 text-[11px] font-normal text-surface-400 dark:text-surface-500">
+                      (you)
+                    </span>
+                  )}
+                </span>
+              </div>
+            </ContextMenu>
           );
         })}
       </div>

@@ -194,6 +194,11 @@ pub enum WsMessage {
         old_group_id: String,
         new_group_id: String,
     },
+    /// The group's sole admin abandoned the group without transferring the role.
+    /// The group is now frozen — no invites, kicks, role changes, or messages.
+    GroupFrozen {
+        group_id: String,
+    },
     OfflineMessagesReceived {
         count: usize,
     },
@@ -277,6 +282,7 @@ impl WsMessage {
             | Self::GroupMemberRemoved { .. }
             | Self::GroupDesyncDetected { .. }
             | Self::GroupReinitialized { .. }
+            | Self::GroupFrozen { .. }
             | Self::OfflineMessagesReceived { .. }
             | Self::TypingStarted { .. }
             | Self::TypingStopped { .. }

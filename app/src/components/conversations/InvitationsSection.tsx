@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, Mail, X } from "lucide-react";
+import { Check, ChevronDown, Mail, UserCheck, X } from "lucide-react";
 import { invitationsApi } from "../../api/client";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { useToastStore } from "../../stores/toastStore";
 import { cn } from "../../utils/cn";
 import { relativeTime } from "../../utils/time";
 import type { PendingInvitation } from "../../api/types";
+import { Tooltip } from "../ui/Tooltip";
 
 interface InvitationsSectionProps {
   /** DIDs of peers we already have DM conversations with. */
@@ -119,12 +120,23 @@ function InvitationCard({
         </p>
         <span className="text-[10px] text-surface-400 shrink-0">{relativeTime(inv.timestamp)}</span>
       </div>
-      <p className="text-xs text-surface-500 truncate mt-0.5">
-        from {inv.inviter_display_name ?? inv.inviter_did.slice(-12)}
+      <p className="text-xs text-surface-500 truncate mt-0.5 flex items-center gap-1">
+        <span className="truncate">
+          from {inv.inviter_display_name ?? inv.inviter_did.slice(-12)}
+        </span>
         {isKnownContact && (
-          <span className="ml-1 text-primary-500 font-medium">&middot; contact</span>
+          <Tooltip
+            content="You're in contact with this person"
+            placement="top"
+            delay={300}
+            className="w-auto shrink-0"
+          >
+            <UserCheck className="h-3 w-3 text-primary-500" />
+          </Tooltip>
         )}
-        {inv.member_count > 0 && ` \u00B7 ${inv.member_count} members`}
+        {inv.member_count > 0 && (
+          <span className="shrink-0">&middot; {inv.member_count} members</span>
+        )}
       </p>
       <div className="flex gap-2 mt-2">
         <button

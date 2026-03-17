@@ -166,6 +166,56 @@ fn outranks(actor_role: &str, target_role: &str) -> bool {
     role_rank(actor_role) > role_rank(target_role)
 }
 
+/// Reject the request if the group is frozen (admin abandoned without succession).
+async fn require_not_frozen(state: &AppState, group_id: &str) -> crate::Result<()> {
+    let frozen = state
+        .storage
+        .fetch_group_metadata(group_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|g| g.frozen)
+        .unwrap_or(false);
+    if frozen {
+        return Err(crate::Error::Forbidden {
+            message: "This group is frozen — the admin left without transferring the role. \
+                      No messages, invites, kicks, or role changes are allowed."
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Return `true` if the local user is the **only** admin in the group.
+async fn is_sole_admin(state: &AppState, group_id: &str) -> bool {
+    let meta = state
+        .storage
+        .fetch_group_metadata(group_id)
+        .await
+        .ok()
+        .flatten();
+    let Some(group) = meta else { return false };
+    let admin_count = group
+        .members
+        .iter()
+        .filter(|m| m.role == variance_proto::messaging_proto::GroupRole::Admin as i32)
+        .count();
+    let my_role = member_role_from_metadata(Some(&group), &state.local_did);
+    my_role == "admin" && admin_count == 1
+}
+
+/// Return `true` if the group has other members besides the local user.
+async fn has_other_members(state: &AppState, group_id: &str) -> bool {
+    let meta = state
+        .storage
+        .fetch_group_metadata(group_id)
+        .await
+        .ok()
+        .flatten();
+    let Some(group) = meta else { return false };
+    group.members.iter().any(|m| m.did != state.local_did)
+}
+
 /// Persist the current MLS group state to storage after a mutation.
 pub(super) async fn persist_mls_state(state: &AppState) {
     match state.mls_groups.export_state() {
@@ -323,6 +373,11 @@ pub(super) async fn mls_list_groups(
             .unwrap_or(0);
         let has_unread = last_message_timestamp.is_some_and(|ts| ts > last_read);
 
+        let is_frozen = metadata_by_id
+            .get(&group_id)
+            .map(|g| g.frozen)
+            .unwrap_or(false);
+
         infos.push(MlsGroupInfo {
             id: group_id,
             name,
@@ -331,6 +386,7 @@ pub(super) async fn mls_list_groups(
             has_unread,
             admin_did,
             your_role: your_role.to_string(),
+            is_frozen,
         });
     }
 
@@ -479,6 +535,9 @@ pub(super) async fn mls_invite_to_group(
             message: "invitee must not be empty".to_string(),
         });
     }
+
+    // Frozen groups cannot accept new members.
+    require_not_frozen(&state, &id).await?;
 
     // Only admins can invite new members.
     require_role(&state, &id, "admin").await?;
@@ -649,10 +708,23 @@ pub(super) async fn mls_invite_to_group(
 }
 
 /// Leave an MLS group (sends a leave proposal).
+///
+/// If the local user is the sole admin and other members remain, this returns
+/// an error — the admin must transfer the role first, or use the abandon
+/// endpoint to leave without succession (which freezes the group).
 pub(super) async fn mls_leave_group(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
+    // Block sole-admin leave when other members still exist.
+    if is_sole_admin(&state, &id).await && has_other_members(&state, &id).await {
+        return Err(Error::BadRequest {
+            message: "You are the only admin. Transfer the admin role to another member \
+                      before leaving, or use 'Abandon group' to leave without succession \
+                      (the group will be frozen for remaining members)."
+                .to_string(),
+        });
+    }
     use variance_messaging::mls::MlsGroupHandler;
     use variance_messaging::storage::MessageStorage;
 
@@ -735,6 +807,122 @@ pub(super) async fn mls_leave_group(
     })))
 }
 
+/// Abandon a group without transferring the admin role.
+///
+/// Admin-only. Sends a special `admin_abandoned` control message before leaving
+/// so remaining members know the group is now frozen (no admin = no invites,
+/// kicks, or role changes). The leaving admin's local state is fully purged,
+/// identical to a normal leave.
+pub(super) async fn mls_abandon_group(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    use variance_messaging::mls::MlsGroupHandler;
+    use variance_messaging::storage::MessageStorage;
+
+    require_role(&state, &id, "admin").await?;
+
+    // Broadcast an `admin_abandoned` control message before leaving so
+    // remaining peers can mark the group as frozen.
+    let mut metadata = HashMap::new();
+    metadata.insert("type".to_string(), "admin_abandoned".to_string());
+    metadata.insert("admin_did".to_string(), state.local_did.clone());
+
+    let content = MessageContent {
+        text: String::new(),
+        attachments: vec![],
+        mentions: vec![],
+        reply_to: None,
+        metadata,
+    };
+
+    if let Err(e) = send_group_content(&state, &id, content, false).await {
+        tracing::warn!("Failed to broadcast admin_abandoned to group: {}", e);
+    }
+
+    // Now perform the same leave sequence as mls_leave_group.
+    let leave_msg = state.mls_groups.leave_group(&id).map_err(|e| Error::App {
+        message: format!("Failed to leave MLS group: {}", e),
+    })?;
+
+    let leave_bytes = MlsGroupHandler::serialize_message(&leave_msg).map_err(|e| Error::App {
+        message: format!("Failed to serialize leave proposal: {}", e),
+    })?;
+
+    let topic = format!("/variance/group/{}", id);
+    let leave_proto = variance_proto::messaging_proto::GroupMessage {
+        id: ulid::Ulid::new().to_string(),
+        sender_did: state.local_did.clone(),
+        group_id: id.clone(),
+        timestamp: chrono::Utc::now().timestamp_millis(),
+        r#type: 0,
+        reply_to: None,
+        mls_ciphertext: leave_bytes,
+    };
+    if let Err(e) = state
+        .node_handle
+        .publish_group_message(topic.clone(), leave_proto)
+        .await
+    {
+        tracing::warn!("Failed to publish MLS leave proposal (abandon): {}", e);
+    }
+
+    if let Err(e) = state.node_handle.unsubscribe_from_topic(topic).await {
+        tracing::warn!("Failed to unsubscribe from group topic (abandon): {}", e);
+    }
+
+    state.mls_groups.remove_group(&id);
+    persist_mls_state(&state).await;
+
+    // Purge all local state for this group.
+    if let Err(e) = state.storage.delete_group_messages(&id).await {
+        tracing::warn!("Failed to delete group messages on abandon: {}", e);
+    }
+    if let Err(e) = state.storage.delete_group_metadata(&id).await {
+        tracing::warn!("Failed to delete group metadata on abandon: {}", e);
+    }
+    if let Err(e) = state
+        .storage
+        .delete_group_last_read_at(&state.local_did, &id)
+        .await
+    {
+        tracing::warn!("Failed to delete group last_read_at on abandon: {}", e);
+    }
+    if let Err(e) = state
+        .storage
+        .delete_all_outbound_invites_for_group(&id)
+        .await
+    {
+        tracing::warn!("Failed to delete outbound invites on abandon: {}", e);
+    }
+
+    // Generate a fresh KeyPackage so we can be reinvited.
+    match state.mls_groups.generate_key_package() {
+        Ok(kp) => match MlsGroupHandler::serialize_message_bytes(&kp) {
+            Ok(kp_bytes) => {
+                if let Err(e) = state.node_handle.update_mls_key_package(kp_bytes).await {
+                    tracing::warn!("Failed to republish MLS KeyPackage after abandon: {}", e);
+                }
+                persist_mls_state(&state).await;
+            }
+            Err(e) => tracing::warn!(
+                "Failed to serialize refreshed KeyPackage after abandon: {}",
+                e
+            ),
+        },
+        Err(e) => tracing::warn!(
+            "Failed to generate refreshed KeyPackage after abandon: {}",
+            e
+        ),
+    }
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "group_id": id,
+        "abandoned": true,
+    })))
+}
+
 /// Delete a group: announce departure, unsubscribe from the topic, and purge
 /// all local messages and metadata. Unlike leave, this also clears history.
 pub(super) async fn mls_delete_group(
@@ -811,6 +999,9 @@ pub(super) async fn mls_remove_member(
     Path((id, member_did)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>> {
     use variance_messaging::mls::MlsGroupHandler;
+
+    // Frozen groups cannot have members removed.
+    require_not_frozen(&state, &id).await?;
 
     // Moderators and admins can kick members.
     require_role(&state, &id, "moderator").await?;
@@ -891,32 +1082,35 @@ pub(super) async fn mls_remove_member(
 /// Change a member's role within an MLS group.
 ///
 /// Only admins can promote/demote. The target must be outranked by the actor,
-/// and the new role must also be below the actor's own role (admins cannot
-/// create other admins via this endpoint).
+/// and the new role must also be at or below the actor's own role.
+/// Admins can promote others to admin (for ownership transfer).
 pub(super) async fn mls_change_member_role(
     State(state): State<AppState>,
     Path((id, member_did)): Path<(String, String)>,
     Json(req): Json<ChangeRoleRequest>,
 ) -> Result<Json<serde_json::Value>> {
+    // Frozen groups cannot have roles changed.
+    require_not_frozen(&state, &id).await?;
+
     // Only admins can change roles.
     require_role(&state, &id, "admin").await?;
 
     // Validate the requested new role.
     let new_role_rank = role_rank(&req.new_role);
-    if new_role_rank == 0 || req.new_role == "admin" {
+    if new_role_rank == 0 {
         return Err(Error::BadRequest {
             message: format!(
-                "Invalid target role '{}'. Must be 'moderator' or 'member'.",
+                "Invalid target role '{}'. Must be 'admin', 'moderator', or 'member'.",
                 req.new_role,
             ),
         });
     }
 
-    // Can't change the role of someone you don't outrank.
+    // Can't change the role of someone you don't outrank (unless promoting to admin).
     let meta = state.storage.fetch_group_metadata(&id).await.ok().flatten();
     let my_role = member_role_from_metadata(meta.as_ref(), &state.local_did);
     let target_role = member_role_from_metadata(meta.as_ref(), &member_did);
-    if !outranks(my_role, target_role) {
+    if !outranks(my_role, target_role) && req.new_role != "admin" {
         return Err(Error::Forbidden {
             message: format!(
                 "Cannot change role of {} (role: {}) — your role ({}) does not outrank theirs",
@@ -927,6 +1121,7 @@ pub(super) async fn mls_change_member_role(
 
     // Map role string to protobuf i32.
     let new_role_i32 = match req.new_role.as_str() {
+        "admin" => variance_proto::messaging_proto::GroupRole::Admin as i32,
         "moderator" => variance_proto::messaging_proto::GroupRole::Moderator as i32,
         _ => variance_proto::messaging_proto::GroupRole::Member as i32,
     };
@@ -983,6 +1178,9 @@ pub(super) async fn mls_send_group_message(
             message: "Message must be 1–4096 characters".to_string(),
         });
     }
+
+    // Frozen groups cannot accept new messages.
+    require_not_frozen(&state, &req.group_id).await?;
 
     let content = MessageContent {
         text: req.text,

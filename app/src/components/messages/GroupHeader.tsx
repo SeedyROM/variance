@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Shield, Users, Settings } from "lucide-react";
+import { Shield, Snowflake, Users, Settings } from "lucide-react";
 import { IconButton } from "../ui/IconButton";
 import { ManageGroupPanel } from "./ManageGroupPanel";
 import type { MlsGroupInfo } from "../../api/types";
@@ -29,6 +29,18 @@ export function GroupHeader({ group, onLeave, onToggleMembers, membersOpen }: Gr
               <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 shrink-0">
                 <Shield className="h-2.5 w-2.5" />
                 Admin
+              </span>
+            )}
+            {group.your_role === "moderator" && (
+              <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 shrink-0">
+                <Shield className="h-2.5 w-2.5" />
+                Mod
+              </span>
+            )}
+            {group.is_frozen && (
+              <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-semibold bg-sky-100 text-sky-600 dark:bg-sky-900/30 dark:text-sky-400 shrink-0">
+                <Snowflake className="h-2.5 w-2.5" />
+                Frozen
               </span>
             )}
           </div>
