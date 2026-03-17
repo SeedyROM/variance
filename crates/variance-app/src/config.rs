@@ -3,6 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn variance_data_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("VARIANCE_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("variance")
