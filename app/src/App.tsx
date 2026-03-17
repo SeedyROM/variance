@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { OnboardingShell } from "./components/onboarding/OnboardingShell";
@@ -14,6 +14,7 @@ import { useTheme } from "./hooks/useTheme";
 import { useIdentityStore } from "./stores/identityStore";
 import { useAppStore } from "./stores/appStore";
 import { useMessagingStore } from "./stores/messagingStore";
+import { useSettingsStore, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH } from "./stores/settingsStore";
 import { useQuery } from "@tanstack/react-query";
 import { identityApi, conversationsApi, resetApiBase } from "./api/client";
 
@@ -48,6 +49,55 @@ function MainShell() {
   const activeConversation = useMessagingStore((s) => s.activeConversation);
   const setIdentity = useIdentityStore((s) => s.setIdentity);
   const setUsernameStore = useIdentityStore((s) => s.setUsername);
+
+  // Persisted sidebar width
+  const sidebarWidth = useSettingsStore((s) => s.sidebarWidth);
+  const setSidebarWidth = useSettingsStore((s) => s.setSidebarWidth);
+
+  // Live width during drag (avoids writing to store on every mousemove)
+  const [liveWidth, setLiveWidth] = useState(sidebarWidth);
+  const isDragging = useRef(false);
+
+  // Keep liveWidth in sync when the store value changes externally
+  useEffect(() => {
+    if (!isDragging.current) setLiveWidth(sidebarWidth);
+  }, [sidebarWidth]);
+
+  const clampWidth = useCallback((w: number) => {
+    const maxVw = Math.floor(window.innerWidth * 0.5);
+    return Math.max(SIDEBAR_MIN_WIDTH, Math.min(w, SIDEBAR_MAX_WIDTH, maxVw));
+  }, []);
+
+  const onResizeStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      isDragging.current = true;
+      const startX = e.clientX;
+      const startW = liveWidth;
+
+      const onMove = (ev: MouseEvent) => {
+        const w = clampWidth(startW + (ev.clientX - startX));
+        setLiveWidth(w);
+      };
+      const onUp = () => {
+        isDragging.current = false;
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        // Persist final width
+        setLiveWidth((w) => {
+          setSidebarWidth(w);
+          return w;
+        });
+      };
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    },
+    [liveWidth, clampWidth, setSidebarWidth]
+  );
 
   // Sync identity into store after node starts
   useQuery({
@@ -85,10 +135,21 @@ function MainShell() {
 
   return (
     <div className="flex h-screen bg-surface-100 dark:bg-surface-950 overscroll-none select-none">
-      <ConversationList />
-      <main className="flex-1 overflow-hidden">
+      <ConversationList width={liveWidth} />
+
+      {/* Resize handle */}
+      <div
+        onMouseDown={onResizeStart}
+        className="w-1 shrink-0 cursor-col-resize hover:bg-primary-500/30 active:bg-primary-500/50 transition-colors"
+      />
+
+      <main className="flex-1 overflow-hidden min-w-0">
         {activeConversation?.type === "group" ? (
-          <GroupView key={activeConversation.groupId} groupId={activeConversation.groupId} />
+          <GroupView
+            key={activeConversation.groupId}
+            groupId={activeConversation.groupId}
+            sidebarWidth={liveWidth}
+          />
         ) : activePeerDid ? (
           <MessageView key={activePeerDid} peerDid={activePeerDid} />
         ) : (

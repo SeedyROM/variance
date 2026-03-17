@@ -17,7 +17,7 @@ import { useIdentityStore } from "../../stores/identityStore";
 import { cn } from "../../utils/cn";
 import type { MlsGroupInfo } from "../../api/types";
 
-export function ConversationList() {
+export function ConversationList({ width }: { width: number }) {
   const [showNew, setShowNew] = useState(false);
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -100,7 +100,10 @@ export function ConversationList() {
   const knownPeerDids = new Set(conversations.map((c) => c.peer_did));
 
   return (
-    <div className="flex h-full w-72 flex-col border-r border-surface-200 bg-surface-50 dark:border-surface-800 dark:bg-surface-900">
+    <div
+      className="flex h-full flex-col border-r border-surface-200 bg-surface-50 dark:border-surface-800 dark:bg-surface-900 shrink-0"
+      style={{ width }}
+    >
       {/* Spacer — clears macOS traffic lights (~28px) */}
       <div className="h-7 shrink-0" />
 
@@ -217,7 +220,7 @@ export function ConversationList() {
             )}
           </button>
 
-          <ThemeToggle />
+          {width >= 257 && <ThemeToggle />}
         </div>
       </div>
 

@@ -22,10 +22,8 @@ async function createGroup(base: string, name: string): Promise<string> {
 
 /** Helper: list all groups and return parsed array. */
 async function listGroups(
-  base: string,
-): Promise<
-  { id: string; name: string; is_frozen: boolean; your_role: string }[]
-> {
+  base: string
+): Promise<{ id: string; name: string; is_frozen: boolean; your_role: string }[]> {
   const res = await fetch(`${base}/mls/groups`);
   expect(res.ok).toBe(true);
   return (await res.json()) as {
@@ -37,9 +35,7 @@ async function listGroups(
 }
 
 test.describe("Admin succession — sole admin leave blocked", () => {
-  test("sole admin with another member cannot leave normally", async ({
-    apiPort,
-  }) => {
+  test("sole admin with another member cannot leave normally", async ({ apiPort }) => {
     const base = `http://127.0.0.1:${apiPort}`;
 
     // Create a group (local user becomes sole admin).
@@ -84,14 +80,11 @@ test.describe("Admin abandon and frozen group", () => {
     expect(msgRes.ok).toBe(true);
 
     // Abandon.
-    const abandonRes = await fetch(
-      `${base}/mls/groups/${groupId}/abandon`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      },
-    );
+    const abandonRes = await fetch(`${base}/mls/groups/${groupId}/abandon`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
     expect(abandonRes.status).toBe(200);
     const abandonBody = (await abandonRes.json()) as {
       success: boolean;
@@ -114,9 +107,7 @@ test.describe("Admin abandon and frozen group", () => {
     expect(msgs.length).toBe(0);
   });
 
-  test("non-admin cannot abandon a group (requires seeded metadata)", async ({
-    apiPort,
-  }) => {
+  test("non-admin cannot abandon a group (requires seeded metadata)", async ({ apiPort }) => {
     // In a single-node e2e backend the local user is always the admin of
     // groups they create, so we can't directly test a non-admin abandon
     // through the API. This scenario is covered by the unit test
@@ -124,14 +115,11 @@ test.describe("Admin abandon and frozen group", () => {
     // endpoint at least requires the group to exist.
     const base = `http://127.0.0.1:${apiPort}`;
 
-    const abandonRes = await fetch(
-      `${base}/mls/groups/nonexistent-group-id/abandon`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      },
-    );
+    const abandonRes = await fetch(`${base}/mls/groups/nonexistent-group-id/abandon`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
     // Should fail — group doesn't exist, so role check can't pass.
     expect(abandonRes.ok).toBe(false);
   });
@@ -167,9 +155,7 @@ test.describe("Frozen group blocks mutations", () => {
 });
 
 test.describe("Group creation and role in list", () => {
-  test("newly created group shows admin role and is not frozen", async ({
-    apiPort,
-  }) => {
+  test("newly created group shows admin role and is not frozen", async ({ apiPort }) => {
     const base = `http://127.0.0.1:${apiPort}`;
 
     const groupId = await createGroup(base, "Role Check Group");
@@ -186,9 +172,7 @@ test.describe("Group creation and role in list", () => {
 });
 
 test.describe("Admin role change", () => {
-  test("role change endpoint accepts admin as target role", async ({
-    apiPort,
-  }) => {
+  test("role change endpoint accepts admin as target role", async ({ apiPort }) => {
     const base = `http://127.0.0.1:${apiPort}`;
 
     const groupId = await createGroup(base, "Role Change Test");
@@ -210,7 +194,7 @@ test.describe("Admin role change", () => {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ new_role: "admin" }),
-      },
+      }
     );
     // Should fail — member not found.
     expect(roleRes.ok).toBe(false);
@@ -221,9 +205,7 @@ test.describe("Admin role change", () => {
 });
 
 test.describe("Leave and abandon sequence", () => {
-  test("create group, send messages, abandon, verify purged", async ({
-    apiPort,
-  }) => {
+  test("create group, send messages, abandon, verify purged", async ({ apiPort }) => {
     const base = `http://127.0.0.1:${apiPort}`;
 
     const groupId = await createGroup(base, "Sequence Test");
@@ -244,14 +226,11 @@ test.describe("Leave and abandon sequence", () => {
     expect(msgs.length).toBe(3);
 
     // Abandon.
-    const abandonRes = await fetch(
-      `${base}/mls/groups/${groupId}/abandon`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      },
-    );
+    const abandonRes = await fetch(`${base}/mls/groups/${groupId}/abandon`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
     expect(abandonRes.status).toBe(200);
 
     // Group and messages should be gone.
@@ -263,9 +242,7 @@ test.describe("Leave and abandon sequence", () => {
     expect(msgsAfterBody.length).toBe(0);
   });
 
-  test("leave as sole admin with no other members succeeds", async ({
-    apiPort,
-  }) => {
+  test("leave as sole admin with no other members succeeds", async ({ apiPort }) => {
     const base = `http://127.0.0.1:${apiPort}`;
 
     const groupId = await createGroup(base, "Solo Leave Test");
