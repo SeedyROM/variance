@@ -26,6 +26,8 @@ env:
   CARGO_INCREMENTAL: 0
   SCCACHE_GHA_ENABLED: true
   RUSTC_WRAPPER: sccache
+  # sccache-action v0.0.9 still uses Node 20; opt into Node 24 runtime
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 permissions:
   contents: write # needed for creating releases and uploading assets

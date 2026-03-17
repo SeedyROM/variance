@@ -17,6 +17,8 @@ env:
   # sccache config
   SCCACHE_GHA_ENABLED: true
   RUSTC_WRAPPER: sccache
+  # sccache-action v0.0.9 still uses Node 20; opt into Node 24 runtime
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # ──────────────────────────────────────────────
@@ -203,6 +205,7 @@ jobs:
           path: |
             app/test-results/
             app/playwright-report/
+          if-no-files-found: ignore
           retention-days: 14
 
   # ──────────────────────────────────────────────
