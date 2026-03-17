@@ -13,6 +13,10 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 use variance_p2p::{Config, EventChannels, Node, NodeHandle};
 
+use ed25519_dalek::SigningKey;
+use rand_core::OsRng;
+use variance_identity::did::Did;
+
 // ===== Harness =====
 
 struct TestNode {
@@ -121,7 +125,15 @@ async fn test_connected_dids_after_identity_set() {
     let node_a = TestNode::spawn().await;
     let node_b = TestNode::spawn().await;
 
-    // Register identities so the nodes have DIDs to exchange
+    // Register identities so the nodes have DIDs to exchange.
+    // A signed Did struct is required so the identity protocol response carries
+    // a valid document signature — without it the receiving node rejects the DID
+    // and never populates its did_to_peer mapping.
+    let alice_key = SigningKey::generate(&mut OsRng);
+    let alice_peer_id: libp2p_identity::PeerId = node_a.peer_id.parse().unwrap();
+    let alice_did =
+        Did::from_signing_key("did:variance:alice".to_string(), alice_key, &alice_peer_id).unwrap();
+
     node_a
         .handle
         .set_local_identity(
@@ -130,10 +142,15 @@ async fn test_connected_dids_after_identity_set() {
             vec![],      // one-time keys
             None,        // mls key package
             vec![],      // mailbox token
-            None,        // no Did struct in tests
+            Some(alice_did),
         )
         .await
         .unwrap();
+
+    let bob_key = SigningKey::generate(&mut OsRng);
+    let bob_peer_id: libp2p_identity::PeerId = node_b.peer_id.parse().unwrap();
+    let bob_did =
+        Did::from_signing_key("did:variance:bob".to_string(), bob_key, &bob_peer_id).unwrap();
 
     node_b
         .handle
@@ -143,7 +160,7 @@ async fn test_connected_dids_after_identity_set() {
             vec![],
             None,
             vec![],
-            None, // no Did struct in tests
+            Some(bob_did),
         )
         .await
         .unwrap();
