@@ -11,6 +11,11 @@ on:
         description: "Version tag (e.g. v0.1.0)"
         required: true
         type: string
+      dry_run:
+        description: "Dry run — build artifacts but skip publishing the GitHub Release"
+        required: false
+        type: boolean
+        default: true
 
 concurrency:
   group: release-${{ github.ref }}
@@ -256,6 +261,7 @@ jobs:
   # ──────────────────────────────────────────────
   publish:
     name: Publish Release
+    if: ${{ github.event_name == 'push' || inputs.dry_run != true }}
     needs: [build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     steps:
