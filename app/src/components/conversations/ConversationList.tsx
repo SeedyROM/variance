@@ -34,12 +34,22 @@ export function ConversationList({ width }: { width: number }) {
 
   const { data: conversations = [] } = useQuery({
     queryKey: ["conversations"],
-    queryFn: conversationsApi.list,
+    queryFn: async () => {
+      const list = await conversationsApi.list();
+      const unreadIds = list.filter((c) => c.has_unread).map((c) => c.id);
+      useMessagingStore.getState().seedUnread(unreadIds);
+      return list;
+    },
   });
 
   const { data: groups = [] } = useQuery({
     queryKey: ["groups"],
-    queryFn: groupsApi.list,
+    queryFn: async () => {
+      const list = await groupsApi.list();
+      const unreadIds = list.filter((g) => g.has_unread).map((g) => g.id);
+      useMessagingStore.getState().seedUnread(unreadIds);
+      return list;
+    },
   });
 
   const deleteMutation = useMutation({
