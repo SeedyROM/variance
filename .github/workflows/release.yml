@@ -42,6 +42,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install protoc
+        run: brew install protobuf
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -116,6 +119,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
+
+      - name: Install protoc
+        run: choco install protoc -y
 
       - uses: dtolnay/rust-toolchain@stable
 
