@@ -22,40 +22,28 @@ impl LocalMessageStorage {
         &self,
         group_id: &str,
         limit: usize,
-        before: Option<String>,
+        before: Option<i64>,
     ) -> Result<Vec<GroupMessage>> {
         let tree = self.group_tree()?;
         let prefix = format!("{group_id}:");
+        // Upper bound for this group's key range (';' is one byte after ':').
+        let prefix_end = format!("{group_id};");
 
-        let mut messages = Vec::new();
-        let iter = tree.scan_prefix(prefix.as_bytes());
+        // Scan newest-first so `limit` returns the most recent N messages.
+        // Keys are `{group_id}:{timestamp:020}:{id}` — lexicographic == chronological.
+        let mut messages: Vec<GroupMessage> = tree
+            .range(prefix.as_bytes()..prefix_end.as_bytes())
+            .rev()
+            .filter_map(|entry| {
+                let (_key, value) = entry.ok()?;
+                GroupMessage::decode(value.as_ref()).ok()
+            })
+            .filter(|msg| before.is_none_or(|ts| msg.timestamp < ts))
+            .take(limit)
+            .collect();
 
-        for entry in iter {
-            let (key, value) = entry.map_err(|e| Error::Storage { source: e })?;
-
-            if let Some(ref before_ts) = before {
-                let key_str = match std::str::from_utf8(&key) {
-                    Ok(s) => s,
-                    Err(_) => {
-                        warn!("Skipping group message with non-UTF-8 key");
-                        continue;
-                    }
-                };
-                if key_str >= before_ts.as_str() {
-                    continue;
-                }
-            }
-
-            let message =
-                GroupMessage::decode(value.as_ref()).map_err(|e| Error::Protocol { source: e })?;
-
-            messages.push(message);
-
-            if messages.len() >= limit {
-                break;
-            }
-        }
-
+        // Restore chronological order for the caller.
+        messages.reverse();
         Ok(messages)
     }
 
@@ -652,5 +640,135 @@ mod tests {
             .await
             .unwrap();
         assert!(!updated);
+    }
+
+    /// Proves the pagination bug: when a group has more messages than the
+    /// default page limit (50), `fetch_group` should return the **newest**
+    /// messages (like DM pagination does). Instead, the current forward-scan
+    /// implementation returns the oldest N, so newly sent messages beyond
+    /// the limit are silently dropped from the response and never rendered
+    /// in the chat view.
+    #[tokio::test]
+    async fn test_fetch_group_returns_newest_messages_when_over_limit() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let total = 60;
+        let limit = 50;
+
+        // Insert 60 messages with timestamps 1000..60000.
+        for i in 1..=total {
+            let msg = GroupMessage {
+                id: format!("msg-{:04}", i),
+                group_id: "pagination-group".to_string(),
+                sender_did: "did:key:alice".to_string(),
+                mls_ciphertext: vec![i as u8],
+                timestamp: i as i64 * 1000,
+                ..Default::default()
+            };
+            storage.store_group(&msg).await.unwrap();
+        }
+
+        let result = storage
+            .fetch_group("pagination-group", limit, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), limit);
+
+        // The result MUST contain the newest messages (timestamps 11000..60000),
+        // not the oldest (1000..50000). A user opening a chat should see recent
+        // messages, not messages from the beginning of time.
+        let newest_msg = result.last().unwrap();
+        assert_eq!(
+            newest_msg.timestamp,
+            total as i64 * 1000,
+            "The last message returned must be the newest one (timestamp {}), \
+             but got timestamp {}. fetch_group scans forward from the oldest \
+             key instead of backward from the newest, so messages beyond the \
+             page limit are never returned.",
+            total as i64 * 1000,
+            newest_msg.timestamp,
+        );
+
+        let oldest_msg = result.first().unwrap();
+        assert_eq!(
+            oldest_msg.timestamp,
+            (total as i64 - limit as i64 + 1) * 1000,
+            "The first message returned must be the oldest within the page \
+             (timestamp {}), not timestamp {}.",
+            (total as i64 - limit as i64 + 1) * 1000,
+            oldest_msg.timestamp,
+        );
+
+        // Results must be in chronological order (oldest first within the page).
+        for w in result.windows(2) {
+            assert!(
+                w[0].timestamp <= w[1].timestamp,
+                "Messages must be in chronological order, but {} came before {}",
+                w[0].timestamp,
+                w[1].timestamp,
+            );
+        }
+    }
+
+    /// Proves that after fetch_group returns the newest page, sending one
+    /// more message should make it appear in the next fetch (simulating the
+    /// real-time chat flow where a WS event triggers a refetch).
+    #[tokio::test]
+    async fn test_new_message_appears_after_exceeding_page_size() {
+        let dir = tempdir().unwrap();
+        let storage = LocalMessageStorage::new(dir.path()).unwrap();
+
+        let limit = 50;
+
+        // Fill exactly at the limit.
+        for i in 1..=limit {
+            let msg = GroupMessage {
+                id: format!("msg-{:04}", i),
+                group_id: "realtime-group".to_string(),
+                sender_did: "did:key:alice".to_string(),
+                mls_ciphertext: vec![i as u8],
+                timestamp: i as i64 * 1000,
+                ..Default::default()
+            };
+            storage.store_group(&msg).await.unwrap();
+        }
+
+        // At exactly the limit, the newest message must be present.
+        let page = storage
+            .fetch_group("realtime-group", limit, None)
+            .await
+            .unwrap();
+        assert_eq!(page.len(), limit);
+        assert_eq!(page.last().unwrap().timestamp, limit as i64 * 1000);
+
+        // Now a new message arrives (simulating a WS-triggered store + refetch).
+        let new_msg = GroupMessage {
+            id: "msg-new".to_string(),
+            group_id: "realtime-group".to_string(),
+            sender_did: "did:key:bob".to_string(),
+            mls_ciphertext: vec![99],
+            timestamp: (limit as i64 + 1) * 1000,
+            ..Default::default()
+        };
+        storage.store_group(&new_msg).await.unwrap();
+
+        // Refetch: the new message MUST appear in the result.
+        let page = storage
+            .fetch_group("realtime-group", limit, None)
+            .await
+            .unwrap();
+        assert_eq!(page.len(), limit);
+        assert_eq!(
+            page.last().unwrap().id,
+            "msg-new",
+            "A newly sent message (id='msg-new') must appear in the fetch_group \
+             result even when the group has more than {} total messages. \
+             Currently it is missing because fetch_group scans forward and \
+             the new message falls outside the first {} keys.",
+            limit,
+            limit,
+        );
     }
 }

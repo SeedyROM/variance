@@ -20,6 +20,9 @@ import type { GroupMessage, GroupMemberInfo, ReactionSummary } from "../../api/t
 
 export type BubblePosition = "solo" | "first" | "middle" | "last";
 
+// Initial and paginated load size. Backend supports cursor pagination via ?before=<ts>.
+const PAGE_SIZE = 50;
+
 /** Returns true when the viewport is narrower than the given pixel width. */
 function useMediaQuery(maxWidth: number): boolean {
   const [matches, setMatches] = useState(
@@ -130,7 +133,14 @@ export function GroupView({ groupId, sidebarWidth = 288 }: GroupViewProps) {
   const typingUsersSet = useMessagingStore((s) => s.typingUsers.get(`group:${groupId}`));
   const typingUsers = typingUsersSet ? Array.from(typingUsersSet) : [];
   const queryClient = useQueryClient();
+  const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const topSentinelRef = useRef<HTMLDivElement>(null);
+
+  // Older pages fetched when scrolling to the top.
+  const [olderMessages, setOlderMessages] = useState<GroupMessage[]>([]);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
 
   // Sidebar toggle — hidden by default on narrow windows.
   // Use a responsive check: if the main content area (window - left sidebar - resize handle)
@@ -157,7 +167,7 @@ export function GroupView({ groupId, sidebarWidth = 288 }: GroupViewProps) {
   const { data: messages = [] } = useQuery({
     queryKey: ["messages", "group", groupId],
     queryFn: async () => {
-      const msgs = await messagesApi.getGroup(groupId);
+      const msgs = await messagesApi.getGroup(groupId, undefined, PAGE_SIZE);
       // Fetching messages updates last_read_at on the server — refresh the
       // groups list so the unread badge clears immediately.
       void queryClient.invalidateQueries({ queryKey: ["groups"] });
@@ -168,19 +178,87 @@ export function GroupView({ groupId, sidebarWidth = 288 }: GroupViewProps) {
     refetchOnMount: "always",
   });
 
+  // Merge older pages with the current page, deduplicate, sort chronologically.
+  const allMessages = useMemo(
+    () =>
+      [...olderMessages, ...messages]
+        .filter((msg, i, arr) => arr.findIndex((m) => m.id === msg.id) === i)
+        .sort((a, b) => a.timestamp - b.timestamp),
+    [olderMessages, messages]
+  );
+
   // On mount, jump to bottom immediately.
   useEffect(() => {
     bottomRef.current?.scrollIntoView();
   }, []);
 
-  // Smooth-scroll to bottom when new messages arrive.
-  const prevCountRef = useRef(messages.length);
+  // Smooth-scroll to bottom when new messages arrive (newest page grows),
+  // but not when older pages are prepended.
+  const prevNewestCountRef = useRef(messages.length);
   useEffect(() => {
-    if (messages.length > prevCountRef.current) {
+    if (messages.length > prevNewestCountRef.current) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-    prevCountRef.current = messages.length;
+    prevNewestCountRef.current = messages.length;
   }, [messages.length]);
+
+  const loadOlder = useCallback(async () => {
+    if (loadingOlder || !hasMore) return;
+
+    // Find the oldest non-reaction, non-role-change message timestamp for the cursor.
+    const oldestTimestamp = allMessages.find(
+      (m) => m.metadata?.type !== "reaction" && m.metadata?.type !== "role_change"
+    )?.timestamp;
+    if (oldestTimestamp === undefined) return;
+
+    setLoadingOlder(true);
+
+    const container = scrollRef.current;
+    const prevScrollHeight = container?.scrollHeight ?? 0;
+
+    try {
+      const page = await messagesApi.getGroup(groupId, oldestTimestamp);
+
+      if (page.length === 0) {
+        setHasMore(false);
+        return;
+      }
+
+      if (page.length < PAGE_SIZE) setHasMore(false);
+
+      setOlderMessages((prev) =>
+        [...page, ...prev].filter((m, i, arr) => arr.findIndex((x) => x.id === m.id) === i)
+      );
+
+      // After React re-renders with the new messages, pin scroll so the user
+      // stays at the same visual position instead of jumping to the top.
+      requestAnimationFrame(() => {
+        if (container) {
+          container.scrollTop += container.scrollHeight - prevScrollHeight;
+        }
+      });
+    } finally {
+      setLoadingOlder(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadingOlder, hasMore, allMessages[0]?.timestamp, groupId]);
+
+  // Fire loadOlder when the top sentinel scrolls into the scroll container's viewport.
+  useEffect(() => {
+    const sentinel = topSentinelRef.current;
+    const container = scrollRef.current;
+    if (!sentinel || !container) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) void loadOlder();
+      },
+      { root: container, threshold: 0 }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [loadOlder]);
 
   // Send read receipts for incoming group messages from other members.
   // Track which IDs we've already receipted to avoid re-firing on refetch.
@@ -205,11 +283,15 @@ export function GroupView({ groupId, sidebarWidth = 288 }: GroupViewProps) {
   }, [messages, localDid, groupId]);
 
   // Split reaction messages from regular messages and aggregate.
-  const reactionMessages = messages.filter((m) => m.metadata?.type === "reaction");
-  const sortedMessages = messages.filter(
+  const reactionMessages = allMessages.filter((m) => m.metadata?.type === "reaction");
+  const sortedMessages = allMessages.filter(
     (m) => m.metadata?.type !== "reaction" && m.metadata?.type !== "role_change"
   );
-  const reactionsByMsgId = aggregateGroupReactions(reactionMessages, localDid);
+  const reactionsByMsgId = useMemo(
+    () => aggregateGroupReactions(reactionMessages, localDid),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [reactionMessages, localDid]
+  );
 
   const handleReact = useCallback(
     async (messageId: string, emoji: string) => {
@@ -243,7 +325,16 @@ export function GroupView({ groupId, sidebarWidth = 288 }: GroupViewProps) {
       <div className="relative flex flex-1 min-h-0">
         {/* Chat area */}
         <div className="flex flex-1 flex-col min-w-0">
-          <ScrollArea className="flex-1 px-4 py-4">
+          <ScrollArea ref={scrollRef} className="flex-1 px-4 py-4">
+            {/* Sentinel observed by IntersectionObserver to trigger older-page loads. */}
+            <div ref={topSentinelRef} />
+
+            {loadingOlder && (
+              <div className="flex justify-center py-2">
+                <p className="text-xs text-surface-400">Loading earlier messages…</p>
+              </div>
+            )}
+
             {sortedMessages.length === 0 ? (
               <div className="flex items-center justify-center px-8 py-8">
                 <p className="text-sm text-surface-400">

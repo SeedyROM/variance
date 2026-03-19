@@ -123,8 +123,13 @@ export const messagesApi = {
       body: JSON.stringify(body),
     }),
 
-  getGroup: (groupId: string) =>
-    request<GroupMessage[]>(`/messages/group/${encodeURIComponent(groupId)}`),
+  getGroup: (groupId: string, before?: number, limit?: number) => {
+    const params = new URLSearchParams();
+    if (before !== undefined) params.set("before", String(before));
+    if (limit !== undefined) params.set("limit", String(limit));
+    const qs = params.size ? `?${params.toString()}` : "";
+    return request<GroupMessage[]>(`/messages/group/${encodeURIComponent(groupId)}${qs}`);
+  },
 };
 
 // ===== Groups =====
@@ -138,8 +143,13 @@ export const groupsApi = {
       body: JSON.stringify({ name }),
     }),
 
-  getMessages: (groupId: string) =>
-    request<GroupMessage[]>(`/messages/group/${encodeURIComponent(groupId)}`),
+  getMessages: (groupId: string, before?: number, limit?: number) => {
+    const params = new URLSearchParams();
+    if (before !== undefined) params.set("before", String(before));
+    if (limit !== undefined) params.set("limit", String(limit));
+    const qs = params.size ? `?${params.toString()}` : "";
+    return request<GroupMessage[]>(`/messages/group/${encodeURIComponent(groupId)}${qs}`);
+  },
 
   sendMessage: (
     groupId: string,

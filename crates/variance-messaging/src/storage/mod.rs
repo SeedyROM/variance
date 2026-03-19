@@ -238,7 +238,7 @@ impl MessageStorage for LocalMessageStorage {
         &self,
         group_id: &str,
         limit: usize,
-        before: Option<String>,
+        before: Option<i64>,
     ) -> Result<Vec<GroupMessage>> {
         self.impl_fetch_group(group_id, limit, before).await
     }

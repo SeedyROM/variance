@@ -17,8 +17,8 @@ use super::types::{MessageResponse, MlsGroupInfo};
 
 #[derive(Deserialize)]
 pub(super) struct GroupMessagesParams {
-    /// Cursor: exclusive upper bound key for pagination.
-    before: Option<String>,
+    /// Cursor: exclusive upper bound timestamp (ms) for pagination.
+    before: Option<i64>,
     /// Max messages to return. Defaults to 50.
     limit: Option<usize>,
 }

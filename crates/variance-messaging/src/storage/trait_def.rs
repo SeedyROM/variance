@@ -35,12 +35,17 @@ pub trait MessageStorage: Send + Sync {
     /// Store a group message
     async fn store_group(&self, message: &GroupMessage) -> Result<()>;
 
-    /// Fetch group messages
+    /// Fetch the most recent `limit` group messages.
+    ///
+    /// Results are returned in chronological order (oldest first).
+    /// `before` is an exclusive upper bound on `message.timestamp` (ms) for
+    /// cursor-based backwards pagination — pass the oldest timestamp from the
+    /// previous page to load the page before it.
     async fn fetch_group(
         &self,
         group_id: &str,
         limit: usize,
-        before: Option<String>,
+        before: Option<i64>,
     ) -> Result<Vec<GroupMessage>>;
 
     /// Fetch the most recent group message (for last-activity timestamps).
