@@ -89,4 +89,4 @@ Variance has been in active development for about a month. ~36,000 lines of Rust
 
 The code is on GitHub. Run it, break it, tell me what's wrong. If the ideas here matter to you, the best thing you can do is use it and file issues.
 
-[GitHub: variance](https://github.com/user/variance) | [Philosophy](https://github.com/user/variance/blob/main/docs/PHILOSOPHY.md) | License: AGPL-3.0
+[GitHub: variance](https://github.com/SeedyROM/variance) | [Philosophy](https://github.com/SeedyROM/variance/blob/main/docs/PHILOSOPHY.md) | License: AGPL-3.0
