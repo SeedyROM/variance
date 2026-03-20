@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { cn } from "../../utils/cn";
+import { Checkbox } from "../ui/Checkbox";
 
 interface MnemonicDisplayProps {
   words: string[];
@@ -39,17 +40,11 @@ export function MnemonicDisplay({ words, onConfirmed }: MnemonicDisplayProps) {
         ))}
       </div>
 
-      <label className="flex cursor-pointer items-start gap-3">
-        <input
-          type="checkbox"
-          checked={confirmed}
-          onChange={(e) => setConfirmed(e.target.checked)}
-          className="mt-0.5 h-4 w-4 rounded accent-primary-500"
-        />
-        <span className="text-sm text-surface-700 dark:text-surface-300">
-          I have written down these 12 words and stored them safely.
-        </span>
-      </label>
+      <Checkbox
+        checked={confirmed}
+        onChange={(e) => setConfirmed(e.target.checked)}
+        label="I have written down these 12 words and stored them safely."
+      />
 
       <button
         disabled={!confirmed}

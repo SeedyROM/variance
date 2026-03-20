@@ -1847,8 +1847,8 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let mut state =
             AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
-        // Point config_path to the temp dir so load_or_default creates a default config
-        state.config_path = dir.path().join("config.toml");
+        // Point config_dir to the temp dir so load_or_default creates a default config
+        state.config_dir = dir.path().to_path_buf();
         let app = create_router(state);
 
         let response = app
@@ -1875,7 +1875,7 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let mut state =
             AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
-        state.config_path = dir.path().join("config.toml");
+        state.config_dir = dir.path().to_path_buf();
         let app = create_router(state);
 
         // Add a relay
@@ -1925,7 +1925,7 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let mut state =
             AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
-        state.config_path = dir.path().join("config.toml");
+        state.config_dir = dir.path().to_path_buf();
         let app = create_router(state);
 
         // Add a relay first
@@ -1982,7 +1982,7 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let mut state =
             AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
-        state.config_path = dir.path().join("config.toml");
+        state.config_dir = dir.path().to_path_buf();
         let app = create_router(state);
 
         let response = app
@@ -2009,7 +2009,7 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let mut state =
             AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
-        state.config_path = dir.path().join("config.toml");
+        state.config_dir = dir.path().to_path_buf();
         let app = create_router(state);
 
         // Set retention to 90 days

@@ -41,22 +41,69 @@ test.describe("UI navigation", () => {
     await expect(appPage.getByText("New Group", { exact: false })).not.toBeVisible();
   });
 
-  test("settings modal opens from sidebar", async ({ appPage }) => {
+  test("settings overlay opens from sidebar gear icon", async ({ appPage }) => {
     await expect(appPage.getByText("Select a conversation", { exact: false })).toBeVisible({
       timeout: 10_000,
     });
 
-    // Click the Settings gear icon
-    await appPage.getByTitle("Settings").click();
+    // Click the Settings gear icon (there are two — header and footer; click the first)
+    await appPage.getByTitle("Settings").first().click();
 
-    // Settings modal should be visible
-    await expect(appPage.getByText("Settings")).toBeVisible();
+    // Full-screen settings overlay should be visible with sidebar tabs
+    await expect(appPage.getByRole("button", { name: "Account" })).toBeVisible();
+    await expect(appPage.getByRole("button", { name: "Network" })).toBeVisible();
+    await expect(appPage.getByRole("button", { name: "Storage" })).toBeVisible();
+    await expect(appPage.getByRole("button", { name: "Appearance" })).toBeVisible();
 
-    // Should have Identity section
-    await expect(appPage.getByText("Identity")).toBeVisible();
+    // Account section loads by default — has Identity and Security headings
+    await expect(appPage.getByRole("heading", { name: "Identity" })).toBeVisible();
+    await expect(appPage.getByRole("heading", { name: "Security" })).toBeVisible();
 
-    // Should have Security section
-    await expect(appPage.getByText("Security")).toBeVisible();
+    // Close via the X button
+    await appPage.getByTitle("Close settings").click();
+    await expect(appPage.getByRole("button", { name: "Account" })).not.toBeVisible();
+  });
+
+  test("settings overlay closes on Escape key", async ({ appPage }) => {
+    await expect(appPage.getByText("Select a conversation", { exact: false })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    await appPage.getByTitle("Settings").first().click();
+    await expect(appPage.getByRole("button", { name: "Account" })).toBeVisible();
+
+    // Press Escape to close
+    await appPage.keyboard.press("Escape");
+    await expect(appPage.getByRole("button", { name: "Account" })).not.toBeVisible();
+  });
+
+  test("settings overlay navigates between sections", async ({ appPage }) => {
+    await expect(appPage.getByText("Select a conversation", { exact: false })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    await appPage.getByTitle("Settings").first().click();
+
+    // Default: Account section
+    await expect(appPage.getByRole("heading", { name: "Identity" })).toBeVisible();
+
+    // Navigate to Network
+    await appPage.getByRole("button", { name: "Network" }).click();
+    await expect(appPage.getByRole("heading", { name: "Relay Servers" })).toBeVisible();
+
+    // Navigate to Storage
+    await appPage.getByRole("button", { name: "Storage" }).click();
+    await expect(appPage.getByRole("heading", { name: "Message Retention" })).toBeVisible();
+
+    // Navigate to Appearance
+    await appPage.getByRole("button", { name: "Appearance" }).click();
+    await expect(appPage.getByRole("heading", { name: "Theme" })).toBeVisible();
+
+    // Navigate back to Account
+    await appPage.getByRole("button", { name: "Account" }).click();
+    await expect(appPage.getByRole("heading", { name: "Identity" })).toBeVisible();
+
+    await appPage.getByTitle("Close settings").click();
   });
 
   test("create a group via UI and see it in the sidebar", async ({ appPage, apiPort }) => {

@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::signal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use variance_app::{identity_gen, start_node, AppConfig};
+use variance_app::{config::variance_data_dir, identity_gen, start_node, AppConfig};
 
 #[derive(Parser)]
 #[command(name = "variance")]
@@ -144,12 +144,20 @@ async fn start_node_cmd(
     tracing::info!("Starting Variance node");
 
     // Load configuration
-    let config = if Path::new(&config_path).exists() {
+    let config_file = Path::new(&config_path);
+    let base_dir = config_file
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(variance_data_dir);
+    let config = if config_file.exists() {
         tracing::info!("Loading configuration from {}", config_path);
-        AppConfig::from_file(&config_path).context("Failed to load configuration file")?
+        AppConfig::from_file(&config_path, base_dir).context("Failed to load configuration file")?
     } else {
         tracing::warn!("Configuration file not found, using defaults");
-        AppConfig::default()
+        let mut cfg = AppConfig::default();
+        cfg.storage = variance_app::StorageConfig::for_base_dir(base_dir);
+        cfg
     };
 
     // Determine listen address
@@ -261,7 +269,14 @@ fn init_config(output: String, force: bool) -> Result<()> {
 fn show_config(config_path: String) -> Result<()> {
     tracing::info!("Loading configuration from: {}", config_path);
 
-    let config = AppConfig::from_file(&config_path).context("Failed to load configuration file")?;
+    let config_file = Path::new(&config_path);
+    let base_dir = config_file
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(variance_data_dir);
+    let config =
+        AppConfig::from_file(&config_path, base_dir).context("Failed to load configuration file")?;
 
     println!("\n{}", "=".repeat(60));
     println!("Variance Configuration");

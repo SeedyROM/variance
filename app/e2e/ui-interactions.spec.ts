@@ -137,20 +137,17 @@ test.describe("Send group message via UI", () => {
   });
 });
 
-test.describe("Settings modal interactions", () => {
+test.describe("Settings overlay interactions", () => {
   test("displays identity DID and copy button works", async ({ appPage }) => {
     await expect(appPage.getByText("Select a conversation", { exact: false })).toBeVisible({
       timeout: 10_000,
     });
 
-    // Open settings
-    await appPage.getByTitle("Settings").click();
-    await expect(appPage.getByText("Settings")).toBeVisible();
+    // Open settings — Account section loads by default
+    await appPage.getByTitle("Settings").first().click();
+    await expect(appPage.getByRole("heading", { name: "Identity" })).toBeVisible();
 
-    // Identity section should show
-    await expect(appPage.getByText("Identity")).toBeVisible();
-
-    // DID should be visible in the modal
+    // DID should be visible
     await expect(appPage.getByText("did:variance:").first()).toBeVisible();
 
     // Copy button should be present — it says "Copy DID" (no username set yet)
@@ -163,9 +160,11 @@ test.describe("Settings modal interactions", () => {
 
     // After clicking, the button text should change to "Copied!"
     await expect(appPage.getByText("Copied!")).toBeVisible({ timeout: 2_000 });
+
+    await appPage.getByTitle("Close settings").click();
   });
 
-  test("retention dropdown changes value", async ({ appPage, apiPort }) => {
+  test("retention dropdown changes value via custom Select", async ({ appPage, apiPort }) => {
     await expect(appPage.getByText("Select a conversation", { exact: false })).toBeVisible({
       timeout: 10_000,
     });
@@ -174,16 +173,25 @@ test.describe("Settings modal interactions", () => {
     const retRes = await fetch(`http://127.0.0.1:${apiPort}/config/retention`);
     const original = (await retRes.json()) as { group_message_max_age_days: number };
 
-    // Open settings
-    await appPage.getByTitle("Settings").click();
-    await expect(appPage.getByText("Message History")).toBeVisible();
+    // Open settings and navigate to Storage section
+    await appPage.getByTitle("Settings").first().click();
+    await appPage.getByRole("button", { name: "Storage" }).click();
+    await expect(appPage.getByText("Message Retention")).toBeVisible();
 
-    // Find the retention select
-    const retentionSelect = appPage.locator("#retention-select");
-    await expect(retentionSelect).toBeVisible();
+    // The custom Select has role="combobox" — click to open the dropdown
+    const selectTrigger = appPage.getByRole("combobox");
+    await expect(selectTrigger).toBeVisible();
+    await selectTrigger.click();
 
-    // Change to 14 days
-    await retentionSelect.selectOption("14");
+    // The dropdown portal should appear with role="listbox"
+    const listbox = appPage.getByRole("listbox");
+    await expect(listbox).toBeVisible();
+
+    // Click "14 days" option
+    await listbox.getByRole("option", { name: "14 days" }).click();
+
+    // Wait for the API call to complete
+    await appPage.waitForTimeout(500);
 
     // Verify the backend was updated
     const verifyRes = await fetch(`http://127.0.0.1:${apiPort}/config/retention`);
@@ -191,28 +199,46 @@ test.describe("Settings modal interactions", () => {
     expect(updated.group_message_max_age_days).toBe(14);
 
     // Restore original value
-    await retentionSelect.selectOption(String(original.group_message_max_age_days));
+    await selectTrigger.click();
+    const listbox2 = appPage.getByRole("listbox");
+    await expect(listbox2).toBeVisible();
+
+    // Find the matching option text for the original value
+    const originalLabel =
+      original.group_message_max_age_days === 0
+        ? "Keep forever"
+        : original.group_message_max_age_days === 90
+          ? "90 days"
+          : original.group_message_max_age_days === 14
+            ? "14 days"
+            : "30 days (default)";
+    await listbox2.getByRole("option", { name: originalLabel }).click();
+
+    await appPage.getByTitle("Close settings").click();
   });
 
-  test("relay CRUD through the UI", async ({ appPage, apiPort }) => {
+  test("relay CRUD through the settings UI", async ({ appPage, apiPort }) => {
     await expect(appPage.getByText("Select a conversation", { exact: false })).toBeVisible({
       timeout: 10_000,
     });
 
-    // Open settings
-    await appPage.getByTitle("Settings").click();
+    // Open settings and navigate to Network section
+    await appPage.getByTitle("Settings").first().click();
+    await appPage.getByRole("button", { name: "Network" }).click();
     await expect(appPage.getByRole("heading", { name: "Relay Servers" })).toBeVisible();
 
-    // Initially no relays configured message should show (or existing relays from prior tests)
     // Fill in relay form
     const peerIdInput = appPage.getByPlaceholder("Peer ID");
     const multiaddrInput = appPage.getByPlaceholder("Multiaddr", { exact: false });
     await peerIdInput.fill("12D3KooWTestUIRelay1234567890123456789012345678");
     await multiaddrInput.fill("/ip4/10.0.0.1/tcp/4001");
 
-    // Click "Add to list"
-    const addBtn = appPage.getByRole("button", { name: "Add to list" });
+    // Click "Add relay" — this auto-saves (no separate Save button)
+    const addBtn = appPage.getByRole("button", { name: "Add relay" });
     await addBtn.click();
+
+    // Wait for the API call to complete
+    await appPage.waitForTimeout(500);
 
     // The relay should appear in the list
     await expect(
@@ -224,11 +250,6 @@ test.describe("Settings modal interactions", () => {
     await expect(peerIdInput).toHaveValue("");
     await expect(multiaddrInput).toHaveValue("");
 
-    // Click Save to persist
-    const saveBtn = appPage.getByRole("button", { name: "Save" });
-    await expect(saveBtn).toBeEnabled();
-    await saveBtn.click();
-
     // Verify relay was saved on the backend
     const relayRes = await fetch(`http://127.0.0.1:${apiPort}/config/relays`);
     const relays = (await relayRes.json()) as { peer_id: string }[];
@@ -238,12 +259,11 @@ test.describe("Settings modal interactions", () => {
     expect(found).toBeTruthy();
 
     // Remove the relay via the UI — click the remove button next to it
-    const removeBtn = appPage.getByTitle("Remove").first();
+    const removeBtn = appPage.getByTitle("Remove relay").first();
     await removeBtn.click();
 
-    // Save the removal
-    await expect(saveBtn).toBeEnabled();
-    await saveBtn.click();
+    // Wait for the API call to complete
+    await appPage.waitForTimeout(500);
 
     // Verify relay was removed on the backend
     const verifyRes = await fetch(`http://127.0.0.1:${apiPort}/config/relays`);
@@ -252,17 +272,21 @@ test.describe("Settings modal interactions", () => {
       (r) => r.peer_id === "12D3KooWTestUIRelay1234567890123456789012345678"
     );
     expect(stillFound).toBeFalsy();
+
+    await appPage.getByTitle("Close settings").click();
   });
 
-  test("Add to list button disabled when inputs empty", async ({ appPage }) => {
+  test("Add relay button disabled when inputs empty", async ({ appPage }) => {
     await expect(appPage.getByText("Select a conversation", { exact: false })).toBeVisible({
       timeout: 10_000,
     });
 
-    await appPage.getByTitle("Settings").click();
+    // Open settings and navigate to Network section
+    await appPage.getByTitle("Settings").first().click();
+    await appPage.getByRole("button", { name: "Network" }).click();
     await expect(appPage.getByRole("heading", { name: "Relay Servers" })).toBeVisible();
 
-    const addBtn = appPage.getByRole("button", { name: "Add to list" });
+    const addBtn = appPage.getByRole("button", { name: "Add relay" });
     await expect(addBtn).toBeDisabled();
 
     // Fill only peer ID — still disabled
@@ -272,6 +296,66 @@ test.describe("Settings modal interactions", () => {
     // Fill multiaddr too — now enabled
     await appPage.getByPlaceholder("Multiaddr", { exact: false }).fill("/ip4/1.2.3.4/tcp/4001");
     await expect(addBtn).toBeEnabled();
+
+    await appPage.getByTitle("Close settings").click();
+  });
+
+  test("restore defaults shows confirmation dialog and removes all relays", async ({
+    appPage,
+    apiPort,
+  }) => {
+    await expect(appPage.getByText("Select a conversation", { exact: false })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    // First, add a relay via the API so we have something to restore
+    await fetch(`http://127.0.0.1:${apiPort}/config/relays`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        peer_id: "12D3KooWRestoreTest12345678901234567890123456",
+        multiaddr: "/ip4/10.0.0.99/tcp/4001",
+      }),
+    });
+
+    // Open settings and navigate to Network section
+    await appPage.getByTitle("Settings").first().click();
+    await appPage.getByRole("button", { name: "Network" }).click();
+    await expect(appPage.getByRole("heading", { name: "Relay Servers" })).toBeVisible();
+
+    // Wait for relay list to load
+    await expect(
+      appPage.getByText("12D3KooWRestoreTest12345678901234567890123456").first()
+    ).toBeVisible({ timeout: 5_000 });
+
+    // "Restore defaults" button should be visible when relays exist
+    const restoreBtn = appPage.getByRole("button", { name: "Restore defaults" });
+    await expect(restoreBtn).toBeVisible();
+    await restoreBtn.click();
+
+    // ConfirmDialog should appear
+    await expect(appPage.getByRole("heading", { name: "Restore Defaults" })).toBeVisible();
+    await expect(
+      appPage.getByText("This will remove all configured relay servers")
+    ).toBeVisible();
+
+    // Click "Remove all" to confirm
+    await appPage.getByRole("button", { name: "Remove all" }).click();
+
+    // Wait for the operation to complete
+    await appPage.waitForTimeout(500);
+
+    // Relay should be gone
+    await expect(
+      appPage.getByText("12D3KooWRestoreTest12345678901234567890123456")
+    ).not.toBeVisible({ timeout: 3_000 });
+
+    // Verify on backend
+    const verifyRes = await fetch(`http://127.0.0.1:${apiPort}/config/relays`);
+    const afterRestore = (await verifyRes.json()) as { peer_id: string }[];
+    expect(afterRestore.length).toBe(0);
+
+    await appPage.getByTitle("Close settings").click();
   });
 });
 
@@ -324,6 +408,109 @@ test.describe("Theme switching", () => {
     await expect(appPage.locator("html")).not.toHaveAttribute("data-theme", "dark", {
       timeout: 2_000,
     });
+  });
+});
+
+test.describe("Quick-action popover", () => {
+  test("popover opens from avatar click and shows copy DID action", async ({ appPage }) => {
+    await expect(appPage.getByText("Select a conversation", { exact: false })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    // The avatar/username area in the footer should be clickable.
+    // It doesn't have a title, so we locate it by the avatar or "No username" text.
+    // The footer contains the avatar button. Since the e2e identity has no username set,
+    // it shows "No username".
+    const avatarBtn = appPage.locator("button").filter({ hasText: /No username/ });
+    // If a prior test set a username, fall back to the avatar area
+    const hasNoUsername = (await avatarBtn.count()) > 0;
+
+    if (hasNoUsername) {
+      await avatarBtn.click();
+    } else {
+      // Username is set — the footer shows the display name next to the avatar
+      // Click the first button in the footer that contains an avatar (img or svg)
+      const footerAvatarBtn = appPage
+        .locator(".border-t button")
+        .first();
+      await footerAvatarBtn.click();
+    }
+
+    // The popover should appear with "Copy DID"
+    await expect(appPage.getByRole("button", { name: "Copy DID" })).toBeVisible({ timeout: 2_000 });
+
+    // Click "Copy DID"
+    await appPage.getByRole("button", { name: "Copy DID" }).click();
+
+    // Should show "Copied!" feedback
+    await expect(appPage.getByText("Copied!")).toBeVisible({ timeout: 2_000 });
+  });
+
+  test("popover closes on Escape", async ({ appPage }) => {
+    await expect(appPage.getByText("Select a conversation", { exact: false })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    // Open the popover
+    const footerBtn = appPage.locator(".border-t button").first();
+    await footerBtn.click();
+    await expect(appPage.getByRole("button", { name: "Copy DID" })).toBeVisible({ timeout: 2_000 });
+
+    // Press Escape to close
+    await appPage.keyboard.press("Escape");
+    await expect(appPage.getByRole("button", { name: "Copy DID" })).not.toBeVisible();
+  });
+
+  test("popover closes on outside click", async ({ appPage }) => {
+    await expect(appPage.getByText("Select a conversation", { exact: false })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    // Open the popover
+    const footerBtn = appPage.locator(".border-t button").first();
+    await footerBtn.click();
+    await expect(appPage.getByRole("button", { name: "Copy DID" })).toBeVisible({ timeout: 2_000 });
+
+    // Click somewhere outside (the main content area)
+    await appPage.locator("main").click();
+    await expect(appPage.getByRole("button", { name: "Copy DID" })).not.toBeVisible();
+  });
+});
+
+test.describe("Appearance section theme cards", () => {
+  test("theme cards switch theme from Appearance settings section", async ({ appPage }) => {
+    await expect(appPage.getByText("Select a conversation", { exact: false })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    const html = appPage.locator("html");
+
+    // Open settings and navigate to Appearance
+    await appPage.getByTitle("Settings").first().click();
+    await appPage.getByRole("button", { name: "Appearance" }).click();
+    await expect(appPage.getByRole("heading", { name: "Theme" })).toBeVisible();
+
+    // The three theme cards should be visible (Light, System, Dark)
+    await expect(appPage.getByText("Light").first()).toBeVisible();
+    await expect(appPage.getByText("System").first()).toBeVisible();
+    await expect(appPage.getByText("Dark").first()).toBeVisible();
+
+    // Click the "Dark" card
+    await appPage.getByText("Always use dark theme").click();
+    await expect(html).toHaveAttribute("data-theme", "dark", { timeout: 2_000 });
+
+    // Should show "Currently using dark theme"
+    await expect(appPage.getByText("Currently using dark theme")).toBeVisible();
+
+    // Click the "Light" card
+    await appPage.getByText("Always use light theme").click();
+    await expect(html).not.toHaveAttribute("data-theme", "dark", { timeout: 2_000 });
+    await expect(appPage.getByText("Currently using light theme")).toBeVisible();
+
+    // Restore to system
+    await appPage.getByText("Follow your OS setting").click();
+
+    await appPage.getByTitle("Close settings").click();
   });
 });
 
