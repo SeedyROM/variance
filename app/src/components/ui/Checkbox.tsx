@@ -2,8 +2,7 @@ import { forwardRef, useId } from "react";
 import { Check } from "lucide-react";
 import { cn } from "../../utils/cn";
 
-interface CheckboxProps
-  extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "type"> {
+interface CheckboxProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "type"> {
   label?: string;
   error?: string;
 }
@@ -53,7 +52,8 @@ export const Checkbox = forwardRef<HTMLInputElement, CheckboxProps>(
               "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors",
               "border-surface-300 bg-surface-50",
               "dark:border-surface-600 dark:bg-surface-900",
-              checked && "border-primary-500 bg-primary-500 dark:border-primary-500 dark:bg-primary-500",
+              checked &&
+                "border-primary-500 bg-primary-500 dark:border-primary-500 dark:bg-primary-500",
               !disabled && !checked && "group-hover:border-surface-400",
               error && "border-red-500",
               className
@@ -62,11 +62,7 @@ export const Checkbox = forwardRef<HTMLInputElement, CheckboxProps>(
             {checked && <Check className="h-3 w-3 text-white" strokeWidth={3} />}
           </span>
 
-          {label && (
-            <span className="text-sm text-surface-700 dark:text-surface-300">
-              {label}
-            </span>
-          )}
+          {label && <span className="text-sm text-surface-700 dark:text-surface-300">{label}</span>}
         </label>
         {error && <p className="text-xs text-red-500">{error}</p>}
       </div>

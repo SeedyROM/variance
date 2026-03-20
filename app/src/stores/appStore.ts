@@ -33,7 +33,8 @@ export const useAppStore = create<AppStore>((set) => ({
   setApiPort: (apiPort) => set({ apiPort }),
   setError: (error) => set({ error }),
   setWsConnected: (wsConnected) => set({ wsConnected }),
-  openSettings: (section) => set({ showSettings: true, ...(section && { settingsSection: section }) }),
+  openSettings: (section) =>
+    set({ showSettings: true, ...(section && { settingsSection: section }) }),
   closeSettings: () => set({ showSettings: false }),
   setSettingsSection: (settingsSection) => set({ settingsSection }),
 }));

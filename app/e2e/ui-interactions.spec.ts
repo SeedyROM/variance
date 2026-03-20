@@ -335,9 +335,7 @@ test.describe("Settings overlay interactions", () => {
 
     // ConfirmDialog should appear
     await expect(appPage.getByRole("heading", { name: "Restore Defaults" })).toBeVisible();
-    await expect(
-      appPage.getByText("This will remove all configured relay servers")
-    ).toBeVisible();
+    await expect(appPage.getByText("This will remove all configured relay servers")).toBeVisible();
 
     // Click "Remove all" to confirm
     await appPage.getByRole("button", { name: "Remove all" }).click();
@@ -430,9 +428,7 @@ test.describe("Quick-action popover", () => {
     } else {
       // Username is set — the footer shows the display name next to the avatar
       // Click the first button in the footer that contains an avatar (img or svg)
-      const footerAvatarBtn = appPage
-        .locator(".border-t button")
-        .first();
+      const footerAvatarBtn = appPage.locator(".border-t button").first();
       await footerAvatarBtn.click();
     }
 

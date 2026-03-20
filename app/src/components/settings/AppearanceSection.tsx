@@ -3,9 +3,24 @@ import { useTheme, type Theme } from "../../hooks/useTheme";
 import { cn } from "../../utils/cn";
 
 const options: { value: Theme; icon: React.ReactNode; label: string; description: string }[] = [
-  { value: "light", icon: <Sun className="h-5 w-5" />, label: "Light", description: "Always use light theme" },
-  { value: "system", icon: <Monitor className="h-5 w-5" />, label: "System", description: "Follow your OS setting" },
-  { value: "dark", icon: <Moon className="h-5 w-5" />, label: "Dark", description: "Always use dark theme" },
+  {
+    value: "light",
+    icon: <Sun className="h-5 w-5" />,
+    label: "Light",
+    description: "Always use light theme",
+  },
+  {
+    value: "system",
+    icon: <Monitor className="h-5 w-5" />,
+    label: "System",
+    description: "Follow your OS setting",
+  },
+  {
+    value: "dark",
+    icon: <Moon className="h-5 w-5" />,
+    label: "Dark",
+    description: "Always use dark theme",
+  },
 ];
 
 export function AppearanceSection() {
@@ -14,9 +29,7 @@ export function AppearanceSection() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-lg font-semibold text-surface-900 dark:text-surface-50">
-          Appearance
-        </h1>
+        <h1 className="text-lg font-semibold text-surface-900 dark:text-surface-50">Appearance</h1>
         <p className="mt-1 text-sm text-surface-500">
           Customize how Variance looks on your device.
         </p>
@@ -46,7 +59,11 @@ export function AppearanceSection() {
         </div>
 
         <p className="text-sm text-surface-400">
-          Currently using <span className="font-medium text-surface-600 dark:text-surface-300">{resolvedTheme}</span> theme.
+          Currently using{" "}
+          <span className="font-medium text-surface-600 dark:text-surface-300">
+            {resolvedTheme}
+          </span>{" "}
+          theme.
         </p>
       </section>
     </div>

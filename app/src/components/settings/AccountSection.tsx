@@ -63,9 +63,7 @@ export function AccountSection() {
 
         {/* Identity */}
         <section className="space-y-4">
-          <h3 className="text-sm font-semibold text-surface-900 dark:text-surface-50">
-            Identity
-          </h3>
+          <h3 className="text-sm font-semibold text-surface-900 dark:text-surface-50">Identity</h3>
 
           <div className="flex items-center gap-4 rounded-lg border border-surface-200 bg-surface-50 p-4 dark:border-surface-800 dark:bg-surface-900">
             <Avatar did={did} name={displayName ?? undefined} size="lg" />
@@ -110,16 +108,10 @@ export function AccountSection() {
 
         {/* Security */}
         <section className="space-y-4">
-          <h3 className="text-sm font-semibold text-surface-900 dark:text-surface-50">
-            Security
-          </h3>
+          <h3 className="text-sm font-semibold text-surface-900 dark:text-surface-50">Security</h3>
 
           {!showPassphraseSection ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setShowPassphraseSection(true)}
-            >
+            <Button variant="secondary" size="sm" onClick={() => setShowPassphraseSection(true)}>
               <Lock className="h-3.5 w-3.5" />
               Change passphrase
             </Button>

@@ -67,9 +67,7 @@ export function NetworkSection() {
       <div className="space-y-8">
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-lg font-semibold text-surface-900 dark:text-surface-50">
-              Network
-            </h1>
+            <h1 className="text-lg font-semibold text-surface-900 dark:text-surface-50">Network</h1>
             <p className="mt-1 text-sm text-surface-500">
               Configure relay servers for offline message delivery.
             </p>
@@ -106,9 +104,7 @@ export function NetworkSection() {
                     <p className="font-mono text-sm text-surface-700 dark:text-surface-300 truncate">
                       {relay.peer_id}
                     </p>
-                    <p className="font-mono text-xs text-surface-400 truncate">
-                      {relay.multiaddr}
-                    </p>
+                    <p className="font-mono text-xs text-surface-400 truncate">{relay.multiaddr}</p>
                   </div>
                   <IconButton
                     onClick={() => void handleRemoveRelay(relay.peer_id)}
