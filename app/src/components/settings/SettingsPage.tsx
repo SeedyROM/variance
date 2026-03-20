@@ -45,13 +45,13 @@ export function SettingsPage() {
         {/* Spacer — clears macOS traffic lights */}
         <div className="h-7 shrink-0" />
 
-        <div className="px-4 py-3">
-          <h2 className="text-sm font-semibold text-surface-900 dark:text-surface-50 cursor-default">
+        <div className="flex items-center justify-between border-b border-surface-200 px-4 py-5 dark:border-surface-800">
+          <h2 className="font-semibold text-surface-900 dark:text-surface-50 cursor-default">
             Settings
           </h2>
         </div>
 
-        <div className="flex-1 space-y-0.5 px-2">
+        <div className="flex-1 space-y-0.5 px-2 pt-2">
           {sections.map((s) => (
             <button
               key={s.key}

@@ -1,5 +1,7 @@
 import {
+  Children,
   createContext,
+  isValidElement,
   useCallback,
   useContext,
   useEffect,
@@ -38,10 +40,29 @@ interface SelectCtx {
 const SelectContext = createContext<SelectCtx | null>(null);
 
 /**
+ * Statically collect `<Option>` entries from children without rendering them.
+ * This lets us derive `selectedOption` synchronously on first render
+ * instead of waiting for the useEffect-based registration.
+ */
+function collectOptions(children: ReactNode): OptionEntry[] {
+  const entries: OptionEntry[] = [];
+  Children.forEach(children, (child) => {
+    if (isValidElement<OptionProps>(child) && child.type === Option) {
+      entries.push({
+        value: child.props.value,
+        label: child.props.children,
+        disabled: child.props.disabled,
+      });
+    }
+  });
+  return entries;
+}
+
+/**
  * A single option inside a `<Select>`.
  *
  * ```tsx
- * <Select value={v} onChange={setV}>
+ * <Select value={val} onChange={setVal}>
  *   <Option value="a">Alpha</Option>
  *   <Option value="b">Beta</Option>
  * </Select>
@@ -140,17 +161,24 @@ export function Select({
   // Rebuild the options list every render (children may change).
   optionsRef.current = [];
   let registerIndex = 0;
-  const registerOption = useCallback((entry: OptionEntry): number => {
-    const idx = registerIndex;
-    optionsRef.current.push(entry);
-    registerIndex++;
-    return idx;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, value, children]);
-
-  const selectedOption = optionsRef.current.find(
-    (o) => o.value !== undefined && String(o.value) === String(value)
+  const registerOption = useCallback(
+    (entry: OptionEntry): number => {
+      const idx = registerIndex;
+      optionsRef.current.push(entry);
+      registerIndex++;
+      return idx;
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [open, value, children]
   );
+
+  // Derive the selected label synchronously from children props so we
+  // never flash the placeholder on first render (useEffect registration
+  // only fires after paint).
+  const staticOptions = collectOptions(children);
+  const selectedOption =
+    optionsRef.current.find((o) => o.value !== undefined && String(o.value) === String(value)) ??
+    staticOptions.find((o) => o.value !== undefined && String(o.value) === String(value));
 
   function handleSelect(v: string | number) {
     onChange?.(v);
@@ -246,9 +274,7 @@ export function Select({
           if (!disabled) {
             setOpen((o) => !o);
             if (!open) {
-              const selIdx = optionsRef.current.findIndex(
-                (o) => String(o.value) === String(value)
-              );
+              const selIdx = optionsRef.current.findIndex((o) => String(o.value) === String(value));
               setHighlighted(selIdx >= 0 ? selIdx : 0);
             }
           }

@@ -1,6 +1,15 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Copy, Check, QrCode, MessageSquare, Plus, Settings, Users } from "lucide-react";
+import {
+  ChevronDown,
+  Copy,
+  Check,
+  QrCode,
+  MessageSquare,
+  Plus,
+  Settings,
+  Users,
+} from "lucide-react";
 import { ConversationItem } from "./ConversationItem";
 import { GroupConversationItem } from "./GroupConversationItem";
 import { InvitationsSection } from "./InvitationsSection";
