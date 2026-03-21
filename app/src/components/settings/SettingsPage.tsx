@@ -45,10 +45,12 @@ export function SettingsPage() {
         {/* Spacer — clears macOS traffic lights */}
         <div className="h-7 shrink-0" />
 
-        <div className="flex items-center justify-between border-b border-surface-200 px-4 py-5 dark:border-surface-800">
+        <div className="flex items-center justify-between border-b border-surface-200 px-4 py-3 dark:border-surface-800">
           <h2 className="font-semibold text-surface-900 dark:text-surface-50 cursor-default">
             Settings
           </h2>
+          {/* Invisible spacer matching IconButton height so header aligns with Messages header */}
+          <div className="h-4 w-0 p-1.5 box-content" aria-hidden="true" />
         </div>
 
         <div className="flex-1 space-y-0.5 px-2 pt-2">
@@ -84,7 +86,7 @@ export function SettingsPage() {
       {/* Content */}
       <div className="flex-1 overflow-auto">
         {/* Top bar with close button */}
-        <div className="sticky top-0 z-10 flex items-center justify-end px-6 py-3 bg-surface-100/80 dark:bg-surface-950/80 backdrop-blur-sm">
+        <div className="sticky top-0 z-10 flex items-center justify-end p-3 bg-surface-100/80 dark:bg-surface-950/80 backdrop-blur-sm">
           <IconButton onClick={closeSettings} title="Close settings">
             <X className="h-5 w-5" />
           </IconButton>
