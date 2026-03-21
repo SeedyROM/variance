@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for Variance desktop",
+  "description": "Cross-platform capabilities for Variance",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -8,7 +8,6 @@
     "fs:default",
     "dialog:default",
     "notification:default",
-    "decorum:allow-show-snap-overlay",
     "core:window:allow-set-badge-count"
   ]
 }

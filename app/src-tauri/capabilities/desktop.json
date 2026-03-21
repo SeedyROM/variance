@@ -1,0 +1,9 @@
+{
+  "identifier": "desktop",
+  "description": "macOS-only capabilities (window decorations)",
+  "platforms": ["macOS"],
+  "windows": ["main"],
+  "permissions": [
+    "decorum:allow-show-snap-overlay"
+  ]
+}

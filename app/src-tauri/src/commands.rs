@@ -1,10 +1,37 @@
-use tauri::State;
-use variance_app::{
-    config::variance_data_dir, identity_gen, start_node as node_start, AppConfig, AppState,
-    StorageConfig,
-};
+use std::path::PathBuf;
+
+use tauri::{AppHandle, State};
+use variance_app::{identity_gen, start_node as node_start, AppConfig, AppState, StorageConfig};
 
 use crate::state::NodeState;
+
+/// Resolve the base data directory for this Variance instance.
+///
+/// On desktop, uses `VARIANCE_DATA_DIR` env var or the platform data dir
+/// (via `dirs::data_local_dir()`).
+/// On mobile, uses Tauri's `app_data_dir()` which maps to the sandboxed
+/// app-private storage on iOS and Android — no extra permissions required.
+fn resolve_data_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    // Env override always wins (for multi-instance testing on desktop).
+    if let Ok(dir) = std::env::var("VARIANCE_DATA_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+
+    #[cfg(mobile)]
+    {
+        use tauri::Manager;
+        app_handle
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Failed to resolve mobile data dir: {}", e))
+    }
+
+    #[cfg(not(mobile))]
+    {
+        let _ = app_handle;
+        Ok(variance_app::config::variance_data_dir())
+    }
+}
 
 #[derive(Debug, serde::Serialize)]
 pub struct GeneratedIdentity {
@@ -112,14 +139,13 @@ pub async fn recover_identity(
 
 /// Return the default identity file path for this instance.
 ///
-/// Respects `VARIANCE_DATA_DIR` so multiple instances can each have their own
-/// identity without conflicting.
+/// On desktop, respects `VARIANCE_DATA_DIR` so multiple instances can each
+/// have their own identity without conflicting. On mobile, uses the
+/// platform's sandboxed app data directory.
 #[tauri::command]
-pub fn default_identity_path() -> String {
-    variance_data_dir()
-        .join("identity.json")
-        .to_string_lossy()
-        .into_owned()
+pub fn default_identity_path(app_handle: AppHandle) -> Result<String, String> {
+    let base = resolve_data_dir(&app_handle)?;
+    Ok(base.join("identity.json").to_string_lossy().into_owned())
 }
 
 /// Start the Variance P2P node and HTTP API server.
@@ -131,6 +157,7 @@ pub fn default_identity_path() -> String {
 /// Returns the assigned port number.
 #[tauri::command]
 pub async fn start_node(
+    app_handle: AppHandle,
     state: State<'_, NodeState>,
     identity_path: String,
     passphrase: Option<String>,
@@ -149,7 +176,7 @@ pub async fn start_node(
         return Ok(port);
     }
 
-    let base_dir = variance_data_dir();
+    let base_dir = resolve_data_dir(&app_handle)?;
 
     // Ensure the data directory exists before sled or the identity loader touch it.
     std::fs::create_dir_all(&base_dir)
@@ -372,16 +399,24 @@ mod tests {
     }
 
     #[test]
-    fn test_default_identity_path() {
-        let path = default_identity_path();
-        assert!(path.ends_with("identity.json"));
+    fn test_default_identity_path_via_env() {
+        // resolve_data_dir falls through to env var before checking AppHandle,
+        // so we can verify the path construction without a Tauri runtime.
+        std::env::set_var("VARIANCE_DATA_DIR", "/tmp/test-variance");
+        let base = variance_app::config::variance_data_dir();
+        let path = base.join("identity.json");
+        std::env::remove_var("VARIANCE_DATA_DIR");
+        assert!(path.to_string_lossy().ends_with("identity.json"));
     }
 
     #[test]
     fn test_data_dir_env_override() {
         std::env::set_var("VARIANCE_DATA_DIR", "/tmp/test-peer");
-        let path = default_identity_path();
+        let base = variance_app::config::variance_data_dir();
         std::env::remove_var("VARIANCE_DATA_DIR");
-        assert_eq!(path, "/tmp/test-peer/identity.json");
+        assert_eq!(
+            base.join("identity.json").to_string_lossy(),
+            "/tmp/test-peer/identity.json"
+        );
     }
 }

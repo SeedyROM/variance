@@ -18,13 +18,19 @@ pub fn run() {
         )
         .init();
 
-    info!("Variance Desktop initializing...");
+    info!("Variance initializing...");
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_decorum::init())
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_notification::init());
+
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.plugin(tauri_plugin_decorum::init());
+    }
+
+    builder
         .setup(|_app| {
             #[cfg(target_os = "macos")]
             {
@@ -75,5 +81,5 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
 
-    info!("Variance Desktop shutting down");
+    info!("Variance shutting down");
 }
