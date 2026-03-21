@@ -109,8 +109,8 @@ pub struct AppState {
     /// Wrapped in `Zeroizing` so the passphrase is scrubbed from heap memory on drop.
     pub identity_passphrase: Option<Arc<Zeroizing<String>>>,
 
-    /// Path to the on-disk config file (`base_dir/config.toml`) used for relay management.
-    pub config_path: PathBuf,
+    /// Base directory for config persistence (`config.toml` lives here).
+    pub config_dir: PathBuf,
 
     /// Opaque relay mailbox token: SHA-256(signing_key || "variance-mailbox-v1").
     /// Passed to the relay when fetching offline messages; never a human-readable DID.
@@ -208,7 +208,7 @@ impl AppState {
         ipfs_storage: Arc<dyn IdentityStorage>,
         passphrase: Option<&str>,
         stun_servers: Vec<String>,
-        config_path: PathBuf,
+        config_dir: PathBuf,
     ) -> anyhow::Result<Self> {
         let identity = Self::load_identity_with_passphrase(identity_path, passphrase)?;
         Self::from_identity(
@@ -221,7 +221,7 @@ impl AppState {
             ipfs_storage,
             passphrase,
             stun_servers,
-            config_path,
+            config_dir,
         )
     }
 
@@ -237,7 +237,7 @@ impl AppState {
         ipfs_storage: Arc<dyn IdentityStorage>,
         passphrase: Option<&str>,
         stun_servers: Vec<String>,
-        config_path: PathBuf,
+        config_dir: PathBuf,
     ) -> anyhow::Result<Self> {
         // Parse signing key from hex
         let signing_key_bytes = hex::decode(&identity.signing_key)
@@ -322,7 +322,7 @@ impl AppState {
             identity_path: identity_path.to_path_buf(),
             ipfs_storage,
             identity_passphrase: passphrase.map(|p| Arc::new(Zeroizing::new(p.to_string()))),
-            config_path,
+            config_dir,
             mailbox_token,
             signing_key,
         })
@@ -487,7 +487,7 @@ impl AppState {
                 LocalStorage::new(ipfs_storage_path).expect("Failed to create test IPFS storage"),
             ),
             identity_passphrase: None,
-            config_path: PathBuf::from("/tmp/test-config.toml"),
+            config_dir: PathBuf::from("/tmp"),
             mailbox_token,
             signing_key,
         }

@@ -37,8 +37,9 @@ test.describe("Onboarding flow", () => {
     await expect(freshPage.getByText("abandon").first()).toBeVisible();
     await expect(freshPage.getByText("about")).toBeVisible();
 
-    // Check the confirmation checkbox
-    await freshPage.getByRole("checkbox").check();
+    // Check the confirmation checkbox (click the label — custom Checkbox hides
+    // the native input behind sr-only, so Playwright's .check() can't reach it)
+    await freshPage.getByText("I have written down").click();
 
     // Click Continue
     await freshPage.getByRole("button", { name: "Continue" }).click();
@@ -88,7 +89,7 @@ test.describe("Onboarding flow", () => {
     await freshPage.getByRole("button", { name: "Continue without passphrase" }).click();
     await freshPage.getByRole("button", { name: "Generate my identity" }).click();
     await expect(freshPage.getByText("Your Recovery Phrase")).toBeVisible({ timeout: 10_000 });
-    await freshPage.getByRole("checkbox").check();
+    await freshPage.getByText("I have written down").click();
     await freshPage.getByRole("button", { name: "Continue" }).click();
     await expect(freshPage.getByText("Identity Ready")).toBeVisible();
     await freshPage.getByRole("button", { name: "Start Variance" }).click();

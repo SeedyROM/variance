@@ -1,5 +1,8 @@
 use tauri::State;
-use variance_app::{identity_gen, start_node as node_start, AppConfig, AppState, StorageConfig};
+use variance_app::{
+    config::variance_data_dir, identity_gen, start_node as node_start, AppConfig, AppState,
+    StorageConfig,
+};
 
 use crate::state::NodeState;
 
@@ -107,39 +110,13 @@ pub async fn recover_identity(
     Ok(identity.did)
 }
 
-/// Resolve the base data directory for this instance.
-///
-/// Reads `VARIANCE_DATA_DIR` first so a second instance can be run with a
-/// different identity by setting that variable before launching the binary:
-///
-///   VARIANCE_DATA_DIR=/tmp/peer-b ./variance-app
-///
-/// Falls back to the platform default. In debug builds, uses `variance-dev`
-/// to keep dev data separate from the installed release app:
-///   - Release: `~/Library/Application Support/variance` (macOS)
-///   - Debug:   `~/Library/Application Support/variance-dev` (macOS)
-fn data_dir() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("VARIANCE_DATA_DIR") {
-        std::path::PathBuf::from(dir)
-    } else {
-        let dir_name = if cfg!(debug_assertions) {
-            "variance-dev"
-        } else {
-            "variance"
-        };
-        dirs::data_local_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(dir_name)
-    }
-}
-
 /// Return the default identity file path for this instance.
 ///
 /// Respects `VARIANCE_DATA_DIR` so multiple instances can each have their own
 /// identity without conflicting.
 #[tauri::command]
 pub fn default_identity_path() -> String {
-    data_dir()
+    variance_data_dir()
         .join("identity.json")
         .to_string_lossy()
         .into_owned()
@@ -172,36 +149,27 @@ pub async fn start_node(
         return Ok(port);
     }
 
-    let base_dir = data_dir();
+    let base_dir = variance_data_dir();
 
     // Ensure the data directory exists before sled or the identity loader touch it.
     std::fs::create_dir_all(&base_dir)
         .map_err(|e| format!("Failed to create data directory: {}", e))?;
 
     // Load config from {data_dir}/config.toml, creating it with defaults if absent.
-    // Storage paths are always derived from base_dir at runtime and override whatever
-    // is in the file, so the file only needs to carry user-editable settings (relay
-    // peers, bootstrap peers, etc.).
+    // Storage paths are always derived from base_dir at runtime (never serialized
+    // to the file), so the file only carries user-editable settings (relay peers,
+    // bootstrap peers, retention, etc.).
     let config_path = base_dir.join("config.toml");
-    let mut config = if config_path.exists() {
-        AppConfig::from_file(config_path.to_str().unwrap_or_default())
+    let config = if config_path.exists() {
+        AppConfig::from_file(config_path.to_str().unwrap_or_default(), base_dir)
             .map_err(|e| format!("Failed to load config.toml: {}", e))?
     } else {
-        let default_cfg = AppConfig::default();
+        let mut default_cfg = AppConfig::default();
+        default_cfg.storage = StorageConfig::for_base_dir(base_dir);
         if let Err(e) = default_cfg.to_file(config_path.to_str().unwrap_or_default()) {
             tracing::warn!("Failed to write default config.toml: {}", e);
         }
         default_cfg
-    };
-
-    // Always derive storage paths from the runtime base_dir so multiple instances
-    // (each with their own VARIANCE_DATA_DIR) get correct, non-overlapping paths.
-    config.storage = StorageConfig {
-        identity_path: base_dir.join("identity.json"),
-        identity_cache_dir: base_dir.join("identity_cache"),
-        message_db_path: base_dir.join("messages.db"),
-        group_message_max_age_days: config.storage.group_message_max_age_days,
-        base_dir,
     };
 
     let identity_file_path = std::path::Path::new(&identity_path);

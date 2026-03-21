@@ -17,7 +17,7 @@ fn fresh_state(did: &str) -> AppState {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("test.db");
     let mut state = AppState::with_db_path(did.to_string(), db_path.to_str().unwrap());
-    state.config_path = dir.path().join("config.toml");
+    state.config_dir = dir.path().to_path_buf();
     std::mem::forget(dir);
     state
 }

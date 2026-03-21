@@ -92,10 +92,7 @@ stun_servers = ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]
 turn_servers = []
 
 [storage]
-base_dir = "$DIR"
-identity_path = "$DIR/identity.json"
-identity_cache_dir = "$DIR/identity_cache"
-message_db_path = "$DIR/messages.db"
+group_message_max_age_days = 30
 TOML
     echo "  ✓ Wrote relay config → $DIR/config.toml"
   fi

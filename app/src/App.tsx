@@ -6,6 +6,7 @@ import { UnlockScreen } from "./components/onboarding/UnlockScreen";
 import { ConversationList } from "./components/conversations/ConversationList";
 import { MessageView } from "./components/messages/MessageView";
 import { GroupView } from "./components/messages/GroupView";
+import { SettingsPage } from "./components/settings/SettingsPage";
 import { Toaster } from "./components/ui/Toaster";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { usePresencePolling } from "./hooks/usePresencePolling";
@@ -167,6 +168,7 @@ export function App() {
   const nodeStatus = useAppStore((s) => s.nodeStatus);
   const setNodeStatus = useAppStore((s) => s.setNodeStatus);
   const setApiPort = useAppStore((s) => s.setApiPort);
+  const showSettings = useAppStore((s) => s.showSettings);
 
   // Apply theme (incl. system dark mode) before any child screen renders.
   useTheme();
@@ -272,6 +274,7 @@ export function App() {
   return (
     <>
       <MainShell />
+      {showSettings && <SettingsPage />}
       <Toaster />
     </>
   );

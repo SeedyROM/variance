@@ -1,12 +1,21 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, MessageSquare, Plus, Settings, Users } from "lucide-react";
+import {
+  ChevronDown,
+  Copy,
+  Check,
+  QrCode,
+  MessageSquare,
+  Plus,
+  Settings,
+  Users,
+} from "lucide-react";
 import { ConversationItem } from "./ConversationItem";
 import { GroupConversationItem } from "./GroupConversationItem";
 import { InvitationsSection } from "./InvitationsSection";
 import { NewConversationModal } from "./NewConversationModal";
 import { CreateGroupModal } from "./CreateGroupModal";
-import { SettingsModal } from "./SettingsModal";
+import { ShareContactModal } from "./ShareContactModal";
 import { ThemeToggle } from "../ui/ThemeToggle";
 import { ScrollArea } from "../ui/ScrollArea";
 import { Avatar } from "../ui/Avatar";
@@ -14,14 +23,22 @@ import { IconButton } from "../ui/IconButton";
 import { conversationsApi, groupsApi } from "../../api/client";
 import { useMessagingStore } from "../../stores/messagingStore";
 import { useIdentityStore } from "../../stores/identityStore";
+import { useAppStore } from "../../stores/appStore";
 import { cn } from "../../utils/cn";
 import type { MlsGroupInfo } from "../../api/types";
 
 export function ConversationList({ width }: { width: number }) {
   const [showNew, setShowNew] = useState(false);
   const [showNewGroup, setShowNewGroup] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [conversationsOpen, setConversationsOpen] = useState(true);
+
+  // Quick-action popover for user identity
+  const [showQuickActions, setShowQuickActions] = useState(false);
+  const [showShareQr, setShowShareQr] = useState(false);
+  const [copied, setCopied] = useState<"username" | "did" | null>(null);
+  const quickActionsRef = useRef<HTMLDivElement>(null);
+
+  const openSettings = useAppStore((s) => s.openSettings);
 
   const activeConversation = useMessagingStore((s) => s.activeConversation);
   const setActiveConversation = useMessagingStore((s) => s.setActiveConversation);
@@ -123,7 +140,7 @@ export function ConversationList({ width }: { width: number }) {
           Messages
         </h2>
         <div className="flex items-center gap-1">
-          <IconButton onClick={() => setShowSettings(true)} title="Settings">
+          <IconButton onClick={() => openSettings()} title="Settings">
             <Settings className="h-4 w-4" />
           </IconButton>
           <IconButton onClick={() => setShowNewGroup(true)} title="New group">
@@ -215,9 +232,9 @@ export function ConversationList({ width }: { width: number }) {
 
       {/* Footer */}
       <div className="border-t border-surface-200 px-3 py-2 dark:border-surface-800">
-        <div className="flex items-center justify-between">
+        <div className="relative flex items-center justify-between" ref={quickActionsRef}>
           <button
-            onClick={() => setShowSettings(true)}
+            onClick={() => setShowQuickActions((o) => !o)}
             className="flex items-center gap-2 rounded-lg p-1.5 cursor-pointer hover:bg-surface-200 dark:hover:bg-surface-800"
           >
             {did && <Avatar did={did} name={displayName ?? undefined} size="sm" />}
@@ -226,11 +243,40 @@ export function ConversationList({ width }: { width: number }) {
                 {displayName}
               </span>
             ) : (
-              <Settings className="h-4 w-4 text-surface-500" />
+              <span className="text-xs text-surface-500 italic">No username</span>
             )}
           </button>
 
-          {width >= 257 && <ThemeToggle />}
+          {/* Quick-action popover */}
+          {showQuickActions && did && (
+            <QuickActionPopover
+              displayName={displayName}
+              copied={copied}
+              onCopyUsername={() => {
+                void navigator.clipboard.writeText(displayName ?? did);
+                setCopied("username");
+                setTimeout(() => setCopied(null), 2000);
+              }}
+              onCopyDid={() => {
+                void navigator.clipboard.writeText(did);
+                setCopied("did");
+                setTimeout(() => setCopied(null), 2000);
+              }}
+              onShareQr={() => {
+                setShowShareQr(true);
+                setShowQuickActions(false);
+              }}
+              onClose={() => setShowQuickActions(false)}
+              containerRef={quickActionsRef}
+            />
+          )}
+
+          <div className="flex items-center gap-1">
+            {width >= 257 && <ThemeToggle />}
+            <IconButton onClick={() => openSettings()} title="Settings">
+              <Settings className="h-4 w-4" />
+            </IconButton>
+          </div>
         </div>
       </div>
 
@@ -253,7 +299,91 @@ export function ConversationList({ width }: { width: number }) {
         }}
       />
 
-      <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} />
+      {did && (
+        <ShareContactModal
+          open={showShareQr}
+          onClose={() => setShowShareQr(false)}
+          did={did}
+          displayName={displayName}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Popover with quick actions: copy username, copy DID, share QR */
+function QuickActionPopover({
+  displayName,
+  copied,
+  onCopyUsername,
+  onCopyDid,
+  onShareQr,
+  onClose,
+  containerRef,
+}: {
+  displayName: string | null;
+  copied: "username" | "did" | null;
+  onCopyUsername: () => void;
+  onCopyDid: () => void;
+  onShareQr: () => void;
+  onClose: () => void;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  // Close on click outside
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose, containerRef]);
+
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <div className="absolute bottom-full left-0 mb-2 w-52 rounded-lg border border-surface-200 bg-surface-50 shadow-lg dark:border-surface-700 dark:bg-surface-800 animate-[tooltip-in_120ms_ease-out]">
+      <div className="p-2 space-y-0.5">
+        {displayName && (
+          <button
+            onClick={onCopyUsername}
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-xs text-surface-700 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors cursor-pointer"
+          >
+            {copied === "username" ? (
+              <Check className="h-3.5 w-3.5 text-green-500" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
+            {copied === "username" ? "Copied!" : "Copy username"}
+          </button>
+        )}
+        <button
+          onClick={onCopyDid}
+          className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-xs text-surface-700 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors cursor-pointer"
+        >
+          {copied === "did" ? (
+            <Check className="h-3.5 w-3.5 text-green-500" />
+          ) : (
+            <Copy className="h-3.5 w-3.5" />
+          )}
+          {copied === "did" ? "Copied!" : "Copy DID"}
+        </button>
+        <button
+          onClick={onShareQr}
+          className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-xs text-surface-700 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-700 transition-colors cursor-pointer"
+        >
+          <QrCode className="h-3.5 w-3.5" />
+          Share QR code
+        </button>
+      </div>
     </div>
   );
 }

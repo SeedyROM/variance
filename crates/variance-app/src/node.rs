@@ -116,10 +116,6 @@ pub async fn start_node(
 ) -> Result<RunningNode> {
     tracing::info!("Initializing Variance node...");
 
-    // Load on-disk config overrides (relay peers, STUN servers, etc.).
-    // Falls back to the provided defaults if no config.toml exists yet.
-    let config = AppConfig::load_or_default(&config.storage.base_dir);
-
     // Load identity once — used for keypair derivation and AppState construction.
     let mut identity =
         AppState::load_identity_with_passphrase(identity_path, passphrase).map_err(|e| {
@@ -193,7 +189,7 @@ pub async fn start_node(
         ipfs_storage,
         passphrase,
         config.media.stun_servers.clone(),
-        config.storage.base_dir.join("config.toml"),
+        config.storage.base_dir.clone(),
     )
     .map_err(|e| crate::Error::App {
         message: format!("Failed to initialize app state: {}", e),
