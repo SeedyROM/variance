@@ -66,15 +66,12 @@ impl MlsPersister {
         // Spawn the background debounce loop.
         let debounce = Duration::from_millis(debounce_ms);
         tokio::spawn(async move {
-            while running.load(Ordering::Relaxed) {
+            while running.load(Ordering::Acquire) {
                 // Wait for at least one schedule() call.
                 notify.notified().await;
 
-                if !running.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                // Debounce: keep waiting while new notifications arrive within the window.
+                // Even if stop() was called, complete the debounce cycle so any
+                // pending scheduled persist isn't silently dropped on shutdown.
                 while let Ok(()) = tokio::time::timeout(debounce, notify.notified()).await {
                     // Another schedule() arrived, reset the timer.
                 }
@@ -100,8 +97,10 @@ impl MlsPersister {
 
     /// Stop the background task. Call before dropping if you need clean shutdown.
     pub fn stop(&self) {
-        self.running.store(false, Ordering::Relaxed);
-        self.notify.notify_one(); // Wake the task so it exits.
+        self.running.store(false, Ordering::Release);
+        // notify_waiters() wakes the task even when a schedule() permit is already
+        // stored in the Notify — notify_one() would be a no-op in that case.
+        self.notify.notify_waiters();
     }
 }
 

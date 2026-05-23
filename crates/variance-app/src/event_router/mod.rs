@@ -147,7 +147,7 @@ impl EventRouter {
 /// Schedule debounced MLS state persistence after any mutation.
 ///
 /// Delegates to the `MlsPersister` which coalesces rapid-fire writes.
-pub(super) fn persist_mls_state_async(mls_persister: &MlsPersister) {
+pub(super) fn schedule_mls_persist(mls_persister: &MlsPersister) {
     mls_persister.schedule();
 }
 

@@ -287,10 +287,14 @@ impl LocalMessageStorage {
     /// (e.g. `AppState::from_identity_file`).
     pub fn load_olm_pickle_sync(&self, local_did: &str) -> Result<Option<String>> {
         let tree = self.olm_pickle_tree()?;
-        Ok(tree
-            .get(local_did.as_bytes())
+        tree.get(local_did.as_bytes())
             .map_err(|e| Error::Storage { source: e })?
-            .map(|v| String::from_utf8_lossy(&v).into_owned()))
+            .map(|v| {
+                String::from_utf8(v.to_vec()).map_err(|e| Error::InvalidFormat {
+                    message: format!("Olm pickle is not valid UTF-8: {e}"),
+                })
+            })
+            .transpose()
     }
 
     /// Persist the at-rest-encrypted plaintext blob for a group message.

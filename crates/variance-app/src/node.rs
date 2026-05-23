@@ -617,6 +617,9 @@ fn start_mls_self_update(
         // 6 hours between self-updates
         let mut interval = tokio::time::interval(Duration::from_secs(6 * 3600));
         interval.tick().await; // skip immediate first tick
+                               // Track consecutive self_update failures per group to escalate log level.
+        let mut consecutive_failures: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
         loop {
             interval.tick().await;
 
@@ -633,6 +636,7 @@ fn start_mls_self_update(
             for group_id in &group_ids {
                 match mls_groups.self_update(group_id) {
                     Ok(commit) => {
+                        consecutive_failures.remove(group_id);
                         let commit_bytes =
                             match variance_messaging::mls::MlsGroupHandler::serialize_message(
                                 &commit,
@@ -666,7 +670,25 @@ fn start_mls_self_update(
                         }
                     }
                     Err(e) => {
-                        tracing::debug!("MLS self-update skipped for group {}: {}", group_id, e);
+                        let count = consecutive_failures
+                            .entry(group_id.clone())
+                            .and_modify(|n| *n += 1)
+                            .or_insert(1);
+                        if *count >= 3 {
+                            tracing::warn!(
+                                "MLS self-update failed {} consecutive times for group {}: {} \
+                                 (group may be corrupted)",
+                                count,
+                                group_id,
+                                e
+                            );
+                        } else {
+                            tracing::debug!(
+                                "MLS self-update skipped for group {}: {}",
+                                group_id,
+                                e
+                            );
+                        }
                     }
                 }
             }

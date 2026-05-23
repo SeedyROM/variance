@@ -1,6 +1,6 @@
 //! Messaging-related event listeners: direct messages, group messages, group sync.
 
-use super::persist_mls_state_async;
+use super::schedule_mls_persist;
 use crate::mls_persister::MlsPersister;
 use crate::websocket::{WebSocketManager, WsMessage};
 use std::sync::Arc;
@@ -130,7 +130,7 @@ async fn handle_invite_accepted_dm(
         return;
     }
 
-    persist_mls_state_async(mls_persister);
+    schedule_mls_persist(mls_persister);
 
     // Broadcast the stored commit to existing group members via GossipSub.
     // The commit bytes are stored in the outbound invite.
@@ -212,7 +212,7 @@ async fn handle_invite_declined_dm(
         // Even if cancel fails, still clean up the outbound invite.
     }
 
-    persist_mls_state_async(mls_persister);
+    schedule_mls_persist(mls_persister);
 
     // Clean up the outbound invite.
     let _ = storage.delete_outbound_invite(group_id, invitee_did).await;
@@ -558,7 +558,7 @@ fn spawn_invite_timeout_sweep(
 
             // Persist MLS state once if any invites were cancelled.
             if !expired.is_empty() {
-                persist_mls_state_async(&mls_persister);
+                schedule_mls_persist(&mls_persister);
             }
         }
     });
@@ -742,7 +742,7 @@ async fn publish_group_receipt_from_event_router(
         .map_err(|e| format!("GossipSub publish receipt: {}", e))?;
 
     // Persist MLS state — encryption advanced the ratchet.
-    super::persist_mls_state_async(mls_persister);
+    super::schedule_mls_persist(mls_persister);
 
     Ok(())
 }
@@ -900,12 +900,12 @@ fn spawn_group_message_listener(
                                 }
 
                                 // Decrypt advanced the ratchet — persist the new state.
-                                persist_mls_state_async(&mls_persister);
+                                schedule_mls_persist(&mls_persister);
                             }
                             Ok(None) => {
                                 mls_groups.record_processing_success(&group_id);
                                 // Commit or proposal processed — epoch or tree changed.
-                                persist_mls_state_async(&mls_persister);
+                                schedule_mls_persist(&mls_persister);
 
                                 let mut members_after: Vec<String> =
                                     mls_groups.list_members(&group_id).unwrap_or_default();
@@ -916,7 +916,7 @@ fn spawn_group_message_listener(
                                 if members_after == members_before {
                                     match mls_groups.commit_pending_proposals(&group_id) {
                                         Ok(Some(commit_msg)) => {
-                                            persist_mls_state_async(&mls_persister);
+                                            schedule_mls_persist(&mls_persister);
 
                                             // Broadcast the commit to other members.
                                             if let Ok(commit_bytes) =
@@ -990,7 +990,7 @@ fn spawn_group_message_listener(
 
                                     // Remove the MLS group state so is_member() returns false.
                                     mls_groups.remove_group(&group_id);
-                                    persist_mls_state_async(&mls_persister);
+                                    schedule_mls_persist(&mls_persister);
 
                                     // Purge all local state for this group.
                                     if let Err(e) = storage.delete_group_metadata(&group_id).await {
@@ -1045,7 +1045,7 @@ fn spawn_group_message_listener(
                                                             e,
                                                         );
                                                     }
-                                                    persist_mls_state_async(
+                                                    schedule_mls_persist(
                                                         &mls_persister,
                                                     );
                                                 }
@@ -1288,7 +1288,7 @@ fn spawn_group_sync_listener(
                     }
 
                     if new_count > 0 {
-                        persist_mls_state_async(&mls_persister);
+                        schedule_mls_persist(&mls_persister);
                         debug!(
                             "EventRouter: Synced {} new messages for group {}",
                             new_count, group_id
