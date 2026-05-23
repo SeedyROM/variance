@@ -265,6 +265,34 @@ impl LocalMessageStorage {
             .map(|v| v.to_vec()))
     }
 
+    /// Persist the Olm account pickle (JSON string) to sled.
+    ///
+    /// Called after OTK replenishment so the updated key pool survives restarts.
+    /// Keyed by `local_did` to support multiple identities.
+    pub async fn store_olm_pickle(&self, local_did: &str, pickle_json: &str) -> Result<()> {
+        let tree = self.olm_pickle_tree()?;
+        tree.insert(local_did.as_bytes(), pickle_json.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?;
+        Ok(())
+    }
+
+    /// Load the most recently persisted Olm account pickle.
+    ///
+    /// Returns `None` if no pickle has been stored yet (first run or pre-migration).
+    pub async fn load_olm_pickle(&self, local_did: &str) -> Result<Option<String>> {
+        self.load_olm_pickle_sync(local_did)
+    }
+
+    /// Synchronous version of [`load_olm_pickle`] for use in non-async contexts
+    /// (e.g. `AppState::from_identity_file`).
+    pub fn load_olm_pickle_sync(&self, local_did: &str) -> Result<Option<String>> {
+        let tree = self.olm_pickle_tree()?;
+        Ok(tree
+            .get(local_did.as_bytes())
+            .map_err(|e| Error::Storage { source: e })?
+            .map(|v| String::from_utf8_lossy(&v).into_owned()))
+    }
+
     /// Persist the at-rest-encrypted plaintext blob for a group message.
     ///
     /// `blob` is `nonce (12 bytes) || AES-256-GCM ciphertext` produced by

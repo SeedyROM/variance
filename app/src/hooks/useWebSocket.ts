@@ -35,6 +35,13 @@ let pendingNavKey: string | null = null;
 let pendingNavAt = 0;
 let notifyIdCounter = 1;
 
+/** Invalidate multiple React Query cache keys at once. */
+function invalidateKeys(queryClient: ReturnType<typeof useQueryClient>, keys: string[]) {
+  for (const key of keys) {
+    void queryClient.invalidateQueries({ queryKey: [key] });
+  }
+}
+
 function getNotifyId(conversationKey: string): number {
   if (!NOTIFY_IDS.has(conversationKey)) {
     NOTIFY_IDS.set(conversationKey, notifyIdCounter++);
@@ -351,6 +358,18 @@ export function useWebSocket() {
 
           case "WsConnected":
             setWsConnected(true);
+            // Reconcile state after reconnect: invalidate all data caches so the
+            // UI refetches current state. Any events missed during the disconnect
+            // window are recovered by loading the latest data from the REST API.
+            invalidateKeys(queryClient, [
+              "conversations",
+              "messages",
+              "groups",
+              "group-members",
+              "invitations",
+              "outbound-invitations",
+              "receipts",
+            ]);
             break;
 
           case "WsDisconnected":

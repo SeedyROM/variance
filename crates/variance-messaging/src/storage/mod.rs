@@ -112,6 +112,14 @@ impl LocalMessageStorage {
             .map_err(|e| Error::Storage { source: e })
     }
 
+    /// Olm account pickle tree — persists the vodozemac account state (including
+    /// OTK pool) so that runtime OTK replenishment survives restarts.
+    pub(crate) fn olm_pickle_tree(&self) -> Result<sled::Tree> {
+        self.db
+            .open_tree("olm_account_pickle")
+            .map_err(|e| Error::Storage { source: e })
+    }
+
     /// Pending outgoing receipts tree.
     ///
     /// Key: `{target_did}:{message_id}`, value: serialized `ReadReceipt` proto.

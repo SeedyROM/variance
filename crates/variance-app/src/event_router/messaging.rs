@@ -1,8 +1,10 @@
 //! Messaging-related event listeners: direct messages, group messages, group sync.
 
 use super::persist_mls_state_async;
+use crate::mls_persister::MlsPersister;
 use crate::websocket::{WebSocketManager, WsMessage};
 use std::sync::Arc;
+use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, warn};
 use variance_messaging::{
     direct::DirectMessageHandler,
@@ -22,6 +24,7 @@ pub(super) struct MessagingDeps {
     pub local_did: String,
     pub receipts: Arc<ReceiptHandler>,
     pub username_registry: Arc<variance_identity::username::UsernameRegistry>,
+    pub mls_persister: MlsPersister,
 }
 
 /// Spawn all messaging-related event listeners (DM, group, group sync, invite timeout).
@@ -35,6 +38,7 @@ pub(super) fn spawn_messaging_listeners(deps: MessagingDeps, events: EventChanne
         deps.local_did.clone(),
         deps.receipts.clone(),
         deps.username_registry,
+        deps.mls_persister.clone(),
         events.clone(),
     );
     spawn_group_message_listener(
@@ -44,6 +48,7 @@ pub(super) fn spawn_messaging_listeners(deps: MessagingDeps, events: EventChanne
         deps.local_did.clone(),
         deps.node_handle.clone(),
         deps.receipts.clone(),
+        deps.mls_persister.clone(),
         events.clone(),
     );
     spawn_group_sync_listener(
@@ -52,6 +57,7 @@ pub(super) fn spawn_messaging_listeners(deps: MessagingDeps, events: EventChanne
         deps.storage.clone(),
         deps.local_did.clone(),
         deps.node_handle,
+        deps.mls_persister.clone(),
         events,
     );
     spawn_invite_timeout_sweep(
@@ -59,6 +65,7 @@ pub(super) fn spawn_messaging_listeners(deps: MessagingDeps, events: EventChanne
         deps.mls_groups,
         deps.storage,
         deps.local_did,
+        deps.mls_persister,
     );
 }
 
@@ -112,6 +119,7 @@ async fn handle_invite_accepted_dm(
     group_id: &str,
     invitee_did: &str,
     username_registry: &variance_identity::username::UsernameRegistry,
+    mls_persister: &MlsPersister,
 ) {
     // Confirm the pending MLS commit (merge it).
     if let Err(e) = mls_groups.confirm_add_member(group_id) {
@@ -122,7 +130,7 @@ async fn handle_invite_accepted_dm(
         return;
     }
 
-    persist_mls_state_async(mls_groups, storage, local_did).await;
+    persist_mls_state_async(mls_persister);
 
     // Broadcast the stored commit to existing group members via GossipSub.
     // The commit bytes are stored in the outbound invite.
@@ -189,10 +197,11 @@ async fn handle_invite_accepted_dm(
 async fn handle_invite_declined_dm(
     mls_groups: &MlsGroupHandler,
     storage: &LocalMessageStorage,
-    local_did: &str,
+    _local_did: &str,
     ws_manager: &WebSocketManager,
     group_id: &str,
     invitee_did: &str,
+    mls_persister: &MlsPersister,
 ) {
     // Roll back the pending MLS commit.
     if let Err(e) = mls_groups.cancel_add_member(group_id) {
@@ -203,7 +212,7 @@ async fn handle_invite_declined_dm(
         // Even if cancel fails, still clean up the outbound invite.
     }
 
-    persist_mls_state_async(mls_groups, storage, local_did).await;
+    persist_mls_state_async(mls_persister);
 
     // Clean up the outbound invite.
     let _ = storage.delete_outbound_invite(group_id, invitee_did).await;
@@ -230,6 +239,7 @@ fn spawn_direct_message_listener(
     local_did: String,
     receipts: Arc<ReceiptHandler>,
     username_registry: Arc<variance_identity::username::UsernameRegistry>,
+    mls_persister: MlsPersister,
     events: EventChannels,
 ) {
     tokio::spawn(async move {
@@ -237,7 +247,18 @@ fn spawn_direct_message_listener(
         let mut rx = events.subscribe_direct_messages();
         debug!("EventRouter: Started direct message event listener");
 
-        while let Ok(event) = rx.recv().await {
+        loop {
+            let event = match rx.recv().await {
+                Ok(event) => event,
+                Err(RecvError::Lagged(n)) => {
+                    warn!("EventRouter: Direct message listener missed {n} events, continuing");
+                    continue;
+                }
+                Err(RecvError::Closed) => {
+                    warn!("EventRouter: Direct message channel closed, exiting");
+                    break;
+                }
+            };
             debug!("EventRouter: Received direct message event: {:?}", event);
 
             match event {
@@ -309,6 +330,7 @@ fn spawn_direct_message_listener(
                                             group_id,
                                             &from,
                                             &username_registry,
+                                            &mls_persister,
                                         )
                                         .await;
                                     }
@@ -333,6 +355,7 @@ fn spawn_direct_message_listener(
                                             &ws_manager,
                                             group_id,
                                             &from,
+                                            &mls_persister,
                                         )
                                         .await;
                                     }
@@ -406,6 +429,20 @@ fn spawn_direct_message_listener(
                                 if let Err(e) = node_handle.update_one_time_keys(fresh_otks).await {
                                     warn!("Failed to replenish OTK pool in P2P handler: {}", e);
                                 }
+
+                                // Persist updated Olm account to sled so OTKs survive restarts.
+                                match direct_messaging.account_pickle().await {
+                                    Ok(pickle_json) => {
+                                        if let Err(e) =
+                                            storage.store_olm_pickle(&local_did, &pickle_json).await
+                                        {
+                                            warn!("Failed to persist Olm pickle after OTK replenishment: {}", e);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to serialize Olm pickle after OTK replenishment: {}", e);
+                                    }
+                                }
                             }
                         }
                         Err(e) => {
@@ -469,7 +506,8 @@ fn spawn_invite_timeout_sweep(
     ws_manager: WebSocketManager,
     mls_groups: Arc<MlsGroupHandler>,
     storage: Arc<LocalMessageStorage>,
-    local_did: String,
+    _local_did: String,
+    mls_persister: MlsPersister,
 ) {
     tokio::spawn(async move {
         debug!("EventRouter: Started invite timeout sweep (interval={INVITE_SWEEP_INTERVAL:?})");
@@ -520,7 +558,7 @@ fn spawn_invite_timeout_sweep(
 
             // Persist MLS state once if any invites were cancelled.
             if !expired.is_empty() {
-                persist_mls_state_async(&mls_groups, &storage, &local_did).await;
+                persist_mls_state_async(&mls_persister);
             }
         }
     });
@@ -543,6 +581,7 @@ async fn handle_group_message_content(
     local_did: &str,
     receipts: &Arc<ReceiptHandler>,
     node_handle: &NodeHandle,
+    mls_persister: &MlsPersister,
 ) {
     let is_role_change = content.metadata.get("type").map(String::as_str) == Some("role_change");
     let is_admin_abandoned =
@@ -637,6 +676,7 @@ async fn handle_group_message_content(
                         local_did,
                         group_id,
                         receipt,
+                        mls_persister,
                     )
                     .await
                     {
@@ -664,11 +704,12 @@ async fn handle_group_message_content(
 /// doesn't have access to the full `AppState`.
 async fn publish_group_receipt_from_event_router(
     mls_groups: &Arc<MlsGroupHandler>,
-    storage: &Arc<LocalMessageStorage>,
+    _storage: &Arc<LocalMessageStorage>,
     node_handle: &NodeHandle,
     local_did: &str,
     group_id: &str,
     receipt: variance_proto::messaging_proto::GroupReadReceipt,
+    mls_persister: &MlsPersister,
 ) -> std::result::Result<(), String> {
     use variance_proto::messaging_proto::{group_payload, GroupPayload};
 
@@ -701,11 +742,12 @@ async fn publish_group_receipt_from_event_router(
         .map_err(|e| format!("GossipSub publish receipt: {}", e))?;
 
     // Persist MLS state — encryption advanced the ratchet.
-    super::persist_mls_state_async(mls_groups, storage, local_did).await;
+    super::persist_mls_state_async(mls_persister);
 
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_group_message_listener(
     ws_manager: WebSocketManager,
     mls_groups: Arc<MlsGroupHandler>,
@@ -713,6 +755,7 @@ fn spawn_group_message_listener(
     local_did: String,
     node_handle: NodeHandle,
     receipts: Arc<ReceiptHandler>,
+    mls_persister: MlsPersister,
     events: EventChannels,
 ) {
     tokio::spawn(async move {
@@ -720,7 +763,18 @@ fn spawn_group_message_listener(
         let mut rx = events.subscribe_group_messages();
         debug!("EventRouter: Started group message event listener");
 
-        while let Ok(event) = rx.recv().await {
+        loop {
+            let event = match rx.recv().await {
+                Ok(event) => event,
+                Err(RecvError::Lagged(n)) => {
+                    warn!("EventRouter: Group message listener missed {n} events, continuing");
+                    continue;
+                }
+                Err(RecvError::Closed) => {
+                    warn!("EventRouter: Group message channel closed, exiting");
+                    break;
+                }
+            };
             debug!("EventRouter: Received group message event: {:?}", event);
 
             if let GroupMessageEvent::MessageReceived { message } = event {
@@ -807,6 +861,7 @@ fn spawn_group_message_listener(
                                             &local_did,
                                             &receipts,
                                             &node_handle,
+                                            &mls_persister,
                                         )
                                         .await;
                                     }
@@ -832,6 +887,7 @@ fn spawn_group_message_listener(
                                                 &local_did,
                                                 &receipts,
                                                 &node_handle,
+                                                &mls_persister,
                                             )
                                             .await;
                                         } else {
@@ -844,12 +900,12 @@ fn spawn_group_message_listener(
                                 }
 
                                 // Decrypt advanced the ratchet — persist the new state.
-                                persist_mls_state_async(&mls_groups, &storage, &local_did).await;
+                                persist_mls_state_async(&mls_persister);
                             }
                             Ok(None) => {
                                 mls_groups.record_processing_success(&group_id);
                                 // Commit or proposal processed — epoch or tree changed.
-                                persist_mls_state_async(&mls_groups, &storage, &local_did).await;
+                                persist_mls_state_async(&mls_persister);
 
                                 let mut members_after: Vec<String> =
                                     mls_groups.list_members(&group_id).unwrap_or_default();
@@ -860,12 +916,7 @@ fn spawn_group_message_listener(
                                 if members_after == members_before {
                                     match mls_groups.commit_pending_proposals(&group_id) {
                                         Ok(Some(commit_msg)) => {
-                                            persist_mls_state_async(
-                                                &mls_groups,
-                                                &storage,
-                                                &local_did,
-                                            )
-                                            .await;
+                                            persist_mls_state_async(&mls_persister);
 
                                             // Broadcast the commit to other members.
                                             if let Ok(commit_bytes) =
@@ -939,8 +990,7 @@ fn spawn_group_message_listener(
 
                                     // Remove the MLS group state so is_member() returns false.
                                     mls_groups.remove_group(&group_id);
-                                    persist_mls_state_async(&mls_groups, &storage, &local_did)
-                                        .await;
+                                    persist_mls_state_async(&mls_persister);
 
                                     // Purge all local state for this group.
                                     if let Err(e) = storage.delete_group_metadata(&group_id).await {
@@ -996,11 +1046,8 @@ fn spawn_group_message_listener(
                                                         );
                                                     }
                                                     persist_mls_state_async(
-                                                        &mls_groups,
-                                                        &storage,
-                                                        &local_did,
-                                                    )
-                                                    .await;
+                                                        &mls_persister,
+                                                    );
                                                 }
                                                 Err(e) => warn!(
                                                     "EventRouter: Failed to serialize refreshed KeyPackage after kick: {}",
@@ -1073,8 +1120,9 @@ fn spawn_group_sync_listener(
     ws_manager: WebSocketManager,
     mls_groups: Arc<MlsGroupHandler>,
     storage: Arc<LocalMessageStorage>,
-    local_did: String,
+    _local_did: String,
     node_handle: NodeHandle,
+    mls_persister: MlsPersister,
     events: EventChannels,
 ) {
     tokio::spawn(async move {
@@ -1082,7 +1130,18 @@ fn spawn_group_sync_listener(
         let mut rx = events.subscribe_group_sync();
         debug!("EventRouter: Started group sync event listener");
 
-        while let Ok(event) = rx.recv().await {
+        loop {
+            let event = match rx.recv().await {
+                Ok(event) => event,
+                Err(RecvError::Lagged(n)) => {
+                    warn!("EventRouter: Group sync listener missed {n} events, continuing");
+                    continue;
+                }
+                Err(RecvError::Closed) => {
+                    warn!("EventRouter: Group sync channel closed, exiting");
+                    break;
+                }
+            };
             debug!("EventRouter: Received group sync event: {:?}", event);
 
             match event {
@@ -1229,7 +1288,7 @@ fn spawn_group_sync_listener(
                     }
 
                     if new_count > 0 {
-                        persist_mls_state_async(&mls_groups, &storage, &local_did).await;
+                        persist_mls_state_async(&mls_persister);
                         debug!(
                             "EventRouter: Synced {} new messages for group {}",
                             new_count, group_id

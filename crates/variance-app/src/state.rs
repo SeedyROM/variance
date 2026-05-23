@@ -12,6 +12,7 @@ use variance_messaging::{
 };
 use zeroize::Zeroizing;
 
+use crate::mls_persister::MlsPersister;
 use crate::websocket::WebSocketManager;
 
 /// Identity file format (DID + signing keys)
@@ -119,6 +120,10 @@ pub struct AppState {
     /// Ed25519 signing key for this identity. Used to sign identity protocol
     /// responses and other authenticated messages.
     pub signing_key: ed25519_dalek::SigningKey,
+
+    /// Debounced MLS state persister — coalesces rapid-fire MLS mutations into
+    /// a single sled write after the debounce window elapses.
+    pub mls_persister: MlsPersister,
 }
 
 impl AppState {
@@ -263,13 +268,24 @@ impl AppState {
                 .map_err(|_| anyhow::anyhow!("Invalid signaling key length"))?,
         );
 
-        // Restore the Olm account from its persisted pickle.
-        let olm_pickle: vodozemac::olm::AccountPickle =
-            serde_json::from_str(&identity.olm_account_pickle)
-                .map_err(|e| anyhow::anyhow!("Failed to deserialize Olm account: {}", e))?;
-        let olm_account = vodozemac::olm::Account::from_pickle(olm_pickle);
-
         let storage = Arc::new(LocalMessageStorage::new(db_path)?);
+
+        // Restore the Olm account from the most recent pickle.
+        // Prefer the sled-persisted pickle (updated after every OTK replenishment)
+        // over the identity file pickle (only written at startup).
+        let olm_pickle_json = match storage.load_olm_pickle_sync(&identity.did) {
+            Ok(Some(pickle)) => {
+                tracing::debug!("Loaded Olm pickle from sled (has latest OTK state)");
+                pickle
+            }
+            _ => {
+                tracing::debug!("No sled Olm pickle found, using identity file pickle");
+                identity.olm_account_pickle.clone()
+            }
+        };
+        let olm_pickle: vodozemac::olm::AccountPickle = serde_json::from_str(&olm_pickle_json)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize Olm account: {}", e))?;
+        let olm_account = vodozemac::olm::Account::from_pickle(olm_pickle);
 
         // Build identity cache
         let identity_cache = Arc::new(
@@ -287,6 +303,14 @@ impl AppState {
                 .map_err(|e| anyhow::anyhow!("Failed to seed username registry: {}", e))?;
         }
 
+        let mls_groups = Arc::new(
+            MlsGroupHandler::new(identity.did.clone(), &signing_key)
+                .map_err(|e| anyhow::anyhow!("Failed to create MLS group handler: {}", e))?,
+        );
+
+        let mls_persister =
+            MlsPersister::new(mls_groups.clone(), storage.clone(), identity.did.clone());
+
         Ok(Self {
             direct_messaging: Arc::new(DirectMessageHandler::new(
                 identity.did.clone(),
@@ -294,10 +318,7 @@ impl AppState {
                 olm_account,
                 storage.clone(),
             )),
-            mls_groups: Arc::new(
-                MlsGroupHandler::new(identity.did.clone(), &signing_key)
-                    .map_err(|e| anyhow::anyhow!("Failed to create MLS group handler: {}", e))?,
-            ),
+            mls_groups,
             receipts: Arc::new(ReceiptHandler::new(
                 identity.did.clone(),
                 signing_key.clone(),
@@ -325,6 +346,7 @@ impl AppState {
             config_dir,
             mailbox_token,
             signing_key,
+            mls_persister,
         })
     }
 
@@ -448,6 +470,14 @@ impl AppState {
         let ipfs_storage_path = identity_temp.path().join("ipfs-local");
         let _ = identity_temp.keep();
 
+        let mls_groups = Arc::new(
+            MlsGroupHandler::new(local_did.clone(), &signing_key)
+                .expect("Failed to create MLS group handler"),
+        );
+
+        let mls_persister =
+            MlsPersister::new(mls_groups.clone(), storage.clone(), local_did.clone());
+
         Self {
             direct_messaging: Arc::new(DirectMessageHandler::new(
                 local_did.clone(),
@@ -455,10 +485,7 @@ impl AppState {
                 vodozemac::olm::Account::new(),
                 storage.clone(),
             )),
-            mls_groups: Arc::new(
-                MlsGroupHandler::new(local_did.clone(), &signing_key)
-                    .expect("Failed to create MLS group handler"),
-            ),
+            mls_groups,
             receipts: Arc::new(ReceiptHandler::new(
                 local_did.clone(),
                 signing_key.clone(),
@@ -490,6 +517,7 @@ impl AppState {
             config_dir: PathBuf::from("/tmp"),
             mailbox_token,
             signing_key,
+            mls_persister,
         }
     }
 }

@@ -4,6 +4,7 @@
 //! the CLI (standalone server) and desktop app (embedded in Tauri).
 
 use crate::event_router::EventRouterDeps;
+use crate::mls_persister::MlsPersister;
 use crate::{create_router, AppConfig, AppState, EventRouter, Result};
 use axum::Router;
 use std::path::Path;
@@ -124,7 +125,7 @@ pub async fn start_node(
             }
         })?;
 
-    let p2p_config = build_p2p_config(&config, &identity)?;
+    let p2p_config = build_p2p_config(config, &identity)?;
 
     // Create P2P node and get handle
     tracing::debug!("Creating P2P node...");
@@ -230,6 +231,17 @@ pub async fn start_node(
         app_state.identity_cache.clone(),
         group_max_age,
     );
+    start_fallback_key_rotation(
+        app_state.direct_messaging.clone(),
+        app_state.storage.clone(),
+        app_state.local_did.clone(),
+    );
+    start_mls_self_update(
+        app_state.mls_groups.clone(),
+        app_state.node_handle.clone(),
+        app_state.local_did.clone(),
+        app_state.mls_persister.clone(),
+    );
 
     // Start event router to bridge P2P events to WebSocket clients
     let event_router = EventRouter::new(EventRouterDeps {
@@ -245,6 +257,7 @@ pub async fn start_node(
         local_did: app_state.local_did.clone(),
         identity_cache: app_state.identity_cache.clone(),
         receipts: app_state.receipts.clone(),
+        mls_persister: app_state.mls_persister.clone(),
     });
     event_router.start((*event_channels).clone());
     tracing::debug!("EventRouter started");
@@ -339,6 +352,10 @@ async fn restore_crypto_state(
     // Generate initial batch of one-time pre-keys so peers can establish Olm sessions.
     state.direct_messaging.generate_one_time_keys(50).await;
 
+    // Generate a fallback key (used when all OTKs are exhausted).
+    // This is a last-resort key that persists until explicitly rotated.
+    state.direct_messaging.generate_fallback_key().await;
+
     let olm_identity_key = state.direct_messaging.identity_key().to_bytes().to_vec();
     let one_time_keys = state
         .direct_messaging
@@ -358,7 +375,18 @@ async fn restore_crypto_state(
 
     // Update the in-memory identity with the new pickle so the caller can persist once.
     match state.direct_messaging.account_pickle().await {
-        Ok(pickle_json) => identity.olm_account_pickle = pickle_json,
+        Ok(pickle_json) => {
+            identity.olm_account_pickle = pickle_json.clone();
+            // Also persist to sled so OTK state survives restarts even if
+            // the identity file write fails or is skipped.
+            if let Err(e) = state
+                .storage
+                .store_olm_pickle(&state.local_did, &pickle_json)
+                .await
+            {
+                tracing::warn!("Failed to persist initial Olm pickle to sled: {}", e);
+            }
+        }
         Err(e) => tracing::warn!("Failed to serialize Olm account pickle: {}", e),
     }
 
@@ -522,6 +550,129 @@ fn start_maintenance_task(
             }
 
             cache.evict_expired();
+        }
+    });
+}
+
+/// Periodically rotate the Olm fallback key (every 7 days).
+///
+/// The fallback key is used when all one-time pre-keys are exhausted.
+/// Rotating it limits the window of exposure if the key is compromised.
+/// Vodozemac keeps the previous fallback key until `forget_fallback_key()`
+/// is called, so in-flight sessions using the old key still work.
+fn start_fallback_key_rotation(
+    direct_messaging: Arc<variance_messaging::direct::DirectMessageHandler>,
+    storage: Arc<LocalMessageStorage>,
+    local_did: String,
+) {
+    tokio::spawn(async move {
+        // 7 days between rotations
+        let mut interval = tokio::time::interval(Duration::from_secs(7 * 24 * 3600));
+        interval.tick().await; // skip immediate first tick (just generated at startup)
+        loop {
+            interval.tick().await;
+
+            tracing::info!("Rotating Olm fallback key");
+
+            // Forget the previous fallback key (no longer needed after a full rotation cycle)
+            direct_messaging.forget_previous_fallback_key().await;
+
+            // Generate a new fallback key (the current one becomes "previous")
+            direct_messaging.generate_fallback_key().await;
+            direct_messaging.mark_one_time_keys_as_published().await;
+
+            // Persist updated account state
+            match direct_messaging.account_pickle().await {
+                Ok(pickle_json) => {
+                    if let Err(e) = storage.store_olm_pickle(&local_did, &pickle_json).await {
+                        tracing::warn!(
+                            "Failed to persist Olm pickle after fallback key rotation: {}",
+                            e
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to serialize Olm pickle after fallback key rotation: {}",
+                        e
+                    );
+                }
+            }
+        }
+    });
+}
+
+/// Periodically send MLS self-update commits in all active groups (every 6 hours).
+///
+/// Each self-update rotates this member's leaf HPKE key material, providing
+/// post-compromise security: if the leaf key was previously compromised, the
+/// attacker can no longer decrypt messages after the update is committed.
+fn start_mls_self_update(
+    mls_groups: Arc<variance_messaging::mls::MlsGroupHandler>,
+    node_handle: variance_p2p::NodeHandle,
+    local_did: String,
+    mls_persister: MlsPersister,
+) {
+    tokio::spawn(async move {
+        // 6 hours between self-updates
+        let mut interval = tokio::time::interval(Duration::from_secs(6 * 3600));
+        interval.tick().await; // skip immediate first tick
+        loop {
+            interval.tick().await;
+
+            let group_ids = mls_groups.group_ids();
+            if group_ids.is_empty() {
+                continue;
+            }
+
+            tracing::debug!(
+                "MLS self-update: rotating leaf keys in {} group(s)",
+                group_ids.len()
+            );
+
+            for group_id in &group_ids {
+                match mls_groups.self_update(group_id) {
+                    Ok(commit) => {
+                        let commit_bytes =
+                            match variance_messaging::mls::MlsGroupHandler::serialize_message(
+                                &commit,
+                            ) {
+                                Ok(bytes) => bytes,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Failed to serialize MLS self-update for group {}: {}",
+                                        group_id,
+                                        e
+                                    );
+                                    continue;
+                                }
+                            };
+                        let topic = format!("/variance/group/{}", group_id);
+                        let proto = variance_proto::messaging_proto::GroupMessage {
+                            id: ulid::Ulid::new().to_string(),
+                            sender_did: local_did.clone(),
+                            group_id: group_id.clone(),
+                            timestamp: chrono::Utc::now().timestamp_millis(),
+                            r#type: 0, // control message
+                            reply_to: None,
+                            mls_ciphertext: commit_bytes,
+                        };
+                        if let Err(e) = node_handle.publish_group_message(topic, proto).await {
+                            tracing::warn!(
+                                "Failed to publish MLS self-update for group {}: {}",
+                                group_id,
+                                e
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("MLS self-update skipped for group {}: {}", group_id, e);
+                    }
+                }
+            }
+
+            // Persist MLS state after all updates
+            mls_persister.schedule();
         }
     });
 }

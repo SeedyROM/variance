@@ -2,6 +2,7 @@
 
 use crate::websocket::{encode_signaling, WebSocketManager, WsMessage};
 use std::sync::Arc;
+use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, warn};
 use variance_media::{CallManager, SignalingHandler};
 use variance_p2p::{EventChannels, NodeHandle, OfflineMessageEvent, SignalingEvent};
@@ -35,7 +36,18 @@ fn spawn_call_event_listener(
         use variance_media::CallEvent;
         debug!("EventRouter: Started call event listener");
 
-        while let Ok(event) = call_rx.recv().await {
+        loop {
+            let event = match call_rx.recv().await {
+                Ok(event) => event,
+                Err(RecvError::Lagged(n)) => {
+                    warn!("EventRouter: Call listener missed {n} events, continuing");
+                    continue;
+                }
+                Err(RecvError::Closed) => {
+                    warn!("EventRouter: Call channel closed, exiting");
+                    break;
+                }
+            };
             debug!("EventRouter: Received call event: {:?}", event);
 
             match event {
@@ -104,7 +116,18 @@ fn spawn_signaling_event_listener(ws_manager: WebSocketManager, events: EventCha
         let mut rx = events.subscribe_signaling();
         debug!("EventRouter: Started signaling event listener");
 
-        while let Ok(event) = rx.recv().await {
+        loop {
+            let event = match rx.recv().await {
+                Ok(event) => event,
+                Err(RecvError::Lagged(n)) => {
+                    warn!("EventRouter: Signaling listener missed {n} events, continuing");
+                    continue;
+                }
+                Err(RecvError::Closed) => {
+                    warn!("EventRouter: Signaling channel closed, exiting");
+                    break;
+                }
+            };
             debug!("EventRouter: Received signaling event: {:?}", event);
 
             let msg = match event {
@@ -161,7 +184,18 @@ fn spawn_offline_message_listener(ws_manager: WebSocketManager, events: EventCha
         let mut rx = events.subscribe_offline_messages();
         debug!("EventRouter: Started offline message event listener");
 
-        while let Ok(event) = rx.recv().await {
+        loop {
+            let event = match rx.recv().await {
+                Ok(event) => event,
+                Err(RecvError::Lagged(n)) => {
+                    warn!("EventRouter: Offline message listener missed {n} events, continuing");
+                    continue;
+                }
+                Err(RecvError::Closed) => {
+                    warn!("EventRouter: Offline message channel closed, exiting");
+                    break;
+                }
+            };
             debug!("EventRouter: Received offline message event: {:?}", event);
 
             if let OfflineMessageEvent::MessagesReceived { messages, .. } = event {

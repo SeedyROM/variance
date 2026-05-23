@@ -105,7 +105,9 @@ impl Node {
             relay::client::Event::OutboundCircuitEstablished { relay_peer_id, .. } => {
                 debug!("Outbound circuit established via relay {}", relay_peer_id);
             }
-            _ => {}
+            relay::client::Event::InboundCircuitEstablished { src_peer_id, .. } => {
+                debug!("Inbound circuit established from {} via relay", src_peer_id);
+            }
         }
     }
 

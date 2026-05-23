@@ -268,8 +268,10 @@ mod tests {
     fn test_config_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let base_dir = dir.path();
-        let mut config = AppConfig::default();
-        config.storage = StorageConfig::for_base_dir(base_dir.to_path_buf());
+        let config = AppConfig {
+            storage: StorageConfig::for_base_dir(base_dir.to_path_buf()),
+            ..Default::default()
+        };
 
         // Save and reload
         config.save(base_dir).unwrap();
@@ -301,8 +303,10 @@ mod tests {
         let base_dir = dir.path();
 
         // Save defaults (no relays)
-        let mut default_cfg = AppConfig::default();
-        default_cfg.storage = StorageConfig::for_base_dir(base_dir.to_path_buf());
+        let default_cfg = AppConfig {
+            storage: StorageConfig::for_base_dir(base_dir.to_path_buf()),
+            ..Default::default()
+        };
         default_cfg.save(base_dir).unwrap();
 
         // Load, add relay, save (simulates API handler)
@@ -328,8 +332,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let base_dir = dir.path();
 
-        let mut config = AppConfig::default();
-        config.storage = StorageConfig::for_base_dir(base_dir.to_path_buf());
+        let config = AppConfig {
+            storage: StorageConfig::for_base_dir(base_dir.to_path_buf()),
+            ..Default::default()
+        };
         config.save(base_dir).unwrap();
 
         let contents = fs::read_to_string(base_dir.join("config.toml")).unwrap();
@@ -402,8 +408,10 @@ turn_servers = []
         let base_dir = dir.path();
 
         // Save config with custom retention
-        let mut config = AppConfig::default();
-        config.storage = StorageConfig::for_base_dir(base_dir.to_path_buf());
+        let mut config = AppConfig {
+            storage: StorageConfig::for_base_dir(base_dir.to_path_buf()),
+            ..Default::default()
+        };
         config.storage.group_message_max_age_days = 90;
         config.save(base_dir).unwrap();
 

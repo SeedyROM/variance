@@ -116,6 +116,19 @@ impl DirectMessageHandler {
         self.account.write().await.mark_keys_as_published();
     }
 
+    /// Generate a new fallback key, replacing the previous one.
+    ///
+    /// The fallback key is used when all one-time pre-keys are exhausted.
+    /// Returns the old fallback key that was replaced, if any.
+    pub async fn generate_fallback_key(&self) -> Option<Curve25519PublicKey> {
+        self.account.write().await.generate_fallback_key()
+    }
+
+    /// Forget the previous fallback key (keep only the current one).
+    pub async fn forget_previous_fallback_key(&self) {
+        self.account.write().await.forget_fallback_key();
+    }
+
     /// Serialize the current Olm account state to a JSON pickle string.
     ///
     /// Must be called after `mark_one_time_keys_as_published` and the result

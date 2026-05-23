@@ -7,18 +7,16 @@ mod media;
 mod messaging;
 mod social;
 
+use crate::mls_persister::MlsPersister;
 use crate::websocket::WebSocketManager;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::debug;
 use variance_identity::cache::MultiLayerCache;
 use variance_identity::username::UsernameRegistry;
 use variance_media::{CallManager, SignalingHandler};
 use variance_messaging::{
-    direct::DirectMessageHandler,
-    mls::MlsGroupHandler,
-    receipts::ReceiptHandler,
-    storage::{LocalMessageStorage, MessageStorage},
-    typing::TypingHandler,
+    direct::DirectMessageHandler, mls::MlsGroupHandler, receipts::ReceiptHandler,
+    storage::LocalMessageStorage, typing::TypingHandler,
 };
 use variance_p2p::{EventChannels, NodeHandle};
 
@@ -41,6 +39,8 @@ pub struct EventRouterDeps {
     pub identity_cache: Arc<MultiLayerCache>,
     /// Receipt handler — stores inbound receipts from peers.
     pub receipts: Arc<ReceiptHandler>,
+    /// Debounced MLS state persister.
+    pub mls_persister: MlsPersister,
 }
 
 /// Bridges P2P events to WebSocket clients
@@ -57,6 +57,7 @@ pub struct EventRouter {
     local_did: String,
     identity_cache: Arc<MultiLayerCache>,
     receipts: Arc<ReceiptHandler>,
+    mls_persister: MlsPersister,
 }
 
 impl EventRouter {
@@ -74,6 +75,7 @@ impl EventRouter {
             local_did,
             identity_cache,
             receipts,
+            mls_persister,
         } = deps;
 
         Self {
@@ -89,6 +91,7 @@ impl EventRouter {
             local_did,
             identity_cache,
             receipts,
+            mls_persister,
         }
     }
 
@@ -115,6 +118,7 @@ impl EventRouter {
                 local_did: self.local_did.clone(),
                 receipts: self.receipts.clone(),
                 username_registry: self.username_registry.clone(),
+                mls_persister: self.mls_persister.clone(),
             },
             events.clone(),
         );
@@ -140,23 +144,11 @@ impl EventRouter {
     }
 }
 
-/// Persist MLS state to storage after any mutation.
+/// Schedule debounced MLS state persistence after any mutation.
 ///
-/// Logs a warning on failure but never panics — persistence failure degrades gracefully
-/// (groups still work, they just won't survive a restart until the next persist succeeds).
-pub(super) async fn persist_mls_state_async(
-    mls_groups: &MlsGroupHandler,
-    storage: &LocalMessageStorage,
-    local_did: &str,
-) {
-    match mls_groups.export_state() {
-        Ok(bytes) => {
-            if let Err(e) = storage.store_mls_state(local_did, &bytes).await {
-                warn!("Failed to persist MLS state to storage: {}", e);
-            }
-        }
-        Err(e) => warn!("Failed to export MLS state for persistence: {}", e),
-    }
+/// Delegates to the `MlsPersister` which coalesces rapid-fire writes.
+pub(super) fn persist_mls_state_async(mls_persister: &MlsPersister) {
+    mls_persister.schedule();
 }
 
 #[cfg(test)]
@@ -221,6 +213,7 @@ mod tests {
                 local_did: self.state.local_did.clone(),
                 identity_cache: self.state.identity_cache.clone(),
                 receipts: self.state.receipts.clone(),
+                mls_persister: self.state.mls_persister.clone(),
             });
             router.start(self.events.clone());
             self
@@ -262,6 +255,7 @@ mod tests {
             local_did: h.state.local_did.clone(),
             identity_cache: h.state.identity_cache.clone(),
             receipts: h.state.receipts.clone(),
+            mls_persister: h.state.mls_persister.clone(),
         });
     }
 
@@ -577,7 +571,7 @@ mod tests {
         );
     }
 
-    // ── persist_mls_state_async utility ──────────────────────────────────
+    // ── MLS persistence utility ───────────────────────────────────────────
 
     #[tokio::test]
     async fn test_persist_mls_state_roundtrip() {
@@ -588,8 +582,8 @@ mod tests {
         let state =
             AppState::with_db_path("did:variance:test".to_string(), db_path.to_str().unwrap());
 
-        // Persist state (empty, but should succeed)
-        persist_mls_state_async(&state.mls_groups, &state.storage, &state.local_did).await;
+        // Use flush() to force an immediate persist (bypasses debounce).
+        state.mls_persister.flush().await;
 
         // Verify state was persisted (can be retrieved)
         let stored = state
@@ -640,6 +634,7 @@ mod tests {
             local_did: state.local_did.clone(),
             identity_cache: state.identity_cache.clone(),
             receipts: state.receipts.clone(),
+            mls_persister: state.mls_persister.clone(),
         });
         router.start(events.clone());
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -696,6 +691,7 @@ mod tests {
             local_did: state.local_did.clone(),
             identity_cache: state.identity_cache.clone(),
             receipts: state.receipts.clone(),
+            mls_persister: state.mls_persister.clone(),
         });
         router.start(events.clone());
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;

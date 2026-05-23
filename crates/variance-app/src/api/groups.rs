@@ -217,19 +217,11 @@ async fn has_other_members(state: &AppState, group_id: &str) -> bool {
 }
 
 /// Persist the current MLS group state to storage after a mutation.
-pub(super) async fn persist_mls_state(state: &AppState) {
-    match state.mls_groups.export_state() {
-        Ok(bytes) => {
-            if let Err(e) = state
-                .storage
-                .store_mls_state(&state.local_did, &bytes)
-                .await
-            {
-                tracing::warn!("Failed to persist MLS state: {}", e);
-            }
-        }
-        Err(e) => tracing::warn!("Failed to export MLS state for persistence: {}", e),
-    }
+///
+/// This now delegates to the debounced `MlsPersister` which coalesces
+/// rapid-fire writes into a single sled flush after a 500ms window.
+pub(super) fn persist_mls_state(state: &AppState) {
+    state.mls_persister.schedule();
 }
 
 // ===== Handlers =====
@@ -390,7 +382,7 @@ pub(super) async fn mls_list_groups(
         });
     }
 
-    infos.sort_by(|a, b| b.last_message_timestamp.cmp(&a.last_message_timestamp));
+    infos.sort_by_key(|info| std::cmp::Reverse(info.last_message_timestamp));
 
     Ok(Json(infos))
 }
@@ -475,7 +467,7 @@ pub(super) async fn mls_create_group(
             message: format!("Failed to create MLS group: {}", e),
         })?;
 
-    persist_mls_state(&state).await;
+    persist_mls_state(&state);
 
     let group_meta = variance_proto::messaging_proto::Group {
         id: group_id.clone(),
@@ -598,7 +590,7 @@ pub(super) async fn mls_invite_to_group(
             message: format!("Failed to add member to MLS group: {}", e),
         })?;
 
-    persist_mls_state(&state).await;
+    persist_mls_state(&state);
 
     // Do NOT update group metadata yet — member is added only after accept.
 
@@ -759,7 +751,7 @@ pub(super) async fn mls_leave_group(
     }
 
     state.mls_groups.remove_group(&id);
-    persist_mls_state(&state).await;
+    persist_mls_state(&state);
 
     // Purge all local state for this group.
     if let Err(e) = state.storage.delete_group_messages(&id).await {
@@ -791,7 +783,7 @@ pub(super) async fn mls_leave_group(
                 if let Err(e) = state.node_handle.update_mls_key_package(kp_bytes).await {
                     tracing::warn!("Failed to republish MLS KeyPackage after leave: {}", e);
                 }
-                persist_mls_state(&state).await;
+                persist_mls_state(&state);
             }
             Err(e) => tracing::warn!(
                 "Failed to serialize refreshed KeyPackage after leave: {}",
@@ -872,7 +864,7 @@ pub(super) async fn mls_abandon_group(
     }
 
     state.mls_groups.remove_group(&id);
-    persist_mls_state(&state).await;
+    persist_mls_state(&state);
 
     // Purge all local state for this group.
     if let Err(e) = state.storage.delete_group_messages(&id).await {
@@ -903,7 +895,7 @@ pub(super) async fn mls_abandon_group(
                 if let Err(e) = state.node_handle.update_mls_key_package(kp_bytes).await {
                     tracing::warn!("Failed to republish MLS KeyPackage after abandon: {}", e);
                 }
-                persist_mls_state(&state).await;
+                persist_mls_state(&state);
             }
             Err(e) => tracing::warn!(
                 "Failed to serialize refreshed KeyPackage after abandon: {}",
@@ -964,7 +956,7 @@ pub(super) async fn mls_delete_group(
     }
 
     state.mls_groups.remove_group(&id);
-    persist_mls_state(&state).await;
+    persist_mls_state(&state);
 
     if let Err(e) = state.storage.delete_group_messages(&id).await {
         tracing::warn!("Failed to delete group messages: {}", e);
@@ -1036,7 +1028,7 @@ pub(super) async fn mls_remove_member(
             message: format!("Failed to remove member from MLS group: {}", e),
         })?;
 
-    persist_mls_state(&state).await;
+    persist_mls_state(&state);
 
     // Remove the member from stored metadata.
     if let Ok(Some(mut group_meta)) = state.storage.fetch_group_metadata(&id).await {
@@ -1222,7 +1214,7 @@ pub(super) async fn mls_accept_welcome(
             message: format!("Failed to join group from MLS Welcome: {}", e),
         })?;
 
-    persist_mls_state(&state).await;
+    persist_mls_state(&state);
 
     // Store metadata with self as MEMBER. We don't know admin_did here
     // (the inviter may fill it later via the GroupInvitation proto).
@@ -1333,7 +1325,7 @@ async fn send_group_content(
         }
     }
 
-    persist_mls_state(state).await;
+    persist_mls_state(state);
 
     if store {
         state
@@ -1394,7 +1386,7 @@ pub(crate) async fn publish_group_receipt(
         .map_err(|e| format!("GossipSub publish receipt: {}", e))?;
 
     // Persist MLS state — encryption advanced the ratchet.
-    persist_mls_state(state).await;
+    persist_mls_state(state);
 
     Ok(())
 }
@@ -1665,7 +1657,7 @@ pub(super) async fn mls_reinitialize_group(
     }
 
     // Persist the new MLS state.
-    persist_mls_state(&state).await;
+    persist_mls_state(&state);
 
     // Notify all connected WebSocket clients.
     state

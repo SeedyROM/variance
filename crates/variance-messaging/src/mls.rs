@@ -672,6 +672,43 @@ impl MlsGroupHandler {
         Ok(msg)
     }
 
+    /// Perform a self-update: rotate this member's leaf key material.
+    ///
+    /// Creates an Update proposal, immediately commits it, and merges the
+    /// pending commit. Returns the commit message to broadcast to the group.
+    /// Peers process it as a normal `StagedCommitMessage` and advance their epoch.
+    ///
+    /// This provides post-compromise security: if the member's previous leaf
+    /// key was compromised, the attacker can no longer decrypt future messages.
+    pub fn self_update(&self, group_id: &str) -> Result<MlsMessageOut> {
+        let group_lock = self
+            .groups
+            .get(group_id)
+            .ok_or_else(|| Error::GroupNotFound {
+                group_id: group_id.to_string(),
+            })?;
+
+        let mut group = group_lock.write().map_err(lock_poisoned)?;
+
+        let bundle = group
+            .self_update(
+                &self.provider,
+                &self.signature_keypair,
+                LeafNodeParameters::builder().build(),
+            )
+            .map_err(|e| Error::MlsGroup {
+                message: format!("Failed to self-update group: {e:?}"),
+            })?;
+
+        group
+            .merge_pending_commit(&self.provider)
+            .map_err(|e| Error::MlsGroup {
+                message: format!("Failed to merge self-update commit: {e:?}"),
+            })?;
+
+        Ok(bundle.into_commit())
+    }
+
     /// Commit any pending proposals in the group's proposal store.
     ///
     /// After a leave proposal is received, a remaining member must commit it

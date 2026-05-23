@@ -340,20 +340,35 @@ impl Node {
 
         // Dial configured relay peers. Circuit listen is triggered in handle_connection_established
         // once the connection succeeds and we can reserve a slot.
+        // Failures are non-fatal: the node can still operate (and may discover relays via DHT).
         for relay in &config.relay_peers {
-            let peer_id: PeerId = relay.peer_id.parse().map_err(|_| Error::InvalidPeerId {
-                peer_id: relay.peer_id.clone(),
-            })?;
+            let peer_id: PeerId = match relay.peer_id.parse() {
+                Ok(id) => id,
+                Err(_) => {
+                    warn!("Skipping relay with invalid peer ID: {}", relay.peer_id);
+                    continue;
+                }
+            };
             self.swarm
                 .behaviour_mut()
                 .kad
                 .add_address(&peer_id, relay.multiaddr.clone());
-            self.swarm
-                .dial(relay.multiaddr.clone())
-                .map_err(|e| Error::Transport {
-                    source: Box::new(e),
-                })?;
-            info!("Dialing relay peer: {} at {}", peer_id, relay.multiaddr);
+            // Seed into known_peers so reconnect_known_peers will re-dial on disconnect
+            self.known_peers
+                .entry(peer_id)
+                .or_default()
+                .push(relay.multiaddr.clone());
+            match self.swarm.dial(relay.multiaddr.clone()) {
+                Ok(()) => {
+                    info!("Dialing relay peer: {} at {}", peer_id, relay.multiaddr);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to dial relay peer {} at {}: {} (will retry via reconnect loop)",
+                        peer_id, relay.multiaddr, e
+                    );
+                }
+            }
         }
 
         Ok(())

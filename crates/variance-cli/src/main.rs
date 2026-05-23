@@ -155,9 +155,10 @@ async fn start_node_cmd(
         AppConfig::from_file(&config_path, base_dir).context("Failed to load configuration file")?
     } else {
         tracing::warn!("Configuration file not found, using defaults");
-        let mut cfg = AppConfig::default();
-        cfg.storage = variance_app::StorageConfig::for_base_dir(base_dir);
-        cfg
+        AppConfig {
+            storage: variance_app::StorageConfig::for_base_dir(base_dir),
+            ..Default::default()
+        }
     };
 
     // Determine listen address
@@ -275,8 +276,8 @@ fn show_config(config_path: String) -> Result<()> {
         .filter(|p| !p.as_os_str().is_empty())
         .map(|p| p.to_path_buf())
         .unwrap_or_else(variance_data_dir);
-    let config =
-        AppConfig::from_file(&config_path, base_dir).context("Failed to load configuration file")?;
+    let config = AppConfig::from_file(&config_path, base_dir)
+        .context("Failed to load configuration file")?;
 
     println!("\n{}", "=".repeat(60));
     println!("Variance Configuration");

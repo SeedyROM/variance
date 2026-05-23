@@ -50,13 +50,9 @@ pub async fn generate_identity(
 ) -> Result<GeneratedIdentity, String> {
     let (identity, phrase) = identity_gen::generate().map_err(|e| e.to_string())?;
 
-    let dir = std::path::Path::new(&output_path).parent().and_then(|p| {
-        if p == std::path::Path::new("") {
-            None
-        } else {
-            Some(p)
-        }
-    });
+    let dir = std::path::Path::new(&output_path)
+        .parent()
+        .filter(|&p| p != std::path::Path::new(""));
     if let Some(parent) = dir {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create directory: {}", e))?;
@@ -88,13 +84,9 @@ pub async fn recover_identity(
 ) -> Result<String, String> {
     let identity = identity_gen::recover(&mnemonic).map_err(|e| e.to_string())?;
 
-    let dir = std::path::Path::new(&output_path).parent().and_then(|p| {
-        if p == std::path::Path::new("") {
-            None
-        } else {
-            Some(p)
-        }
-    });
+    let dir = std::path::Path::new(&output_path)
+        .parent()
+        .filter(|&p| p != std::path::Path::new(""));
     if let Some(parent) = dir {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create directory: {}", e))?;
@@ -164,8 +156,10 @@ pub async fn start_node(
         AppConfig::from_file(config_path.to_str().unwrap_or_default(), base_dir)
             .map_err(|e| format!("Failed to load config.toml: {}", e))?
     } else {
-        let mut default_cfg = AppConfig::default();
-        default_cfg.storage = StorageConfig::for_base_dir(base_dir);
+        let default_cfg = AppConfig {
+            storage: StorageConfig::for_base_dir(base_dir),
+            ..Default::default()
+        };
         if let Err(e) = default_cfg.to_file(config_path.to_str().unwrap_or_default()) {
             tracing::warn!("Failed to write default config.toml: {}", e);
         }

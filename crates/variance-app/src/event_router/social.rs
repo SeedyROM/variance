@@ -2,6 +2,7 @@
 
 use crate::websocket::{WebSocketManager, WsMessage};
 use std::sync::Arc;
+use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, warn};
 use variance_identity::cache::MultiLayerCache;
 use variance_identity::username::UsernameRegistry;
@@ -73,12 +74,25 @@ fn spawn_typing_listener(
         let mut rx = events.subscribe_typing();
         debug!("EventRouter: Started typing event listener");
 
-        while let Ok(TypingEvent::IndicatorReceived {
-            sender_did,
-            recipient,
-            is_typing,
-        }) = rx.recv().await
-        {
+        loop {
+            let event = match rx.recv().await {
+                Ok(event) => event,
+                Err(RecvError::Lagged(n)) => {
+                    warn!("EventRouter: Typing listener missed {n} events, continuing");
+                    continue;
+                }
+                Err(RecvError::Closed) => {
+                    warn!("EventRouter: Typing channel closed, exiting");
+                    break;
+                }
+            };
+
+            let TypingEvent::IndicatorReceived {
+                sender_did,
+                recipient,
+                is_typing,
+            } = event;
+
             // For group typing indicators, verify the sender is still a group
             // member. Kicked members may still attempt to send indicators; drop
             // them silently.
@@ -138,7 +152,20 @@ fn spawn_receipt_listener(
         let mut rx = events.subscribe_receipts();
         debug!("EventRouter: Started receipt event listener");
 
-        while let Ok(ReceiptEvent::Received { receipt }) = rx.recv().await {
+        loop {
+            let event = match rx.recv().await {
+                Ok(event) => event,
+                Err(RecvError::Lagged(n)) => {
+                    warn!("EventRouter: Receipt listener missed {n} events, continuing");
+                    continue;
+                }
+                Err(RecvError::Closed) => {
+                    warn!("EventRouter: Receipt channel closed, exiting");
+                    break;
+                }
+            };
+
+            let ReceiptEvent::Received { receipt } = event;
             let message_id = receipt.message_id.clone();
             let status = receipt.status;
 
@@ -173,12 +200,24 @@ fn spawn_rename_listener(
         let mut rx = events.subscribe_rename();
         debug!("EventRouter: Started rename event listener");
 
-        while let Ok(RenameEvent::PeerRenamed {
-            did,
-            username,
-            discriminator,
-        }) = rx.recv().await
-        {
+        loop {
+            let event = match rx.recv().await {
+                Ok(event) => event,
+                Err(RecvError::Lagged(n)) => {
+                    warn!("EventRouter: Rename listener missed {n} events, continuing");
+                    continue;
+                }
+                Err(RecvError::Closed) => {
+                    warn!("EventRouter: Rename channel closed, exiting");
+                    break;
+                }
+            };
+
+            let RenameEvent::PeerRenamed {
+                did,
+                username,
+                discriminator,
+            } = event;
             username_registry.cache_mapping(username.clone(), discriminator, did.clone());
             if let Err(e) = storage
                 .store_peer_name(&did, &username, discriminator)
@@ -214,7 +253,18 @@ fn spawn_identity_listener(deps: IdentityListenerDeps, events: EventChannels) {
         let mut rx = events.subscribe_identity();
         debug!("EventRouter: Started identity event listener");
 
-        while let Ok(event) = rx.recv().await {
+        loop {
+            let event = match rx.recv().await {
+                Ok(event) => event,
+                Err(RecvError::Lagged(n)) => {
+                    warn!("EventRouter: Identity listener missed {n} events, continuing");
+                    continue;
+                }
+                Err(RecvError::Closed) => {
+                    warn!("EventRouter: Identity channel closed, exiting");
+                    break;
+                }
+            };
             debug!("EventRouter: Received identity event: {:?}", event);
 
             match event {

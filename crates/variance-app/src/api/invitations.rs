@@ -88,7 +88,7 @@ pub(super) async fn accept_invitation(
         })?;
 
     // Persist MLS state.
-    super::groups::persist_mls_state(&state).await;
+    super::groups::persist_mls_state(&state);
 
     // Store group metadata with self as MEMBER + any info from the invitation.
     let group_meta = variance_proto::messaging_proto::Group {
